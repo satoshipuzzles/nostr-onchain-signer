@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { Landing } from './pages/Landing';
 import { Unlock } from './pages/Unlock';
 import { Setup } from './pages/Setup';
 import { Layout } from './Layout';
@@ -22,7 +23,7 @@ import { AuthProvider } from './context/AuthContext';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
 
-type AppStatus = 'loading' | 'setup' | 'unlock' | 'authenticated';
+type AppStatus = 'loading' | 'landing' | 'setup' | 'unlock' | 'authenticated';
 
 export function App() {
   const [status, setStatus] = useState<AppStatus>('loading');
@@ -40,13 +41,13 @@ export function App() {
       } as ExtensionMessage);
 
       if (!response || response.error) {
-        setStatus('setup');
+        setStatus('landing');
         return;
       }
 
       const vaultStatus = response.result as VaultStatusResponse;
       if (!vaultStatus.exists) {
-        setStatus('setup');
+        setStatus('landing');
       } else if (!vaultStatus.unlocked) {
         setStatus('unlock');
       } else if (vaultStatus.publicKey) {
@@ -56,7 +57,7 @@ export function App() {
         setStatus('unlock');
       }
     } catch {
-      setStatus('setup');
+      setStatus('landing');
     }
   }
 
@@ -76,6 +77,10 @@ export function App() {
         <div className="animate-pulse text-bitcoin text-lg">Loading...</div>
       </div>
     );
+  }
+
+  if (status === 'landing') {
+    return <Landing onGetStarted={() => setStatus('setup')} />;
   }
 
   if (status === 'setup') {
