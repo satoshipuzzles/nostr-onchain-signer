@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
+import { safeImageUrl } from '@/lib/utils';
 import { Image, Clock } from 'lucide-react';
 
 interface Props {
@@ -57,7 +58,7 @@ export function NoteCard({ note, profile }: Props) {
       <div className="flex items-center gap-2.5 mb-2.5">
         {profile?.picture ? (
           <img
-            src={profile.picture}
+            src={safeImageUrl(profile.picture)}
             alt=""
             className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0"
           />

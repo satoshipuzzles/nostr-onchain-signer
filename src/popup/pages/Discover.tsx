@@ -3,6 +3,7 @@ import { ArrowLeft, Search, Loader2, UserPlus, UserMinus, BadgeCheck, Zap, Globe
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
+import { safeImageUrl } from '@/lib/utils';
 import {
   fullDiscoverySync, searchProfilesNip50, getAllCachedProfiles,
   getCacheStats, searchLocalCache, type ActivityWindow, type CachedProfile,
@@ -336,7 +337,7 @@ function UserRow({
       <button onClick={onViewProfile} className="flex-shrink-0">
         {profile.picture ? (
           <img
-            src={profile.picture}
+            src={safeImageUrl(profile.picture)}
             alt=""
             className="w-10 h-10 rounded-full object-cover bg-surface-700"
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}

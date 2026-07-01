@@ -7,6 +7,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
+import { safeImageUrl } from '@/lib/utils';
 
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
@@ -49,7 +50,7 @@ export function Sidebar() {
       <div className="px-4 py-3 border-b border-surface-200/10">
         <div className="flex items-center gap-2.5">
           {myProfile?.picture ? (
-            <img src={myProfile.picture} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
+            <img src={safeImageUrl(myProfile.picture)} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
           ) : (
             <div className="w-9 h-9 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/40 flex items-center justify-center flex-shrink-0">
               <span className="text-sm font-bold text-white/80">

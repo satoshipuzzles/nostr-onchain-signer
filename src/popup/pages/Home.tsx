@@ -7,6 +7,7 @@ import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
 import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
 import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
+import { safeImageUrl } from '@/lib/utils';
 
 export function Home() {
   const navigate = useNavigate();
@@ -52,7 +53,7 @@ export function Home() {
       <div className="flex items-center gap-3 mb-5 md:mb-6">
         <button onClick={() => navigate('/settings/profile')} className="relative flex-shrink-0">
           {myProfile?.picture ? (
-            <img src={myProfile.picture} alt="" className="w-12 h-12 rounded-full object-cover bg-surface-700" />
+            <img src={safeImageUrl(myProfile.picture)} alt="" className="w-12 h-12 rounded-full object-cover bg-surface-700" />
           ) : (
             <div className="w-12 h-12 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/40 flex items-center justify-center">
               <span className="text-lg font-bold text-white/80">
@@ -66,7 +67,7 @@ export function Home() {
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-base font-semibold truncate">{displayName}</p>
-          <p className="text-xs text-gray-500">{following.size} following &bull; {accounts.length} account{accounts.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs text-gray-500">{following instanceof Set ? following.size : 0} following &bull; {accounts.length} account{accounts.length !== 1 ? 's' : ''}</p>
         </div>
       </div>
 

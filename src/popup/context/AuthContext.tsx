@@ -116,7 +116,10 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       setMyProfile(stored[`profile_${pubkey}`]);
     }
     if (stored[`following_${pubkey}`]) {
-      setFollowing(new Set(stored[`following_${pubkey}`]));
+      const rawFollowing = stored[`following_${pubkey}`];
+      if (Array.isArray(rawFollowing)) {
+        setFollowing(new Set(rawFollowing));
+      }
     }
 
     const profile = await fetchMyProfile(pubkey);
@@ -127,7 +130,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }
 
     const contacts = await fetchFollowingList(pubkey);
-    if (contacts.length > 0) {
+    if (Array.isArray(contacts) && contacts.length > 0) {
       setFollowing(new Set(contacts.map((c) => c.pubkey)));
       await chrome.storage.local.set({ [`following_${pubkey}`]: contacts.map((c) => c.pubkey) });
     }
