@@ -1,11 +1,13 @@
-import { useState } from 'react';
-import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { useState, useEffect } from 'react';
+import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { createMessageId } from '@/shared/messages';
 import { type ProfileMetadata } from '@/lib/nostr/social';
+import { type Account, loadAccountMeta } from '@/lib/accounts';
+import { AccountSwitcher } from '@/popup/components/AccountSwitcher';
 import {
   Copy, Users, Send, Lock, Check, Radio, Compass,
-  Settings, Edit3, Server, Wallet,
+  Settings, Edit3, Server, Wallet, Download, Shield,
 } from 'lucide-react';
 
 type Page = 'loading' | 'setup' | 'unlock' | 'dashboard' | 'multisig' | 'multisig-vault' | 'request-sig' | 'send' | 'signing' | 'discover' | 'profile-view' | 'relays' | 'edit-profile' | 'wallet';
@@ -14,10 +16,15 @@ interface Props {
   publicKey: string;
   profile: ProfileMetadata | null;
   followingCount: number;
+  accounts: Account[];
+  activeAccountIndex: number;
   onNavigate: (page: Page) => void;
+  onSwitchAccount: (index: number) => void;
+  onAddAccount: () => void;
+  onBackupKeys: () => void;
 }
 
-export function Dashboard({ publicKey, profile, followingCount, onNavigate }: Props) {
+export function Dashboard({ publicKey, profile, followingCount, accounts, activeAccountIndex, onNavigate, onSwitchAccount, onAddAccount, onBackupKeys }: Props) {
   const [copied, setCopied] = useState('');
   const npub = pubkeyToNpub(publicKey);
   const btcAddress = pubkeyToTaprootAddress(publicKey);
@@ -36,6 +43,26 @@ export function Dashboard({ publicKey, profile, followingCount, onNavigate }: Pr
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
+      {/* Account Switcher + Actions */}
+      <div className="flex items-center gap-2 mb-4">
+        <AccountSwitcher
+          accounts={accounts}
+          activeIndex={activeAccountIndex}
+          onSwitch={onSwitchAccount}
+          onAddAccount={onAddAccount}
+        />
+        <div className="flex-1" />
+        <button onClick={onBackupKeys} className="p-2 hover:bg-surface-700 rounded-lg" title="Backup Keys">
+          <Download className="w-4 h-4 text-gray-400" />
+        </button>
+        <button onClick={() => onNavigate('relays')} className="p-2 hover:bg-surface-700 rounded-lg" title="Relays">
+          <Server className="w-4 h-4 text-gray-400" />
+        </button>
+        <button onClick={handleLock} className="p-2 hover:bg-surface-700 rounded-lg" title="Lock">
+          <Lock className="w-4 h-4 text-gray-400" />
+        </button>
+      </div>
+
       {/* Profile Header */}
       <div className="flex items-center gap-3 mb-4">
         <button onClick={() => onNavigate('edit-profile')} className="relative flex-shrink-0">
@@ -56,12 +83,6 @@ export function Dashboard({ publicKey, profile, followingCount, onNavigate }: Pr
           <p className="text-sm font-semibold truncate">{displayName}</p>
           <p className="text-xs text-gray-500">{followingCount} following</p>
         </div>
-        <button onClick={() => onNavigate('relays')} className="p-2 hover:bg-surface-700 rounded-lg">
-          <Server className="w-4 h-4 text-gray-400" />
-        </button>
-        <button onClick={handleLock} className="p-2 hover:bg-surface-700 rounded-lg">
-          <Lock className="w-4 h-4 text-gray-400" />
-        </button>
       </div>
 
       {/* Nostr Identity */}
@@ -101,12 +122,12 @@ export function Dashboard({ publicKey, profile, followingCount, onNavigate }: Pr
       <div className="space-y-2">
         <button onClick={() => onNavigate('send')} className="btn-primary w-full flex items-center justify-center gap-2">
           <Send className="w-4 h-4" />
-          Send + Note
+          Transaction Builder
         </button>
 
         <div className="grid grid-cols-2 gap-2">
           <button onClick={() => onNavigate('multisig-vault')} className="btn-secondary flex items-center justify-center gap-1.5 text-sm">
-            <Users className="w-3.5 h-3.5" />
+            <Shield className="w-3.5 h-3.5" />
             Multi-Sig
           </button>
           <button onClick={() => onNavigate('discover')} className="btn-secondary flex items-center justify-center gap-1.5 text-sm">
@@ -124,7 +145,7 @@ export function Dashboard({ publicKey, profile, followingCount, onNavigate }: Pr
       {/* Status footer */}
       <div className="mt-auto pt-4 text-center">
         <p className="text-[10px] text-gray-600">
-          NIP-07 active &bull; Bitcoin signer ready &bull; v0.1.0
+          NIP-07 active &bull; {accounts.length} account{accounts.length > 1 ? 's' : ''} &bull; v0.1.0
         </p>
       </div>
     </div>

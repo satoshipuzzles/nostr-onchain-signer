@@ -21,6 +21,7 @@ export type MessageType =
   | 'vault:lock'
   | 'vault:status'
   | 'vault:create'
+  | 'vault:switchAccount'
   // Dual-sign messages
   | 'dual:signAndBroadcast';
 

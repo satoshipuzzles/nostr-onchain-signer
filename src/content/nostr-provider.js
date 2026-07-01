@@ -106,4 +106,11 @@
   // Signal that the provider is available
   window.dispatchEvent(new Event('nostr-provider-loaded'));
   window.dispatchEvent(new Event('bitcoin-provider-loaded'));
+
+  // Log for users on Nostr clients so they know the signer is ready
+  console.log(
+    '%c⚡ Nostr Onchain Signer ready %c NIP-07 + Bitcoin signing active',
+    'background: #F7931A; color: white; padding: 2px 8px; border-radius: 4px 0 0 4px; font-weight: bold;',
+    'background: #8B5CF6; color: white; padding: 2px 8px; border-radius: 0 4px 4px 0;'
+  );
 })();

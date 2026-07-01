@@ -1,4 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="21.333333333333332" fill="#F7931A"/>
-  <text x="50%" y="55%" dominant-baseline="middle" text-anchor="middle" fill="white" font-size="64" font-family="Arial" font-weight="bold">N</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F7931A"/>
+      <stop offset="100%" style="stop-color:#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <g fill="none" stroke="white" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 30 L34 47 L34 81 L64 98 L94 81 L94 47 Z"/>
+    <path d="M64 30 L64 98"/>
+    <path d="M34 47 L94 81"/>
+    <path d="M94 47 L34 81"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="white" opacity="0.9"/>
 </svg>

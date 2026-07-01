@@ -3,7 +3,7 @@ import { createMessageId } from '@/shared/messages';
 import { Lock } from 'lucide-react';
 
 interface Props {
-  onUnlocked: (publicKey: string) => void;
+  onUnlocked: (publicKey: string, password: string) => void;
 }
 
 export function Unlock({ onUnlocked }: Props) {
@@ -26,7 +26,7 @@ export function Unlock({ onUnlocked }: Props) {
       if (response.error) {
         setError(response.error);
       } else {
-        onUnlocked(response.result.publicKey);
+        onUnlocked(response.result.publicKey, password);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to unlock');

@@ -18,6 +18,9 @@ import { fetchMyProfile, createFollowListEvent, publishEvent, type DiscoveredUse
 import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
 import { signEvent } from '@/lib/nostr/events';
 import { type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
+import { type Account, getAccountsFromVault, loadActiveAccountIndex, saveActiveAccountIndex, loadAccountMeta, updateAccountMeta, addAccountToVault } from '@/lib/accounts';
+import { decryptVault, loadVault } from '@/lib/crypto/vault';
+import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 
 type Page = 'loading' | 'setup' | 'unlock' | 'dashboard' | 'multisig' | 'multisig-vault' | 'request-sig' | 'send' | 'signing' | 'discover' | 'profile-view' | 'relays' | 'edit-profile' | 'wallet';
 
@@ -28,6 +31,9 @@ export function App() {
   const [following, setFollowing] = useState<Set<string>>(new Set());
   const [viewingUser, setViewingUser] = useState<DiscoveredUser | null>(null);
   const [selectedMultisigWallet, setSelectedMultisigWallet] = useState<ArchivedMultisig | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [activeAccountIndex, setActiveAccountIndex] = useState(0);
+  const [vaultPassword, setVaultPassword] = useState('');
 
   useEffect(() => {
     checkVaultStatus();
@@ -49,10 +55,41 @@ export function App() {
         setPublicKey(status.publicKey ?? '');
         setPage('dashboard');
         loadProfileAndFollows(status.publicKey ?? '');
+        loadAccounts();
       }
     } catch {
       setPage('setup');
     }
+  }
+
+  async function loadAccounts() {
+    try {
+      const vault = await loadVault();
+      if (!vault || !vaultPassword) {
+        // Load from stored metadata
+        const stored = await chrome.storage.local.get('cached_accounts');
+        if (stored.cached_accounts) {
+          setAccounts(stored.cached_accounts);
+          const idx = await loadActiveAccountIndex();
+          setActiveAccountIndex(idx);
+        }
+        return;
+      }
+      const vaultData = await decryptVault(vault, vaultPassword);
+      const accts = getAccountsFromVault(vaultData);
+
+      // Enrich with saved metadata
+      for (const acct of accts) {
+        const meta = await loadAccountMeta(acct.publicKeyHex);
+        if (meta.picture) acct.picture = meta.picture;
+        if (meta.displayName) acct.displayName = meta.displayName;
+      }
+
+      setAccounts(accts);
+      await chrome.storage.local.set({ cached_accounts: accts });
+      const idx = await loadActiveAccountIndex();
+      setActiveAccountIndex(Math.min(idx, accts.length - 1));
+    } catch {}
   }
 
   async function loadProfileAndFollows(pubkey: string) {
@@ -67,6 +104,7 @@ export function App() {
     if (profile) {
       setMyProfile(profile);
       await chrome.storage.local.set({ [`profile_${pubkey}`]: profile });
+      await updateAccountMeta(pubkey, { picture: profile.picture, displayName: profile.displayName || profile.name });
     }
     // Load following list
     const contacts = await fetchFollowingList(pubkey);
@@ -74,7 +112,6 @@ export function App() {
       setFollowing(new Set(contacts.map((c) => c.pubkey)));
       await chrome.storage.local.set({ [`following_${pubkey}`]: contacts.map((c) => c.pubkey) });
     } else {
-      // Fall back to locally saved list
       const savedFollowing = await chrome.storage.local.get(`following_${pubkey}`);
       if (savedFollowing[`following_${pubkey}`]) {
         setFollowing(new Set(savedFollowing[`following_${pubkey}`]));
@@ -82,15 +119,112 @@ export function App() {
     }
   }
 
-  function onUnlocked(pubkey: string) {
+  function onUnlocked(pubkey: string, password: string) {
     setPublicKey(pubkey);
+    setVaultPassword(password);
     setPage('dashboard');
     loadProfileAndFollows(pubkey);
+    // Load accounts with password available
+    setTimeout(async () => {
+      try {
+        const vault = await loadVault();
+        if (vault) {
+          const vaultData = await decryptVault(vault, password);
+          const accts = getAccountsFromVault(vaultData);
+          for (const acct of accts) {
+            const meta = await loadAccountMeta(acct.publicKeyHex);
+            if (meta.picture) acct.picture = meta.picture;
+            if (meta.displayName) acct.displayName = meta.displayName;
+          }
+          setAccounts(accts);
+          await chrome.storage.local.set({ cached_accounts: accts });
+          const idx = await loadActiveAccountIndex();
+          setActiveAccountIndex(Math.min(idx, accts.length - 1));
+        }
+      } catch {}
+    }, 100);
   }
 
-  function onCreated(pubkey: string) {
+  function onCreated(pubkey: string, password: string) {
     setPublicKey(pubkey);
+    setVaultPassword(password);
     setPage('dashboard');
+    setAccounts([{
+      publicKeyHex: pubkey,
+      npub: pubkeyToNpub(pubkey),
+      label: 'Primary Key',
+      createdAt: Date.now(),
+    }]);
+  }
+
+  async function handleSwitchAccount(index: number) {
+    if (index >= accounts.length) return;
+    setActiveAccountIndex(index);
+    await saveActiveAccountIndex(index);
+    const acct = accounts[index];
+    setPublicKey(acct.publicKeyHex);
+    setMyProfile(null);
+    setFollowing(new Set());
+
+    // Tell background to switch active key
+    await chrome.runtime.sendMessage({
+      type: 'vault:switchAccount',
+      payload: { index },
+      id: createMessageId(),
+    });
+
+    loadProfileAndFollows(acct.publicKeyHex);
+  }
+
+  async function handleAddAccount() {
+    if (!vaultPassword) return;
+    try {
+      const { accounts: newAccounts, newIndex } = await addAccountToVault(vaultPassword);
+      setAccounts(newAccounts);
+      await chrome.storage.local.set({ cached_accounts: newAccounts });
+      handleSwitchAccount(newIndex);
+    } catch (err) {
+      console.error('Failed to add account:', err);
+    }
+  }
+
+  async function handleBackupKeys() {
+    if (!vaultPassword) {
+      alert('Please lock and unlock again to enable backup');
+      return;
+    }
+    try {
+      const vault = await loadVault();
+      if (!vault) return;
+      const vaultData = await decryptVault(vault, vaultPassword);
+
+      let backupContent = '# Nostr Onchain Signer - Key Backup\n';
+      backupContent += `# Generated: ${new Date().toISOString()}\n`;
+      backupContent += `# KEEP THIS FILE SAFE - Anyone with these keys can control your accounts\n\n`;
+
+      for (let i = 0; i < vaultData.length; i++) {
+        const data = vaultData[i];
+        const npub = pubkeyToNpub(data.publicKeyHex);
+        const nsec = privkeyToNsec(data.privateKeyHex);
+        backupContent += `--- Account ${i + 1}: ${data.label || 'Unnamed'} ---\n`;
+        backupContent += `npub: ${npub}\n`;
+        backupContent += `nsec: ${nsec}\n`;
+        backupContent += `hex pubkey: ${data.publicKeyHex}\n\n`;
+      }
+
+      // Download as file
+      const blob = new Blob([backupContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nostr-onchain-backup-${Date.now()}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Backup failed:', err);
+    }
   }
 
   const handleFollow = useCallback(async (pubkey: string) => {
@@ -109,9 +243,7 @@ export function App() {
 
   async function publishFollowList(pubkeys: string[]) {
     try {
-      // Save locally immediately
       await chrome.storage.local.set({ [`following_${publicKey}`]: pubkeys });
-
       const unsigned = createFollowListEvent(pubkeys, publicKey);
       const response = await chrome.runtime.sendMessage({
         type: 'nip07:signEvent',
@@ -222,7 +354,12 @@ export function App() {
       publicKey={publicKey}
       profile={myProfile}
       followingCount={following.size}
+      accounts={accounts}
+      activeAccountIndex={activeAccountIndex}
       onNavigate={setPage}
+      onSwitchAccount={handleSwitchAccount}
+      onAddAccount={handleAddAccount}
+      onBackupKeys={handleBackupKeys}
     />
   );
 }

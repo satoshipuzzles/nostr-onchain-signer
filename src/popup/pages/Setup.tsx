@@ -5,7 +5,7 @@ import { generateKeyPair, keyPairFromPrivateKey, nsecToPrivkey, isValidNsec } fr
 import { Shield, Key, Import } from 'lucide-react';
 
 interface Props {
-  onCreated: (publicKey: string) => void;
+  onCreated: (publicKey: string, password: string) => void;
 }
 
 type Step = 'choose' | 'generate' | 'import' | 'password';
@@ -81,7 +81,7 @@ export function Setup({ onCreated }: Props) {
         id: createMessageId(),
       });
 
-      onCreated(publicKey);
+      onCreated(publicKey, password);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create vault');
     } finally {

@@ -75,6 +75,18 @@ async function handleMessage(
       return { id, result: { locked: true } };
     }
 
+    case 'vault:switchAccount': {
+      const { index } = payload as { index: number };
+      if (!unlockedKeys || index >= unlockedKeys.length) {
+        return { id, error: 'Invalid account index or vault locked' };
+      }
+      // Rotate the array so the selected account is first
+      const selected = unlockedKeys[index];
+      unlockedKeys = [selected, ...unlockedKeys.filter((_, i) => i !== index)];
+      resetLockTimer();
+      return { id, result: { publicKey: selected.publicKeyHex } };
+    }
+
     case 'nip07:getPublicKey': {
       const key = getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
