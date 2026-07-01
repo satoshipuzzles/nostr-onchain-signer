@@ -2,31 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nostr Onchain Signer — Dev</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Nostr Onchain" />
+    <meta name="theme-color" content="#0a0a0f" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <title>Nostr Onchain</title>
     <style>
-      body {
-        margin: 0;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-        background: #0a0a0a;
-      }
-      .phone-frame {
-        width: 380px;
-        height: 600px;
-        border: 2px solid #333;
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+      body { background: #0a0a0f; }
+      @media (min-width: 500px) {
+        body {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          min-height: 100vh;
+        }
+        #root {
+          width: 390px;
+          height: 680px;
+          border: 1px solid #222;
+          border-radius: 20px;
+          overflow: hidden;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
       }
     </style>
   </head>
   <body>
-    <div class="phone-frame">
-      <div id="root" style="width: 100%; height: 100%;"></div>
-    </div>
+    <div id="root"></div>
     <script type="module" src="/src/popup/main.tsx"></script>
   </body>
 </html>
