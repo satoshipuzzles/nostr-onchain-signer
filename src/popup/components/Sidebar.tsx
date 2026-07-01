@@ -34,11 +34,11 @@ export function Sidebar() {
   }
 
   return (
-    <div className="h-full w-60 bg-surface-800 border-r border-surface-200/10 flex flex-col">
+    <div className="h-full w-60 bg-black border-r border-white/10 flex flex-col">
       {/* Logo + App name */}
-      <div className="p-4 flex items-center gap-3 border-b border-surface-200/10">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-bitcoin to-nostr flex items-center justify-center flex-shrink-0">
-          <Shield className="w-5 h-5 text-white" />
+      <div className="p-4 flex items-center gap-3 border-b border-white/10">
+        <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center flex-shrink-0">
+          <Shield className="w-5 h-5 text-black" />
         </div>
         <div className="min-w-0">
           <p className="text-sm font-bold truncate">Nostr Onchain</p>
@@ -47,12 +47,12 @@ export function Sidebar() {
       </div>
 
       {/* User profile section */}
-      <div className="px-4 py-3 border-b border-surface-200/10">
+      <div className="px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-2.5">
           {myProfile?.picture ? (
             <img src={safeImageUrl(myProfile.picture)} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
           ) : (
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/40 flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center flex-shrink-0">
               <span className="text-sm font-bold text-white/80">
                 {displayName.charAt(0).toUpperCase()}
               </span>
@@ -78,8 +78,8 @@ export function Sidebar() {
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
                 isActive
-                  ? 'bg-bitcoin/10 text-bitcoin'
-                  : 'text-gray-400 hover:bg-surface-700 hover:text-white'
+                  ? 'bg-white/10 text-white'
+                  : 'text-gray-400 hover:bg-white/5 hover:text-white'
               }`
             }
           >
@@ -97,8 +97,8 @@ export function Sidebar() {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
                   isActive
-                    ? 'bg-bitcoin/10 text-bitcoin'
-                    : 'text-gray-400 hover:bg-surface-700 hover:text-white'
+                    ? 'bg-white/10 text-white'
+                    : 'text-gray-400 hover:bg-white/5 hover:text-white'
                 }`
               }
             >
@@ -110,17 +110,17 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom actions */}
-      <div className="px-3 py-3 border-t border-surface-200/10 space-y-1">
+      <div className="px-3 py-3 border-t border-white/10 space-y-1">
         <button
           onClick={handleBackupKeys}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 hover:bg-white/5 hover:text-white transition-colors"
         >
           <Download className="w-4 h-4" />
           Backup Keys
         </button>
         <button
           onClick={handleLock}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 hover:bg-surface-700 hover:text-red-400 transition-colors"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 hover:bg-white/5 hover:text-red-400 transition-colors"
         >
           <Lock className="w-4 h-4" />
           Lock

@@ -24,23 +24,23 @@ export function StatusBar() {
   if (!status) return null;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] text-gray-400 bg-surface-900/80 border-b border-surface-200/10 overflow-x-auto whitespace-nowrap">
+    <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] text-gray-500 bg-black border-b border-white/5 overflow-x-auto whitespace-nowrap">
       {status.btcPriceUsd > 0 && (
         <span className="flex items-center gap-1">
-          <DollarSign className="w-3 h-3 text-bitcoin" />
+          <DollarSign className="w-3 h-3 text-white" />
           <span className="font-mono">${status.btcPriceUsd.toLocaleString()}</span>
         </span>
       )}
 
       {status.blockHeight > 0 && (
         <span className="flex items-center gap-1">
-          <Blocks className="w-3 h-3 text-purple-400" />
+          <Blocks className="w-3 h-3 text-gray-400" />
           <span className="font-mono">{status.blockHeight.toLocaleString()}</span>
         </span>
       )}
 
       <span className="flex items-center gap-1" title="Fee rates: fastest / half-hour / hour">
-        <Zap className="w-3 h-3 text-yellow-400" />
+        <Zap className="w-3 h-3 text-gray-400" />
         <span className="font-mono">
           {status.fees.fastest}/{status.fees.halfHour}/{status.fees.hour} sat/vB
         </span>
