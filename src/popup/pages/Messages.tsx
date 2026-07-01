@@ -149,14 +149,19 @@ export function Messages() {
 
       const sorted = dms.sort((a, b) => a.created_at - b.created_at);
 
-      // Try to decrypt
+      // Try to decrypt NIP-04 encrypted messages
       if (typeof (window as any).nostr?.nip04?.decrypt === 'function') {
         for (const dm of sorted) {
           try {
             const other = dm.isMine ? peerPubkey : dm.pubkey;
-            dm.content = await (window as any).nostr.nip04.decrypt(other, dm.content);
+            const decrypted = await (window as any).nostr.nip04.decrypt(other, dm.content);
+            dm.content = decrypted;
           } catch {
-            dm.content = '(unable to decrypt)';
+            // Content might already be plaintext or encrypted with a different method
+            // Leave as-is if it looks like readable text, otherwise mark it
+            if (dm.content.includes('?iv=') || dm.content.length > 200 && !/\s/.test(dm.content)) {
+              dm.content = '(encrypted - approval needed)';
+            }
           }
         }
       }

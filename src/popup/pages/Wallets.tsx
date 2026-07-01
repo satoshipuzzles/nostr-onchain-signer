@@ -8,7 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import {
-  loadMultisigWallets, updateMultisigBalance,
+  loadMultisigWallets, loadMyMultisigWallets, updateMultisigBalance,
   type ArchivedMultisig,
 } from '@/lib/bitcoin/wallet-store';
 
@@ -32,7 +32,7 @@ export function Wallets() {
     try {
       const [bal, multisigs] = await Promise.allSettled([
         fetchBalance(address),
-        loadMultisigWallets(),
+        loadMyMultisigWallets(publicKey),
       ]);
       if (bal.status === 'fulfilled') setBalance(bal.value.total);
       if (multisigs.status === 'fulfilled') {
@@ -46,7 +46,7 @@ export function Wallets() {
   }
 
   async function refreshMultisigBalances() {
-    const all = await loadMultisigWallets();
+    const all = await loadMyMultisigWallets(publicKey);
     for (const wallet of all) {
       try {
         const bal = await fetchBalance(wallet.wallet.address);

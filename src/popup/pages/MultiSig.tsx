@@ -199,7 +199,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           ? Array.from(wallet.merkleRoot).map(b => b.toString(16).padStart(2, '0')).join('')
           : String(wallet.merkleRoot ?? ''),
       };
-      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, walletName);
+      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, walletName, undefined, publicKey);
       await saveMultisigWallet(archived);
 
       setResult({ address: wallet.address, threshold, total: allKeys.length, wallet });

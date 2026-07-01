@@ -15,6 +15,7 @@ export interface KeyHolder {
 
 export interface ArchivedMultisig {
   id: string;
+  ownerPubkey: string; // The pubkey that created this multi-sig
   wallet: MultisigWallet;
   name: string;
   description?: string;
@@ -65,6 +66,12 @@ export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
   const raw = result[STORAGE_KEY_WALLETS];
   if (!Array.isArray(raw)) return [];
   return raw.filter((w: any) => w && w.id && w.wallet && w.wallet.address);
+}
+
+export async function loadMyMultisigWallets(ownerPubkey: string): Promise<ArchivedMultisig[]> {
+  const all = await loadMultisigWallets();
+  // Show wallets owned by this pubkey, OR wallets without an owner (legacy, show to everyone)
+  return all.filter((w) => !w.ownerPubkey || w.ownerPubkey === ownerPubkey);
 }
 
 export async function getMultisigWallet(id: string): Promise<ArchivedMultisig | null> {
@@ -145,10 +152,12 @@ export function createArchivedMultisig(
   wallet: MultisigWallet,
   keyHolders: KeyHolder[],
   name: string,
-  description?: string
+  description?: string,
+  ownerPubkey?: string
 ): ArchivedMultisig {
   return {
     id: generateId(),
+    ownerPubkey: ownerPubkey || '',
     wallet,
     name,
     description,
