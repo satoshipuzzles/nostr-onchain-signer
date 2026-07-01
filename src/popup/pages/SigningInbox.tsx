@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   subscribeSigningInbox,
   markRequestStatus,
@@ -16,7 +17,7 @@ import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
   Shield, AlertTriangle, Copy, Link, FileText,
   Send, QrCode, Download, ExternalLink, CheckCircle2,
-  Plus,
+  Plus, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
@@ -264,6 +265,7 @@ export function useSigningCount(publicKey: string): number {
 // ─── Main Component ────────────────────────────────────────────
 
 export function SigningInbox({ publicKey, onBack }: Props) {
+  const navigate = useNavigate();
   const [requests, setRequests] = useState<SigningRequest[]>([]);
   const [outbound, setOutbound] = useState<PendingSignatureRequest[]>([]);
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
@@ -274,6 +276,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   const [activeTab, setActiveTab] = useState<'incoming' | 'outbound' | 'invoices'>('incoming');
   const [copied, setCopied] = useState('');
   const [showInvoiceCreator, setShowInvoiceCreator] = useState(false);
+  const [expandedOutbound, setExpandedOutbound] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const responseCleanupRef = useRef<(() => void) | null>(null);
   const invoiceCleanupRef = useRef<(() => void) | null>(null);
@@ -611,38 +614,72 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                 </p>
               </div>
             ) : (
-              outbound.map((req) => (
-                <div key={req.id} className="card mb-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full bg-nostr/20 flex items-center justify-center flex-shrink-0">
-                      <Send className="w-4 h-4 text-nostr" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{req.memo || 'Signature request'}</p>
-                      <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                        <span>{req.amount ? `${req.amount.toLocaleString()} sats` : ''}</span>
-                        <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+              outbound.map((req) => {
+                const isExpanded = expandedOutbound === req.id;
+                return (
+                  <div key={req.id} className="card mb-3">
+                    <div
+                      className="flex items-center gap-3 cursor-pointer"
+                      onClick={() => setExpandedOutbound(isExpanded ? null : req.id)}
+                    >
+                      <div className="w-9 h-9 rounded-full bg-nostr/20 flex items-center justify-center flex-shrink-0">
+                        <Send className="w-4 h-4 text-nostr" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{req.memo || 'Signature request'}</p>
+                        <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                          <span>{req.amount ? `${req.amount.toLocaleString()} sats` : ''}</span>
+                          <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                          req.status === 'pending' ? 'bg-bitcoin/15 text-bitcoin' :
+                          req.status === 'signed' ? 'bg-green-500/15 text-green-400' :
+                          'bg-gray-500/15 text-gray-400'
+                        }`}>
+                          {req.status}
+                        </span>
+                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-500" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-500" />}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                        req.status === 'pending' ? 'bg-bitcoin/15 text-bitcoin' :
-                        req.status === 'signed' ? 'bg-green-500/15 text-green-400' :
-                        'bg-gray-500/15 text-gray-400'
-                      }`}>
-                        {req.status}
-                      </span>
-                      <button
-                        onClick={() => copyToClipboard(signingUrl(req.roundId), req.id)}
-                        className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
-                        title="Copy signing link"
-                      >
-                        {copied === req.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                      </button>
-                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
+                        {req.recipientPubkey && (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-0.5">Sent to</p>
+                            <code className="text-[11px] text-gray-300 font-mono break-all">{req.recipientPubkey}</code>
+                          </div>
+                        )}
+                        <div className="grid grid-cols-2 gap-2">
+                          {req.amount && (
+                            <div>
+                              <p className="text-[10px] text-gray-500 mb-0.5">Amount</p>
+                              <p className="text-xs text-white">{req.amount.toLocaleString()} sats</p>
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-0.5">Expires</p>
+                            <p className="text-xs text-white">
+                              {req.expiresAt ? new Date(req.expiresAt).toLocaleDateString() : 'N/A'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(signingUrl(req.roundId), req.id); }}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 transition-colors min-h-[28px]"
+                          >
+                            {copied === req.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                            Copy Signing Link
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </>
         )}
@@ -676,7 +713,11 @@ export function SigningInbox({ publicKey, onBack }: Props) {
             )}
 
             {invoices.map((item) => (
-              <div key={item.eventId} className="card mb-3">
+              <div
+                key={item.eventId}
+                className="card mb-3 cursor-pointer hover:bg-surface-700/50 transition-colors"
+                onClick={() => navigate(`/invoice/${item.eventId}`)}
+              >
                 <div className="flex items-center gap-3">
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
                     item.direction === 'sent' ? 'bg-bitcoin/20' : 'bg-nostr/20'
@@ -706,13 +747,16 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                       {item.invoice.address}
                     </code>
                   </div>
-                  <button
-                    onClick={() => copyToClipboard(item.eventId, `inv_${item.eventId}`)}
-                    className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
-                    title="Copy event ID"
-                  >
-                    {copied === `inv_${item.eventId}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                  </button>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); copyToClipboard(item.eventId, `inv_${item.eventId}`); }}
+                      className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                      title="Copy event ID"
+                    >
+                      {copied === `inv_${item.eventId}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                    <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
+                  </div>
                 </div>
               </div>
             ))}
@@ -740,10 +784,104 @@ function RequestDetail({
 }) {
   const [signing, setSigning] = useState(false);
   const [copied, setCopied] = useState('');
+  const [liveSignedCount, setLiveSignedCount] = useState(request.signed_count);
+  const [responders, setResponders] = useState<{ pubkey: string; psbtHex?: string }[]>([]);
+  const [copiedPsbt, setCopiedPsbt] = useState(false);
+  const liveCleanupRef = useRef<(() => void) | null>(null);
   const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
   const webSignUrl = signingUrl(request.round_id);
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(webSignUrl)}`;
-  const isReady = request.signed_count >= request.threshold;
+  const isReady = liveSignedCount >= request.threshold;
+
+  useEffect(() => {
+    let mounted = true;
+    const seenPubkeys = new Set<string>();
+    const collected: { pubkey: string; psbtHex?: string }[] = [];
+
+    (async () => {
+      const relayList = await loadRelayList();
+      const relays = getReadRelays(relayList);
+      const relayUrls = relays.length > 0
+        ? relays
+        : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
+
+      const connections: { ws: WebSocket; subId: string }[] = [];
+
+      for (const url of relayUrls) {
+        const subId = `detail_resp_${Math.random().toString(36).slice(2, 10)}`;
+        let ws: WebSocket;
+        try { ws = new WebSocket(url); } catch { continue; }
+        connections.push({ ws, subId });
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['REQ', subId, {
+            kinds: [CUSTOM_KIND.SIGNING_RESPONSE],
+            '#r': [request.round_id],
+            limit: 50,
+          }]));
+        };
+
+        ws.onmessage = (msg) => {
+          if (!mounted) return;
+          try {
+            const data = JSON.parse(msg.data);
+            if (data[0] === 'EVENT' && data[1] === subId) {
+              const evt = data[2];
+              if (seenPubkeys.has(evt.pubkey)) return;
+              try {
+                const content = JSON.parse(evt.content);
+                if (content.round_id === request.round_id && content.accepted) {
+                  seenPubkeys.add(evt.pubkey);
+                  collected.push({ pubkey: evt.pubkey, psbtHex: content.psbt_hex });
+                  setResponders([...collected]);
+                  setLiveSignedCount(request.signed_count + collected.length);
+                }
+              } catch { /* malformed */ }
+            }
+          } catch { /* ignore */ }
+        };
+      }
+
+      liveCleanupRef.current = () => {
+        mounted = false;
+        for (const conn of connections) {
+          try {
+            if (conn.ws.readyState === WebSocket.OPEN) {
+              conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+            }
+            conn.ws.close();
+          } catch { /* ignore */ }
+        }
+        connections.length = 0;
+      };
+    })();
+
+    return () => { liveCleanupRef.current?.(); };
+  }, [request.round_id]);
+
+  function handleCopyAllPsbts() {
+    const psbts = responders
+      .filter((r) => r.psbtHex)
+      .map((r) => r.psbtHex!)
+      .join('\n---\n');
+    navigator.clipboard.writeText(psbts || request.psbt_hex);
+    setCopiedPsbt(true);
+    setTimeout(() => setCopiedPsbt(false), 2000);
+  }
+
+  function handleDownloadFinalPsbt() {
+    const psbts = responders.filter((r) => r.psbtHex).map((r) => r.psbtHex!);
+    const content = psbts.length > 0 ? psbts.join('\n') : request.psbt_hex;
+    const blob = new Blob([content], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `signing-round-${request.round_id.slice(0, 8)}.psbt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 
   async function handleSign() {
     setSigning(true);
@@ -777,9 +915,17 @@ function RequestDetail({
       await publishEvent(signResponse.result);
 
       const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
+
+      let encryptedDmContent = dmContent;
+      if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
+        encryptedDmContent = await (window as any).nostr.nip04.encrypt(request.senderPubkey, dmContent);
+      } else {
+        console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+      }
+
       const dmEvent = {
         kind: 4,
-        content: dmContent,
+        content: encryptedDmContent,
         tags: [['p', request.senderPubkey]],
         created_at: Math.floor(Date.now() / 1000),
         pubkey: publicKey,
@@ -821,7 +967,7 @@ function RequestDetail({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-20">
-        {/* Feature 5: threshold banner in detail view */}
+        {/* Combine & Broadcast section */}
         {isReady && (
           <div className="card mb-3 border-green-500/30 bg-green-500/5">
             <div className="flex items-center gap-2 mb-3">
@@ -829,12 +975,34 @@ function RequestDetail({
               <span className="text-sm font-semibold text-green-400">Ready to Broadcast</span>
             </div>
             <p className="text-xs text-gray-400 mb-3">
-              Threshold reached ({request.signed_count}/{request.threshold} signatures).
-              Download the final PSBT and broadcast to the network.
+              Threshold reached ({liveSignedCount}/{request.threshold} signatures).
+              Combine the signed PSBTs and broadcast to the network.
             </p>
-            <div className="flex gap-2">
+
+            {/* Signed PSBTs collected */}
+            {responders.filter((r) => r.psbtHex).length > 0 && (
+              <div className="bg-surface-700 rounded-lg p-3 mb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wider">
+                    Collected Signed PSBTs ({responders.filter((r) => r.psbtHex).length})
+                  </span>
+                  <button
+                    onClick={handleCopyAllPsbts}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-surface-600 hover:bg-surface-500 text-gray-300 transition-colors"
+                  >
+                    {copiedPsbt ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                    {copiedPsbt ? 'Copied' : 'Copy All'}
+                  </button>
+                </div>
+                <code className="text-[10px] text-gray-400 font-mono break-all block max-h-16 overflow-y-auto">
+                  {responders.filter((r) => r.psbtHex).map((r) => r.psbtHex!.slice(0, 32)).join('... ')}...
+                </code>
+              </div>
+            )}
+
+            <div className="flex gap-2 mb-3">
               <button
-                onClick={() => downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`)}
+                onClick={handleDownloadFinalPsbt}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors text-xs font-medium min-h-[44px]"
               >
                 <Download className="w-4 h-4" />
@@ -850,8 +1018,45 @@ function RequestDetail({
                 Broadcast
               </a>
             </div>
+
+            <a
+              href="https://mempool.space/api/tx"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] text-bitcoin hover:underline block"
+            >
+              Or POST raw tx → mempool.space/api/tx
+            </a>
           </div>
         )}
+
+        {/* Live signature counter */}
+        <div className="card mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Live Signatures</span>
+            <span className={`text-sm font-bold ${isReady ? 'text-green-400' : 'text-bitcoin'}`}>
+              {liveSignedCount}/{request.threshold}
+            </span>
+          </div>
+          <div className="w-full h-2 bg-surface-700 rounded-full overflow-hidden mb-2">
+            <div
+              className={`h-full rounded-full transition-all ${isReady ? 'bg-green-400' : 'bg-bitcoin'}`}
+              style={{ width: `${Math.min((liveSignedCount / request.threshold) * 100, 100)}%` }}
+            />
+          </div>
+          {responders.length > 0 && (
+            <div className="space-y-1.5 mt-2">
+              {responders.map((r) => (
+                <div key={r.pubkey} className="flex items-center gap-2">
+                  <Check className="w-3 h-3 text-green-400 flex-shrink-0" />
+                  <code className="text-[10px] text-gray-300 font-mono truncate">
+                    {r.pubkey.slice(0, 8)}...{r.pubkey.slice(-8)}
+                  </code>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Sender */}
         <div className="card mb-3">
@@ -893,7 +1098,7 @@ function RequestDetail({
             <div>
               <p className="text-[10px] text-gray-500 mb-0.5">Signed</p>
               <p className={`text-sm ${isReady ? 'text-green-400 font-semibold' : 'text-white'}`}>
-                {request.signed_count} / {request.threshold}
+                {liveSignedCount} / {request.threshold}
                 {isReady && ' ✓'}
               </p>
             </div>

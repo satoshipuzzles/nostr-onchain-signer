@@ -99,9 +99,16 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
             `Open your Nostr Onchain signer to review and sign.\n` +
             `nostr:${response.result.id}`;
 
+          let encryptedDmContent = dmContent;
+          if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
+            encryptedDmContent = await (window as any).nostr.nip04.encrypt(signer.pubkey, dmContent);
+          } else {
+            console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+          }
+
           const dmEvent = {
             kind: 4,
-            content: dmContent,
+            content: encryptedDmContent,
             tags: [['p', signer.pubkey]],
             created_at: Math.floor(Date.now() / 1000),
             pubkey: publicKey,

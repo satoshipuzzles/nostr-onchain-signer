@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type ReactNode } from 'react';
 import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { safeImageUrl } from '@/lib/utils';
@@ -34,12 +34,38 @@ function extractImages(content: string): string[] {
   return matches ? [...new Set(matches)] : [];
 }
 
-function renderContent(content: string, expanded: boolean): string {
+const URL_SPLIT_REGEX = /(https?:\/\/[^\s]+)/g;
+
+function renderRichContent(content: string, expanded: boolean): { textParts: ReactNode[]; images: string[] } {
   let text = content.replace(IMAGE_REGEX, '').trim();
   if (!expanded && text.length > MAX_CONTENT_LENGTH) {
     text = text.slice(0, MAX_CONTENT_LENGTH);
   }
-  return text;
+
+  const images: string[] = [];
+  const rawImages = content.match(IMAGE_REGEX);
+  if (rawImages) {
+    for (const url of rawImages) {
+      if (!images.includes(url)) images.push(url);
+    }
+  }
+
+  const parts = text.split(URL_SPLIT_REGEX);
+  const rendered: ReactNode[] = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (!part) continue;
+    if (/^https?:\/\//.test(part)) {
+      rendered.push(
+        <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline break-all">{part}</a>
+      );
+    } else {
+      rendered.push(<span key={i}>{part}</span>);
+    }
+  }
+
+  return { textParts: rendered, images };
 }
 
 export function NoteCard({ note, profile }: Props) {
@@ -48,8 +74,7 @@ export function NoteCard({ note, profile }: Props) {
 
   const displayName = profile?.displayName || profile?.name || note.pubkey.slice(0, 12);
   const hashtags = useMemo(() => extractHashtags(note.tags), [note.tags]);
-  const images = useMemo(() => extractImages(note.content), [note.content]);
-  const textContent = useMemo(() => renderContent(note.content, expanded), [note.content, expanded]);
+  const { textParts, images } = useMemo(() => renderRichContent(note.content, expanded), [note.content, expanded]);
   const isLong = note.content.replace(IMAGE_REGEX, '').trim().length > MAX_CONTENT_LENGTH;
 
   return (
@@ -82,9 +107,9 @@ export function NoteCard({ note, profile }: Props) {
       </div>
 
       {/* Content */}
-      {textContent && (
+      {textParts.length > 0 && (
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words mb-2">
-          {textContent}
+          {textParts}
           {!expanded && isLong && '...'}
         </p>
       )}

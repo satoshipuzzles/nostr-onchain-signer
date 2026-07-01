@@ -21,6 +21,7 @@ import { RelaySettingsWrapper } from './pages/RelaySettingsWrapper';
 import { EditProfileWrapper } from './pages/EditProfileWrapper';
 import { Settings } from './pages/Settings';
 import { InvoicePage } from './pages/InvoicePage';
+import { SignPage } from './pages/SignPage';
 import { AuthProvider } from './context/AuthContext';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
@@ -74,10 +75,14 @@ export function App() {
     setStatus('authenticated');
   }
 
-  // Public invoice route — accessible without authentication
-  if (location.pathname.startsWith('/invoice/')) {
+  // Public routes — accessible without authentication
+  const publicRoutes = ['/sign/', '/invoice/'];
+  const isPublicRoute = publicRoutes.some((r) => location.pathname.startsWith(r));
+
+  if (isPublicRoute) {
     return (
       <Routes>
+        <Route path="sign/:roundId" element={<SignPage />} />
         <Route path="invoice/:eventId" element={<InvoicePage />} />
       </Routes>
     );
@@ -123,6 +128,7 @@ export function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="settings/relays" element={<RelaySettingsWrapper />} />
           <Route path="settings/profile" element={<EditProfileWrapper />} />
+          <Route path="invoice/:eventId" element={<InvoicePage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

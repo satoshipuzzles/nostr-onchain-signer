@@ -110,9 +110,16 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
         `Pay via Nostr Onchain Signer or any Bitcoin wallet.`,
       ].filter(Boolean).join('\n');
 
+      let encryptedDmContent = dmContent;
+      if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
+        encryptedDmContent = await (window as any).nostr.nip04.encrypt(recipientHex, dmContent);
+      } else {
+        console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+      }
+
       const dmEvent = {
         kind: 4,
-        content: dmContent,
+        content: encryptedDmContent,
         tags: [['p', recipientHex]],
         created_at: Math.floor(Date.now() / 1000),
         pubkey: publicKey,
