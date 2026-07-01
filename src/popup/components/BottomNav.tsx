@@ -1,9 +1,9 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Wallet, Compass, Rss, Settings } from 'lucide-react';
+import { LayoutDashboard, Wallet, Compass, Inbox, Settings } from 'lucide-react';
 
 const tabs = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
-  { to: '/feed', icon: Rss, label: 'Feed' },
+  { to: '/signing', icon: Inbox, label: 'Signing' },
   { to: '/discover', icon: Compass, label: 'Discover' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
   { to: '/settings', icon: Settings, label: 'More' },

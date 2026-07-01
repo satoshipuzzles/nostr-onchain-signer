@@ -158,7 +158,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
   }
 
   return (
-    <div className="h-full flex flex-col p-4">
+    <div className="h-full flex flex-col p-4 overflow-y-auto pb-20">
       {/* Header */}
       <div className="page-header">
         <button onClick={onBack} className="btn-back">
@@ -180,7 +180,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
       </div>
 
       {/* Transaction form */}
-      <form onSubmit={handleSend} className="flex-1 flex flex-col space-y-3">
+      <form onSubmit={handleSend} className="flex flex-col space-y-3">
         <div>
           <label className="text-xs text-gray-400 mb-1 block">Send to</label>
           <input
@@ -235,19 +235,17 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
 
-        <div className="mt-auto pt-2">
-          <button
-            type="submit"
-            disabled={!recipient || !amountSats || sending}
-            className="btn-primary w-full flex items-center justify-center gap-2"
-          >
-            {sending ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Sending...</>
-            ) : (
-              <><Send className="w-4 h-4" /> Send to Co-Signers</>
-            )}
-          </button>
-        </div>
+        <button
+          type="submit"
+          disabled={!recipient || !amountSats || sending}
+          className="btn-primary w-full flex items-center justify-center gap-2 !mt-6"
+        >
+          {sending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Sending...</>
+          ) : (
+            <><Send className="w-4 h-4" /> Send to Co-Signers</>
+          )}
+        </button>
       </form>
     </div>
   );

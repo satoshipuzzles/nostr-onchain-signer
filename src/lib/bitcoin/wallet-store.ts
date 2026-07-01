@@ -104,7 +104,9 @@ export async function savePendingRequest(request: PendingSignatureRequest): Prom
 
 export async function loadPendingRequests(): Promise<PendingSignatureRequest[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_REQUESTS);
-  return result[STORAGE_KEY_REQUESTS] ?? [];
+  const raw = result[STORAGE_KEY_REQUESTS];
+  if (!Array.isArray(raw)) return [];
+  return raw;
 }
 
 export async function updateRequestStatus(

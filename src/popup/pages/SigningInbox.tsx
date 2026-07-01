@@ -7,9 +7,13 @@ import {
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
+import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
+import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
+import { pubkeyToNpub } from '@/lib/nostr/keys';
 import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
-  Shield, ChevronRight, AlertTriangle,
+  Shield, ChevronRight, AlertTriangle, Copy, Link, FileText,
+  Send,
 } from 'lucide-react';
 
 interface Props {
@@ -101,19 +105,30 @@ export function useSigningCount(publicKey: string): number {
 
 export function SigningInbox({ publicKey, onBack }: Props) {
   const [requests, setRequests] = useState<SigningRequest[]>([]);
+  const [outbound, setOutbound] = useState<PendingSignatureRequest[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const [loading, setLoading] = useState(true);
   const [selectedRequest, setSelectedRequest] = useState<SigningRequest | null>(null);
+  const [activeTab, setActiveTab] = useState<'incoming' | 'outbound' | 'invoices'>('incoming');
+  const [copied, setCopied] = useState('');
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     loadInbox();
+    loadOutbound();
     return () => {
       if (cleanupRef.current) {
         cleanupRef.current();
       }
     };
   }, [publicKey]);
+
+  async function loadOutbound() {
+    try {
+      const pending = await loadPendingRequests();
+      setOutbound(pending.sort((a, b) => b.createdAt - a.createdAt));
+    } catch {}
+  }
 
   async function loadInbox() {
     const relayList = await loadRelayList();
@@ -164,7 +179,14 @@ export function SigningInbox({ publicKey, onBack }: Props) {
     );
   }
 
+  function copyToClipboard(text: string, label: string) {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(''), 2000);
+  }
+
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
+  const outboundPending = outbound.filter((r) => r.status === 'pending').length;
 
   if (selectedRequest) {
     return (
@@ -189,98 +211,200 @@ export function SigningInbox({ publicKey, onBack }: Props) {
         <button onClick={onBack} className="btn-back">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1>Signing Inbox</h1>
+        <h1>Signing</h1>
         {pendingCount > 0 && (
-          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-bitcoin text-white">
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-bitcoin text-black">
             {pendingCount}
           </span>
         )}
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 px-4 pb-3">
+        <button
+          onClick={() => setActiveTab('incoming')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+            activeTab === 'incoming'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Inbox className="w-3.5 h-3.5" />
+          Incoming {pendingCount > 0 && <span className="text-[9px] bg-bitcoin text-black px-1 rounded-full">{pendingCount}</span>}
+        </button>
+        <button
+          onClick={() => setActiveTab('outbound')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+            activeTab === 'outbound'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Send className="w-3.5 h-3.5" />
+          Sent {outboundPending > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{outboundPending}</span>}
+        </button>
+        <button
+          onClick={() => setActiveTab('invoices')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+            activeTab === 'invoices'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5" />
+          Invoices
+        </button>
+      </div>
+
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {loading && (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 text-nostr animate-spin mb-3" />
-            <p className="text-sm text-gray-400">Checking for signing requests...</p>
-          </div>
+      <div className="flex-1 overflow-y-auto px-4 pb-20">
+        {activeTab === 'incoming' && (
+          <>
+            {loading && (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 text-nostr animate-spin mb-3" />
+                <p className="text-sm text-gray-400">Checking for signing requests...</p>
+              </div>
+            )}
+
+            {!loading && requests.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Inbox className="w-12 h-12 text-gray-600 mb-3" />
+                <p className="text-sm text-gray-400">No incoming requests</p>
+                <p className="text-xs text-gray-600 mt-1">
+                  Signature requests from co-signers appear here
+                </p>
+              </div>
+            )}
+
+            {requests.map((request) => {
+              const profile = profiles.get(request.senderPubkey);
+              const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
+
+              return (
+                <div key={request.eventId} className="card mb-3">
+                  <div className="flex items-start gap-3">
+                    {profile?.picture ? (
+                      <img src={profile.picture} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/30 flex items-center justify-center flex-shrink-0">
+                        <Shield className="w-4 h-4 text-white/70" />
+                      </div>
+                    )}
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-white truncate">{displayName}</span>
+                        <span className="text-[10px] text-gray-500 flex-shrink-0">
+                          {formatTimeAgo(request.createdAt)}
+                        </span>
+                      </div>
+
+                      {request.memo && (
+                        <p className="text-xs text-gray-300 mb-1.5 line-clamp-2">{request.memo}</p>
+                      )}
+
+                      <div className="flex items-center gap-3 text-[10px] text-gray-500 mb-2">
+                        <span>{request.signed_count}/{request.threshold} signed</span>
+                        <span>{request.total_signers} signers</span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={request.status} />
+
+                        {/* Copy link button */}
+                        <button
+                          onClick={() => copyToClipboard(
+                            `nostr:${request.eventId}`,
+                            request.eventId
+                          )}
+                          className="p-1 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors"
+                          title="Copy request link"
+                        >
+                          {copied === request.eventId ? <Check className="w-3 h-3 text-green-400" /> : <Link className="w-3 h-3" />}
+                        </button>
+
+                        {request.status === 'pending' && (
+                          <div className="flex items-center gap-1.5 ml-auto">
+                            <button
+                              onClick={() => handleDecline(request)}
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                            >
+                              Decline
+                            </button>
+                            <button
+                              onClick={() => handleAccept(request)}
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/30 hover:bg-bitcoin/25 transition-colors"
+                            >
+                              Review
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </>
         )}
 
-        {!loading && requests.length === 0 && (
+        {activeTab === 'outbound' && (
+          <>
+            {outbound.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Send className="w-12 h-12 text-gray-600 mb-3" />
+                <p className="text-sm text-gray-400">No outgoing requests</p>
+                <p className="text-xs text-gray-600 mt-1">
+                  When you request signatures from co-signers, they appear here
+                </p>
+              </div>
+            ) : (
+              outbound.map((req) => (
+                <div key={req.id} className="card mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-nostr/20 flex items-center justify-center flex-shrink-0">
+                      <Send className="w-4 h-4 text-nostr" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{req.memo || 'Signature request'}</p>
+                      <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                        <span>{req.amount ? `${req.amount.toLocaleString()} sats` : ''}</span>
+                        <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                        req.status === 'pending' ? 'bg-bitcoin/15 text-bitcoin' :
+                        req.status === 'signed' ? 'bg-green-500/15 text-green-400' :
+                        'bg-gray-500/15 text-gray-400'
+                      }`}>
+                        {req.status}
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(req.roundId, req.id)}
+                        className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors"
+                        title="Copy round ID"
+                      >
+                        {copied === req.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </>
+        )}
+
+        {activeTab === 'invoices' && (
           <div className="flex flex-col items-center justify-center py-12">
-            <Inbox className="w-12 h-12 text-gray-600 mb-3" />
-            <p className="text-sm text-gray-400">No signing requests</p>
-            <p className="text-xs text-gray-600 mt-1">
-              Requests from multi-sig co-signers will appear here
+            <FileText className="w-12 h-12 text-gray-600 mb-3" />
+            <p className="text-sm text-gray-400">No invoices yet</p>
+            <p className="text-xs text-gray-600 mt-1 text-center max-w-[240px]">
+              On-chain invoices (kind 9733) from others requesting payment will appear here
             </p>
           </div>
         )}
-
-        {requests.map((request) => {
-          const profile = profiles.get(request.senderPubkey);
-          const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
-
-          return (
-            <div key={request.eventId} className="card mb-3">
-              <div className="flex items-start gap-3">
-                {/* Avatar */}
-                {profile?.picture ? (
-                  <img
-                    src={profile.picture}
-                    alt=""
-                    className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0"
-                  />
-                ) : (
-                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/30 flex items-center justify-center flex-shrink-0">
-                    <Shield className="w-4 h-4 text-white/70" />
-                  </div>
-                )}
-
-                <div className="flex-1 min-w-0">
-                  {/* Sender + Time */}
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-medium text-white truncate">{displayName}</span>
-                    <span className="text-[10px] text-gray-500 flex-shrink-0">
-                      {formatTimeAgo(request.createdAt)}
-                    </span>
-                  </div>
-
-                  {/* Memo */}
-                  {request.memo && (
-                    <p className="text-xs text-gray-300 mb-1.5 line-clamp-2">{request.memo}</p>
-                  )}
-
-                  {/* Metadata */}
-                  <div className="flex items-center gap-3 text-[10px] text-gray-500 mb-2">
-                    <span>{request.signed_count}/{request.threshold} signed</span>
-                    <span>{request.total_signers} signers</span>
-                  </div>
-
-                  {/* Status + Actions */}
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={request.status} />
-                    {request.status === 'pending' && (
-                      <div className="flex items-center gap-1.5 ml-auto">
-                        <button
-                          onClick={() => handleDecline(request)}
-                          className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
-                        >
-                          Decline
-                        </button>
-                        <button
-                          onClick={() => handleAccept(request)}
-                          className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/30 hover:bg-bitcoin/25 transition-colors"
-                        >
-                          Review
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
