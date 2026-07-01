@@ -6,7 +6,7 @@ import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { uploadFile, validateFile } from '@/lib/nostr/upload';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { buildPsbt, downloadPsbtFile, downloadPsbtText, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
-import { encodeNostrOpReturn } from '@/lib/bitcoin/opreturn';
+import { encodeNostrOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
 
 interface Props {
   publicKey: string;
@@ -36,6 +36,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [uploading, setUploading] = useState(false);
   const [notePublished, setNotePublished] = useState(false);
   const [copied, setCopied] = useState('');
+  const [invoiceEventId, setInvoiceEventId] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const address = pubkeyToTaprootAddress(publicKey);
@@ -125,7 +126,12 @@ export function SendTx({ publicKey, onBack }: Props) {
         opReturnData = opReturn.script.slice(2);
       }
 
-      // Build the PSBT
+      // If paying an invoice, use the invoice OP_RETURN instead (takes precedence if no note)
+      if (!opReturnData && invoiceEventId.trim()) {
+        const invoiceOpReturn = encodeInvoiceOpReturn(invoiceEventId.trim());
+        opReturnData = invoiceOpReturn.script.slice(2);
+      }
+
       const result = await buildPsbt({
         fromAddress: address,
         toAddress: recipient,
@@ -407,6 +413,20 @@ export function SendTx({ publicKey, onBack }: Props) {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Optional invoice reference */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Paying Invoice (optional, event ID)</label>
+          <input
+            value={invoiceEventId}
+            onChange={(e) => setInvoiceEventId(e.target.value)}
+            placeholder="Paste a kind 9733 invoice event ID..."
+            className="input-field text-sm font-mono"
+          />
+          <p className="text-[10px] text-gray-600 mt-1">
+            Links this payment to an onchain invoice via OP_RETURN
+          </p>
         </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}

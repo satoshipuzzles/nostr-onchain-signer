@@ -174,3 +174,65 @@ export function remainingOpReturnBytes(includeContentHash: boolean): number {
   const contentHashSize = includeContentHash ? 20 : 0;
   return MAX_OP_RETURN - baseSize - contentHashSize;
 }
+
+// "NINV" protocol identifier for invoice OP_RETURN
+const INVOICE_PROTOCOL_ID = new Uint8Array([0x4e, 0x49, 0x4e, 0x56]);
+
+export interface InvoiceOpReturnOutput {
+  script: Uint8Array;
+  scriptHex: string;
+  size: number;
+  invoiceEventId: string;
+}
+
+/**
+ * Encode an invoice event reference into an OP_RETURN script.
+ * Proves on-chain which Nostr invoice (kind 9733) was settled.
+ *
+ * Layout:
+ *   [OP_RETURN(1)] [OP_PUSHDATA(1)] [NINV(4)] [version(1)] [SHA256(invoiceEventId)(32)]
+ *   Total: 1 + 1 + 4 + 1 + 32 = 39 bytes
+ */
+export function encodeInvoiceOpReturn(invoiceEventId: string): InvoiceOpReturnOutput {
+  const eventIdBytes = new TextEncoder().encode(invoiceEventId);
+  const hash = sha256(eventIdBytes);
+
+  const payload = concatBytes(
+    INVOICE_PROTOCOL_ID,
+    new Uint8Array([PROTOCOL_VERSION]),
+    hash
+  );
+
+  const script = concatBytes(
+    new Uint8Array([0x6a]),
+    new Uint8Array([payload.length]),
+    payload
+  );
+
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    invoiceEventId,
+  };
+}
+
+/**
+ * Decode an invoice OP_RETURN to check for the NINV protocol marker.
+ * Returns the stored hash (cannot recover the original event ID).
+ */
+export function decodeInvoiceOpReturn(scriptHex: string): { hash: string } | null {
+  const script = hexToBytes(scriptHex);
+  if (script.length < 39) return null;
+  if (script[0] !== 0x6a) return null;
+
+  const payload = script.slice(2);
+  if (
+    payload[0] !== 0x4e || payload[1] !== 0x49 ||
+    payload[2] !== 0x4e || payload[3] !== 0x56
+  ) return null;
+
+  if (payload[4] !== PROTOCOL_VERSION) return null;
+
+  return { hash: bytesToHex(payload.slice(5, 37)) };
+}

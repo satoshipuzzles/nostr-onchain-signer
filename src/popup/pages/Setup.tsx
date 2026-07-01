@@ -158,44 +158,137 @@ export function Setup({ onCreated }: Props) {
     }
   }
 
-  // ─── CHOOSE STEP ────────────────────────────────────────────
+  // ─── CHOOSE STEP (Landing Page) ─────────────────────────────
 
   if (step === 'choose') {
     return (
-      <div className="h-full flex flex-col items-center justify-center p-6">
-        <div className="w-16 h-16 rounded-full bg-gradient-to-br from-bitcoin to-nostr flex items-center justify-center mb-6">
-          <Shield className="w-8 h-8 text-white" />
+      <div className="h-full overflow-y-auto">
+        {/* Hero Section */}
+        <div className="flex flex-col items-center justify-center p-6 pt-12 pb-8">
+          <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center mb-5 shadow-lg">
+            <Shield className="w-9 h-9 text-black" />
+          </div>
+
+          <h1 className="text-2xl font-bold mb-2 text-center">Nostr Onchain</h1>
+          <p className="text-gray-400 text-sm mb-1 text-center">
+            Social Multi-Sig Bitcoin Signer
+          </p>
+          <p className="text-gray-500 text-xs text-center max-w-[280px] mb-8">
+            Create multi-sig wallets from your Nostr network. Sign Bitcoin transactions and Nostr events from one place.
+          </p>
+
+          {error && <p className="text-red-400 text-sm mb-4 text-center">{error}</p>}
+
+          {/* Auth Actions */}
+          <div className="w-full space-y-3 mb-8">
+            {typeof (window as any).nostr !== 'undefined' && (
+              <button onClick={handleNip07Login} disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2">
+                <Globe className="w-4 h-4" />
+                {loading ? 'Connecting...' : 'Login with NIP-07 Extension'}
+              </button>
+            )}
+            <button onClick={handleGenerate} className="btn-primary w-full flex items-center justify-center gap-2">
+              <Key className="w-4 h-4" />
+              Generate New Key
+            </button>
+            <button onClick={handleImport} className="btn-secondary w-full flex items-center justify-center gap-2">
+              <Import className="w-4 h-4" />
+              Import nsec
+            </button>
+            <button
+              onClick={() => setStep('import-file')}
+              className="btn-secondary w-full flex items-center justify-center gap-2"
+            >
+              <FileUp className="w-4 h-4" />
+              Restore from Backup
+            </button>
+          </div>
         </div>
 
-        <h1 className="text-xl font-bold mb-2">Nostr Onchain Signer</h1>
-        <p className="text-gray-400 text-sm mb-8 text-center">
-          Dual signer for Bitcoin &amp; Nostr
-        </p>
+        {/* Features Section */}
+        <div className="px-6 pb-6">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-3">How it works</p>
+          <div className="space-y-3 mb-8">
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <Shield className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Social Multi-Sig</p>
+                <p className="text-xs text-gray-500">Create Taproot multi-sig wallets using npubs from your Nostr contacts</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <Key className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Dual Signer</p>
+                <p className="text-xs text-gray-500">NIP-07 Nostr signer + Bitcoin transaction signing in one extension</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 p-3 rounded-xl bg-white/5 border border-white/5">
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <Globe className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">On-Chain Invoices</p>
+                <p className="text-xs text-gray-500">Request Bitcoin payments via Nostr with OP_RETURN proof of settlement</p>
+              </div>
+            </div>
+          </div>
 
-        {error && <p className="text-red-400 text-sm mb-4 text-center">{error}</p>}
+          {/* Download / Platform Section */}
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-3">Get it</p>
+          <div className="space-y-2 mb-8">
+            <a
+              href="https://github.com/satoshipuzzles/nostr-onchain-signer"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 016.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.93.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58C20.56 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium">GitHub</p>
+                <p className="text-[10px] text-gray-500">Source code &amp; extension download</p>
+              </div>
+            </a>
+            <a
+              href="https://nostr-onchain-signer.vercel.app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+            >
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <Globe className="w-4 h-4 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium">Web App / PWA</p>
+                <p className="text-[10px] text-gray-500">Use on mobile — add to home screen</p>
+              </div>
+            </a>
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/5 border border-white/10 opacity-60">
+              <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0">
+                <Import className="w-4 h-4 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium">Chrome Extension</p>
+                <p className="text-[10px] text-gray-500">Load unpacked from GitHub dist/ folder</p>
+              </div>
+            </div>
+          </div>
 
-        <div className="w-full space-y-3">
-          {typeof (window as any).nostr !== 'undefined' && (
-            <button onClick={handleNip07Login} disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2">
-              <Globe className="w-4 h-4" />
-              {loading ? 'Connecting...' : 'Login with NIP-07 Extension'}
-            </button>
-          )}
-          <button onClick={handleGenerate} className="btn-primary w-full flex items-center justify-center gap-2">
-            <Key className="w-4 h-4" />
-            Generate New Key
-          </button>
-          <button onClick={handleImport} className="btn-secondary w-full flex items-center justify-center gap-2">
-            <Import className="w-4 h-4" />
-            Import nsec
-          </button>
-          <button
-            onClick={() => setStep('import-file')}
-            className="btn-secondary w-full flex items-center justify-center gap-2"
-          >
-            <FileUp className="w-4 h-4" />
-            Restore from Backup File
-          </button>
+          {/* Footer */}
+          <div className="text-center pb-6">
+            <p className="text-[10px] text-gray-600">
+              Built with Nostr &bull; Taproot &bull; BIP-342 Tapscript
+            </p>
+            <p className="text-[10px] text-gray-700 mt-1">
+              NIP-07 &bull; NIP-04 &bull; Custom Kinds 9733, 9800-9802
+            </p>
+          </div>
         </div>
       </div>
     );
