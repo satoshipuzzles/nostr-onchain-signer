@@ -108,6 +108,23 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
       await loadFromCache(activityWindow);
       return;
     }
+
+    // Auto-trigger global search for npub/hex pastes
+    if (query.startsWith('npub1') && query.length > 60) {
+      setSearching(true);
+      try {
+        const results = await searchProfilesNip50(query.trim());
+        setProfiles(results.map((p) => ({
+          profile: p,
+          lastSeen: Math.floor(Date.now() / 1000),
+          fetchedAt: Date.now(),
+        })).filter((p) => p.profile.pubkey !== publicKey));
+      } catch {} finally {
+        setSearching(false);
+      }
+      return;
+    }
+
     const results = await searchLocalCache(query);
     setProfiles(results.map((p) => ({
       profile: p,
@@ -217,7 +234,9 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
 
       {searchQuery && (
         <p className="text-[10px] text-gray-500 mb-2 px-1">
-          Typing = local cache filter • Enter/button = global NIP-50 search across relays
+          {searchQuery.startsWith('npub1')
+            ? 'Direct npub lookup — will search multiple relays'
+            : 'Typing = local filter • Enter = global search • Paste npub for direct lookup'}
         </p>
       )}
 

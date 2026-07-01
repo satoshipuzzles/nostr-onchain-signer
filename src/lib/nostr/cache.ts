@@ -110,6 +110,7 @@ export async function updateLastSeen(pubkeys: Map<string, number>): Promise<void
 
 /**
  * Get all cached profiles filtered by activity window.
+ * Ranks profiles with pictures and metadata higher.
  */
 export async function getAllCachedProfiles(window: ActivityWindow = 'all'): Promise<CachedProfile[]> {
   const cache = await loadCache();
@@ -121,7 +122,13 @@ export async function getAllCachedProfiles(window: ActivityWindow = 'all'): Prom
       if (maxAge === Infinity) return true;
       return now - entry.lastSeen <= maxAge;
     })
-    .sort((a, b) => b.lastSeen - a.lastSeen);
+    .sort((a, b) => {
+      // Rank: profiles with pictures first, then by recency
+      const aHasPic = a.profile.picture ? 1 : 0;
+      const bHasPic = b.profile.picture ? 1 : 0;
+      if (aHasPic !== bHasPic) return bHasPic - aHasPic;
+      return b.lastSeen - a.lastSeen;
+    });
 }
 
 export async function getCacheStats(): Promise<{
@@ -425,18 +432,65 @@ export async function fullDiscoverySync(
 
 /**
  * Search profiles using NIP-50 (relay.nostr.band).
- * Also searches nostr.wine and purplepag.es for better coverage.
+ * For npub/hex queries, does a direct author lookup on multiple relays.
+ * Ranks profiles with pictures higher.
  */
 export async function searchProfilesNip50(
   query: string,
   limit = 30
 ): Promise<ProfileMetadata[]> {
+  const allResults = new Map<string, ProfileMetadata>();
+
+  // Direct npub/hex lookup — highest priority, always works
+  if (query.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(query)) {
+    let hex = query;
+    if (query.startsWith('npub1')) {
+      try {
+        hex = npubToPubkey(query);
+      } catch { return []; }
+    }
+    hex = hex.toLowerCase();
+
+    // Query multiple relays in parallel for this specific pubkey
+    const LOOKUP_RELAYS = [
+      'wss://relay.damus.io',
+      'wss://purplepag.es',
+      'wss://relay.nostr.band',
+      'wss://nos.lol',
+      'wss://relay.snort.social',
+    ];
+
+    const lookupPromises = LOOKUP_RELAYS.map((relay) =>
+      fetchProfileBatchByAuthors(relay, [hex])
+    );
+
+    const results = await Promise.allSettled(lookupPromises);
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        for (const [pk, profile] of result.value) {
+          if (!allResults.has(pk) || (profile.picture && !allResults.get(pk)?.picture)) {
+            allResults.set(pk, profile);
+          }
+        }
+      }
+    }
+
+    // If we still didn't find a profile, return a minimal entry
+    if (!allResults.has(hex)) {
+      allResults.set(hex, { pubkey: hex });
+    }
+
+    const resultArray = Array.from(allResults.values());
+    if (resultArray.length > 0) await cacheProfiles(allResults);
+    return resultArray;
+  }
+
+  // NIP-50 text search on search-capable relays
   const SEARCH_RELAYS = [
     'wss://relay.nostr.band',
     'wss://nostr.wine',
+    'wss://purplepag.es',
   ];
-
-  const allResults = new Map<string, ProfileMetadata>();
 
   const promises = SEARCH_RELAYS.map((relay) =>
     searchOnRelay(relay, query, limit)
@@ -454,24 +508,6 @@ export async function searchProfilesNip50(
     }
   }
 
-  // Also try direct npub/hex lookup
-  if (query.startsWith('npub1') || /^[0-9a-f]{64}$/.test(query)) {
-    let hex = query;
-    if (query.startsWith('npub1')) {
-      try {
-        hex = npubToPubkey(query);
-      } catch {}
-    }
-    if (/^[0-9a-f]{64}$/.test(hex) && !allResults.has(hex)) {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const fetched = await fetchProfileBatchByAuthors(relays[0] || 'wss://relay.damus.io', [hex]);
-      for (const [pk, profile] of fetched) {
-        allResults.set(pk, profile);
-      }
-    }
-  }
-
   const resultArray = Array.from(allResults.values());
 
   // Cache results
@@ -483,6 +519,13 @@ export async function searchProfilesNip50(
   if (resultArray.length === 0) {
     return searchLocalCache(query);
   }
+
+  // Rank: profiles with pictures first, then by name existence
+  resultArray.sort((a, b) => {
+    const aScore = (a.picture ? 10 : 0) + (a.displayName || a.name ? 5 : 0) + (a.nip05 ? 3 : 0);
+    const bScore = (b.picture ? 10 : 0) + (b.displayName || b.name ? 5 : 0) + (b.nip05 ? 3 : 0);
+    return bScore - aScore;
+  });
 
   return resultArray;
 }
@@ -543,11 +586,12 @@ function searchOnRelay(relayUrl: string, query: string, limit: number): Promise<
 
 /**
  * Search the local cache by name, displayName, nip05, npub, or about.
+ * Ranks profiles with pictures higher.
  */
 export async function searchLocalCache(query: string): Promise<ProfileMetadata[]> {
   const all = await getAllCachedProfiles('all');
   const q = query.toLowerCase();
-  return all
+  const matches = all
     .filter((entry) => {
       const p = entry.profile;
       return (
@@ -559,6 +603,15 @@ export async function searchLocalCache(query: string): Promise<ProfileMetadata[]
       );
     })
     .map((entry) => entry.profile);
+
+  // Rank: pictures first, then name match quality
+  matches.sort((a, b) => {
+    const aScore = (a.picture ? 10 : 0) + (a.displayName || a.name ? 5 : 0) + (a.nip05 ? 3 : 0);
+    const bScore = (b.picture ? 10 : 0) + (b.displayName || b.name ? 5 : 0) + (b.nip05 ? 3 : 0);
+    return bScore - aScore;
+  });
+
+  return matches;
 }
 
 function sleep(ms: number): Promise<void> {

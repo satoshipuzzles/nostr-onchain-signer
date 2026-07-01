@@ -1,7 +1,9 @@
 /**
  * Background service worker for the extension.
- * Manages the key vault, handles NIP-07 requests, and coordinates
- * Bitcoin transaction signing.
+ *
+ * CRITICAL: MV3 service workers are ephemeral — Chrome kills them after
+ * ~30s of inactivity. We persist the decrypted vault in chrome.storage.session
+ * which survives worker restarts but clears on browser close.
  */
 
 import { decryptVault, loadVault, VaultData } from '@/lib/crypto/vault';
@@ -9,21 +11,44 @@ import { signEvent, computeEventId, type UnsignedEvent, type SignedEvent } from 
 import { keyPairFromPrivateKey } from '@/lib/nostr/keys';
 import type { ExtensionMessage, ExtensionResponse } from '@/shared/messages';
 
-let unlockedKeys: VaultData[] | null = null;
-let lockTimer: ReturnType<typeof setTimeout> | null = null;
-const AUTO_LOCK_MS = 15 * 60 * 1000; // 15 minutes
+const SESSION_KEY = 'unlocked_session';
+const SESSION_INDEX_KEY = 'active_account_index';
 
-function resetLockTimer() {
-  if (lockTimer) clearTimeout(lockTimer);
-  lockTimer = setTimeout(() => {
-    unlockedKeys = null;
-  }, AUTO_LOCK_MS);
+async function getSession(): Promise<VaultData[] | null> {
+  try {
+    const result = await chrome.storage.session.get(SESSION_KEY);
+    return result[SESSION_KEY] ?? null;
+  } catch {
+    return null;
+  }
 }
 
-function getActiveKey(): VaultData | null {
-  if (!unlockedKeys || unlockedKeys.length === 0) return null;
-  resetLockTimer();
-  return unlockedKeys[0];
+async function setSession(data: VaultData[] | null): Promise<void> {
+  if (data) {
+    await chrome.storage.session.set({ [SESSION_KEY]: data });
+  } else {
+    await chrome.storage.session.remove(SESSION_KEY);
+  }
+}
+
+async function getActiveIndex(): Promise<number> {
+  try {
+    const result = await chrome.storage.session.get(SESSION_INDEX_KEY);
+    return result[SESSION_INDEX_KEY] ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function setActiveIndex(index: number): Promise<void> {
+  await chrome.storage.session.set({ [SESSION_INDEX_KEY]: index });
+}
+
+async function getActiveKey(): Promise<VaultData | null> {
+  const session = await getSession();
+  if (!session || session.length === 0) return null;
+  const idx = await getActiveIndex();
+  return session[Math.min(idx, session.length - 1)];
 }
 
 chrome.runtime.onMessage.addListener(
@@ -31,7 +56,7 @@ chrome.runtime.onMessage.addListener(
     handleMessage(message)
       .then((response) => sendResponse(response))
       .catch((err) => sendResponse({ id: message.id, error: err.message }));
-    return true; // Keep channel open for async response
+    return true;
   }
 );
 
@@ -43,12 +68,14 @@ async function handleMessage(
   switch (type) {
     case 'vault:status': {
       const vault = await loadVault();
+      const session = await getSession();
+      const key = await getActiveKey();
       return {
         id,
         result: {
           exists: vault !== null,
-          unlocked: unlockedKeys !== null,
-          publicKey: getActiveKey()?.publicKeyHex,
+          unlocked: session !== null,
+          publicKey: key?.publicKeyHex,
         },
       };
     }
@@ -58,11 +85,14 @@ async function handleMessage(
       const vault = await loadVault();
       if (!vault) return { id, error: 'No vault found' };
       try {
-        unlockedKeys = await decryptVault(vault, password);
-        resetLockTimer();
+        const keys = await decryptVault(vault, password);
+        await setSession(keys);
+        // Restore previous active index
+        const idx = await getActiveIndex();
+        const activeKey = keys[Math.min(idx, keys.length - 1)];
         return {
           id,
-          result: { publicKey: unlockedKeys[0]?.publicKeyHex },
+          result: { publicKey: activeKey?.publicKeyHex },
         };
       } catch {
         return { id, error: 'Invalid password' };
@@ -70,31 +100,28 @@ async function handleMessage(
     }
 
     case 'vault:lock': {
-      unlockedKeys = null;
-      if (lockTimer) clearTimeout(lockTimer);
+      await setSession(null);
       return { id, result: { locked: true } };
     }
 
     case 'vault:switchAccount': {
       const { index } = payload as { index: number };
-      if (!unlockedKeys || index >= unlockedKeys.length) {
+      const session = await getSession();
+      if (!session || index >= session.length) {
         return { id, error: 'Invalid account index or vault locked' };
       }
-      // Rotate the array so the selected account is first
-      const selected = unlockedKeys[index];
-      unlockedKeys = [selected, ...unlockedKeys.filter((_, i) => i !== index)];
-      resetLockTimer();
-      return { id, result: { publicKey: selected.publicKeyHex } };
+      await setActiveIndex(index);
+      return { id, result: { publicKey: session[index].publicKeyHex } };
     }
 
     case 'nip07:getPublicKey': {
-      const key = getActiveKey();
+      const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
       return { id, result: key.publicKeyHex };
     }
 
     case 'nip07:signEvent': {
-      const key = getActiveKey();
+      const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
 
       const { event } = payload as { event: Omit<UnsignedEvent, 'pubkey'> };
@@ -113,16 +140,15 @@ async function handleMessage(
     }
 
     case 'btc:getAddress': {
-      const key = getActiveKey();
+      const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
-      // Import dynamically to keep background bundle smaller
       const { pubkeyToTaprootAddress } = await import('@/lib/bitcoin/address');
       const address = pubkeyToTaprootAddress(key.publicKeyHex);
       return { id, result: address };
     }
 
     case 'btc:getMultisigAddress': {
-      const key = getActiveKey();
+      const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
       const { pubkeys, threshold, network } = payload as {
         pubkeys: string[];
@@ -139,7 +165,7 @@ async function handleMessage(
     }
 
     case 'dual:signAndBroadcast': {
-      const key = getActiveKey();
+      const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
 
       const { noteContent, recipientAddress, amountSats } = payload as {
@@ -150,7 +176,6 @@ async function handleMessage(
         feeRate: number;
       };
 
-      // 1. Create and sign the Nostr note
       const noteEvent: UnsignedEvent = {
         kind: 1,
         content: noteContent,
@@ -160,7 +185,6 @@ async function handleMessage(
       };
       const signedNote = signEvent(noteEvent, key.privateKeyHex);
 
-      // 2. Create OP_RETURN with the event ID
       const { encodeNostrOpReturn } = await import('@/lib/bitcoin/opreturn');
       const opReturn = encodeNostrOpReturn({
         eventId: signedNote.id,
@@ -168,7 +192,6 @@ async function handleMessage(
         content: noteContent,
       });
 
-      // 3. Return both for the UI to finalize
       return {
         id,
         result: {
