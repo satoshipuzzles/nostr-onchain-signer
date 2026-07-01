@@ -242,6 +242,15 @@ function WalletDetail({
         </div>
       </div>
 
+      {/* Spend action (primary) */}
+      <button
+        onClick={onRequestSignature}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Send className="w-4 h-4" />
+        Spend from this Wallet
+      </button>
+
       {/* Key Holders */}
       <h2 className="text-xs text-gray-500 uppercase tracking-wider mb-2">Key Holders</h2>
       <div className="space-y-1 mb-4">

@@ -44,8 +44,20 @@ export function Leaderboard() {
     }
 
     try {
-      const res = await fetch(CORNY_CHAT_API);
-      if (!res.ok) throw new Error('Failed to fetch active users');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      let res: Response;
+      try {
+        res = await fetch(CORNY_CHAT_API, { signal: controller.signal });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === 'AbortError') {
+          throw new Error('Request timed out — CornChat API may be unavailable');
+        }
+        throw new Error('Network error — unable to reach CornChat API');
+      }
+      clearTimeout(timeout);
+      if (!res.ok) throw new Error(`CornChat API returned ${res.status}`);
       const data = await res.json();
 
       if (!data?.users || !Array.isArray(data.users)) {
@@ -205,7 +217,12 @@ export function Leaderboard() {
         </div>
       )}
       {error && (
-        <div className="text-xs text-red-400 mb-3">{error}</div>
+        <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-3 mb-3">
+          <p className="text-xs text-red-400">{error}</p>
+          <p className="text-[10px] text-gray-500 mt-1">
+            Try refreshing or search for users directly by npub.
+          </p>
+        </div>
       )}
 
       {/* Leaderboard list */}

@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { createMessageId } from '@/shared/messages';
 import { createOnchainInvoice } from '@/lib/nostr/kinds';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { npubToPubkey } from '@/lib/nostr/keys';
-import { ArrowLeft, Loader2, Send } from 'lucide-react';
+import { ArrowLeft, Loader2, Send, ImageIcon, X } from 'lucide-react';
+import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
+
+const INVOICE_BASE_URL = 'https://nostr-onchain-signer.vercel.app/invoice';
 
 interface Props {
   publicKey: string;
@@ -17,8 +20,29 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
   const [address, setAddress] = useState(() => pubkeyToTaprootAddress(publicKey));
   const [amountSats, setAmountSats] = useState('');
   const [memo, setMemo] = useState('');
+  const [password, setPassword] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setError('');
+    try {
+      const url = await uploadImageToNostrBuild(file);
+      setImageUrl(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Image upload failed');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -40,16 +64,27 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
       }
 
       const amount = amountSats ? parseInt(amountSats, 10) : undefined;
+      const memoWithImage = imageUrl
+        ? `${memo.trim()}${memo.trim() ? '\n' : ''}${imageUrl}`
+        : memo.trim() || undefined;
+
       const invoiceEvent = createOnchainInvoice(
         {
           address: address.trim(),
           amount_sats: amount,
-          memo: memo.trim() || undefined,
+          memo: memoWithImage,
           expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
         },
         recipientHex,
         publicKey
       );
+
+      if (password.trim()) {
+        invoiceEvent.tags.push(['password', password.trim()]);
+      }
+      if (imageUrl) {
+        invoiceEvent.tags.push(['image', imageUrl]);
+      }
 
       const signResponse = await chrome.runtime.sendMessage({
         type: 'nip07:signEvent',
@@ -60,12 +95,17 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
 
       await publishEvent(signResponse.result);
 
+      const eventId = signResponse.result.id as string;
+      const invoiceLink = `${INVOICE_BASE_URL}/${eventId}`;
+
       const dmContent = [
         `📄 Onchain Invoice`,
         ``,
         `Address: ${address.trim()}`,
         amount ? `Amount: ${amount.toLocaleString()} sats` : `Amount: Any`,
         memo.trim() ? `Memo: ${memo.trim()}` : '',
+        ``,
+        `View & Pay: ${invoiceLink}`,
         ``,
         `Pay via Nostr Onchain Signer or any Bitcoin wallet.`,
       ].filter(Boolean).join('\n');
@@ -138,13 +178,45 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Memo (optional)</label>
+          <label className="text-xs text-gray-400 mb-1 flex items-center justify-between">
+            <span>Memo (optional)</span>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="text-[10px] text-nostr hover:underline flex items-center gap-1"
+            >
+              {uploading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <ImageIcon className="w-2.5 h-2.5" />}
+              Attach Image
+            </button>
+          </label>
           <textarea
             value={memo}
             onChange={(e) => setMemo(e.target.value)}
             placeholder="What is this invoice for?"
             className="input-field h-16 resize-none text-sm"
           />
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+          {imageUrl && (
+            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-surface-700 mt-2">
+              <img src={imageUrl} alt="" className="w-full h-full object-cover" />
+              <button type="button" onClick={() => setImageUrl('')} className="absolute top-0 right-0 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center">
+                <X className="w-2 h-2 text-white" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Password Protection (optional)</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Require password to view address"
+            className="input-field text-sm"
+          />
+          <p className="text-[10px] text-gray-600 mt-1">If set, viewers must enter this password to see the Bitcoin address</p>
         </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}

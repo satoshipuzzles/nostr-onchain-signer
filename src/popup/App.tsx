@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Landing } from './pages/Landing';
 import { Unlock } from './pages/Unlock';
 import { Setup } from './pages/Setup';
@@ -20,6 +20,7 @@ import { WalletViewWrapper } from './pages/WalletViewWrapper';
 import { RelaySettingsWrapper } from './pages/RelaySettingsWrapper';
 import { EditProfileWrapper } from './pages/EditProfileWrapper';
 import { Settings } from './pages/Settings';
+import { InvoicePage } from './pages/InvoicePage';
 import { AuthProvider } from './context/AuthContext';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
@@ -27,6 +28,7 @@ import { createMessageId } from '@/shared/messages';
 type AppStatus = 'loading' | 'landing' | 'setup' | 'unlock' | 'authenticated';
 
 export function App() {
+  const location = useLocation();
   const [status, setStatus] = useState<AppStatus>('loading');
   const [credentials, setCredentials] = useState<{ publicKey: string; password: string }>({ publicKey: '', password: '' });
 
@@ -70,6 +72,15 @@ export function App() {
   function handleCreated(publicKey: string, password: string) {
     setCredentials({ publicKey, password });
     setStatus('authenticated');
+  }
+
+  // Public invoice route — accessible without authentication
+  if (location.pathname.startsWith('/invoice/')) {
+    return (
+      <Routes>
+        <Route path="invoice/:eventId" element={<InvoicePage />} />
+      </Routes>
+    );
   }
 
   if (status === 'loading') {

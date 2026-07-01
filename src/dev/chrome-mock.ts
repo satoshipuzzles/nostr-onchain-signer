@@ -121,8 +121,9 @@ const mockChrome = {
           const key = session[idx];
           const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
 
-          // If no private key (NIP-07 login), delegate to browser extension
-          if (!key.privateKeyHex) {
+          // If no valid private key (NIP-07 login or corrupted), delegate to browser extension
+          const hasValidPrivateKey = typeof key.privateKeyHex === 'string' && key.privateKeyHex.length === 64 && /^[0-9a-f]+$/i.test(key.privateKeyHex);
+          if (!hasValidPrivateKey) {
             if (typeof (window as any).nostr?.signEvent === 'function') {
               try {
                 const signed = await (window as any).nostr.signEvent({ ...event, pubkey: key.publicKeyHex });
@@ -131,7 +132,7 @@ const mockChrome = {
                 return { id, error: `NIP-07 sign failed: ${err?.message || err}` };
               }
             }
-            return { id, error: 'No private key and no NIP-07 extension available' };
+            return { id, error: 'No private key and no NIP-07 extension available. Install a Nostr signer extension.' };
           }
 
           const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
@@ -162,7 +163,8 @@ const mockChrome = {
           };
 
           let signedNote;
-          if (!key.privateKeyHex) {
+          const hasValidKey = typeof key.privateKeyHex === 'string' && key.privateKeyHex.length === 64 && /^[0-9a-f]+$/i.test(key.privateKeyHex);
+          if (!hasValidKey) {
             if (typeof (window as any).nostr?.signEvent === 'function') {
               signedNote = await (window as any).nostr.signEvent(noteEvent);
             } else {

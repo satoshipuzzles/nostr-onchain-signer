@@ -64,7 +64,7 @@ async function fetchBlockHeight(): Promise<number> {
 }
 
 async function fetchBtcPrice(): Promise<number> {
-  // Use mempool.space price endpoint (no CORS issues unlike CoinGecko)
+  // Primary: mempool.space price endpoint
   try {
     const res = await fetch(`${MEMPOOL_API}/v1/prices`);
     if (res.ok) {
