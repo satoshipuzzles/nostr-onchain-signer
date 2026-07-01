@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#0f0f14"/>
+  <circle cx="64" cy="64" r="58" stroke="url(#grad)" stroke-width="2.5" fill="none"/>
+  
+  <!-- Bitcoin key shape (stylized) -->
+  <path d="M44 80 L64 40 L84 80" stroke="#F7931A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  
+  <!-- Nostr connection dots (social graph) -->
+  <circle cx="44" cy="80" r="5" fill="#8B5CF6"/>
+  <circle cx="84" cy="80" r="5" fill="#8B5CF6"/>
+  <circle cx="64" cy="40" r="6" fill="#F7931A"/>
+  
+  <!-- Multi-sig connection lines -->
+  <line x1="44" y1="80" x2="84" y2="80" stroke="#8B5CF6" stroke-width="2" stroke-dasharray="3 3" opacity="0.6"/>
+  
+  <!-- Lock/shield hint -->
+  <path d="M56 62 L64 56 L72 62 L72 72 L56 72 Z" stroke="#F7931A" stroke-width="2" fill="none" opacity="0.7"/>
+  
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="128" y2="128">
+      <stop offset="0%" stop-color="#F7931A"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+</svg>

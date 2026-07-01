@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nostr Onchain Signer — Social Multi-Sig Bitcoin Wallet</title>
+  <meta name="description" content="A dual-purpose NIP-07 Nostr signer + Bitcoin multi-sig wallet. Create social multi-sig wallets from your Nostr following list. Embed Nostr notes on-chain." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23F7931A'/><text x='50' y='62' font-size='50' font-weight='bold' text-anchor='middle' fill='white'>N</text></svg>" />
+  <style>
+    :root {
+      --bitcoin: #F7931A;
+      --nostr: #8B5CF6;
+      --bg: #0a0a0f;
+      --surface: #111118;
+      --surface-2: #1a1a24;
+      --border: #2a2a36;
+      --text: #e4e4ec;
+      --text-muted: #8888a0;
+      --gradient: linear-gradient(135deg, var(--bitcoin) 0%, var(--nostr) 100%);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+    /* Nav */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(10, 10, 15, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+    nav .container {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .logo { font-size: 18px; font-weight: 700; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .nav-links { display: flex; gap: 24px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 14px; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+
+    /* Hero */
+    .hero {
+      padding: 140px 0 80px;
+      text-align: center;
+      position: relative;
+    }
+    .hero::before {
+      content: '';
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(247,147,26,0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero h1 {
+      font-size: clamp(36px, 5vw, 56px);
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 20px;
+    }
+    .hero h1 .highlight { background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero p {
+      font-size: 18px;
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 40px;
+    }
+    .hero-buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 14px 28px;
+      border-radius: 12px;
+      font-size: 15px; font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer; border: none;
+    }
+    .btn-primary { background: var(--bitcoin); color: white; }
+    .btn-primary:hover { background: #e8850f; transform: translateY(-1px); box-shadow: 0 8px 24px rgba(247,147,26,0.3); }
+    .btn-secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--bitcoin); background: var(--surface); }
+    .btn-nostr { background: var(--nostr); color: white; }
+    .btn-nostr:hover { background: #7c3aed; }
+
+    /* Features */
+    .features { padding: 80px 0; }
+    .section-title { text-align: center; font-size: 32px; font-weight: 700; margin-bottom: 12px; }
+    .section-subtitle { text-align: center; color: var(--text-muted); margin-bottom: 60px; font-size: 16px; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px;
+      transition: border-color 0.3s, transform 0.2s;
+    }
+    .feature-card:hover { border-color: var(--bitcoin); transform: translateY(-2px); }
+    .feature-icon {
+      width: 48px; height: 48px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 16px;
+      font-size: 24px;
+    }
+    .feature-icon.bitcoin { background: rgba(247,147,26,0.15); }
+    .feature-icon.nostr { background: rgba(139,92,246,0.15); }
+    .feature-icon.green { background: rgba(34,197,94,0.15); }
+    .feature-card h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .feature-card p { color: var(--text-muted); font-size: 14px; line-height: 1.7; }
+
+    /* How it works */
+    .how-it-works { padding: 80px 0; }
+    .steps {
+      display: grid; gap: 32px;
+      max-width: 700px; margin: 0 auto;
+    }
+    .step {
+      display: flex; gap: 20px; align-items: flex-start;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+    .step-num {
+      flex-shrink: 0;
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--gradient);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 16px;
+    }
+    .step h4 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .step p { color: var(--text-muted); font-size: 14px; }
+
+    /* Technical */
+    .technical { padding: 80px 0; }
+    .tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+    .tech-block { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px; }
+    .tech-block h3 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--bitcoin); }
+    .tech-block pre {
+      background: var(--bg); border-radius: 8px; padding: 16px;
+      overflow-x: auto; font-size: 12px; line-height: 1.6;
+      color: var(--text-muted); font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+    .tech-block code { color: var(--text); }
+
+    /* Downloads */
+    .downloads { padding: 80px 0; }
+    .download-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .download-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      text-align: center;
+      transition: border-color 0.3s;
+    }
+    .download-card:hover { border-color: var(--bitcoin); }
+    .download-card .icon { font-size: 36px; margin-bottom: 12px; }
+    .download-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .download-card p { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
+    .download-card .tag {
+      display: inline-block; padding: 4px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .tag-ready { background: rgba(34,197,94,0.15); color: #22c55e; }
+    .tag-soon { background: rgba(247,147,26,0.15); color: var(--bitcoin); }
+    .tag-planned { background: rgba(139,92,246,0.15); color: var(--nostr); }
+
+    /* Wallet Management */
+    .wallet-section { padding: 80px 0; }
+    .wallet-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .wallet-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 28px;
+    }
+    .wallet-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+    .wallet-card p { color: var(--text-muted); font-size: 14px; margin-bottom: 12px; }
+    .wallet-card ul { list-style: none; padding: 0; }
+    .wallet-card li {
+      padding: 6px 0; font-size: 13px; color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .wallet-card li:last-child { border-bottom: none; }
+    .wallet-card li::before { content: '✓ '; color: var(--bitcoin); font-weight: bold; }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+      text-align: center;
+    }
+    footer p { color: var(--text-muted); font-size: 13px; }
+    footer a { color: var(--bitcoin); text-decoration: none; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .tech-grid, .wallet-grid { grid-template-columns: 1fr; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav>
+  <div class="container">
+    <div class="logo">Nostr Onchain Signer</div>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how-it-works">How It Works</a>
+      <a href="#technical">Technical</a>
+      <a href="#wallet">Wallet</a>
+      <a href="#download">Download</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <h1>
+      <span class="highlight">Social Multi-Sig</span><br>
+      Bitcoin + Nostr Signer
+    </h1>
+    <p>
+      A dual-purpose NIP-07 signer and Bitcoin transaction signer.
+      Create multi-sig wallets from your Nostr following list.
+      Embed verifiable Nostr notes on-chain.
+    </p>
+    <div class="hero-buttons">
+      <a href="#download" class="btn btn-primary">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Download Extension
+      </a>
+      <a href="#how-it-works" class="btn btn-secondary">Learn More</a>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features" id="features">
+  <div class="container">
+    <h2 class="section-title">Two Signers. One Extension.</h2>
+    <p class="section-subtitle">Sign Nostr events and Bitcoin transactions from the same keypair.</p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon nostr">🔑</div>
+        <h3>NIP-07 Nostr Signer</h3>
+        <p>Injects <code>window.nostr</code> into every page. Works with any Nostr web client — Snort, Primal, Nostrudel, Coracle, and more. Supports NIP-04 and NIP-44 encryption.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon bitcoin">₿</div>
+        <h3>Bitcoin Transaction Signer</h3>
+        <p>Sign Taproot transactions directly. Your Nostr keypair IS your Bitcoin key — every npub has a corresponding Taproot address. Key-path and script-path spending supported.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon green">👥</div>
+        <h3>Social Multi-Sig</h3>
+        <p>Create m-of-n multi-sig wallets using npubs from your following list. Select 7-of-21, 3-of-5, or any threshold. Key holders don't even need to know they're included.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon bitcoin">📝</div>
+        <h3>On-Chain Nostr Notes</h3>
+        <p>Embed a Nostr event hash in Bitcoin transactions via OP_RETURN (under 80 bytes). Cryptographic proof linking a payment to a message. Knots-compatible.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon nostr">⚡</div>
+        <h3>Dual Sign: Send + Note</h3>
+        <p>Sign a Nostr note and prepare a Bitcoin transaction in one action. The payment and the message are cryptographically bound. Perfect for invoices and receipts.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon green">🔄</div>
+        <h3>Signing Rounds</h3>
+        <p>Coordinate multi-sig signing over Nostr DMs. See real-time progress — who has signed, who's pending. Broadcast when threshold is met.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section class="how-it-works" id="how-it-works">
+  <div class="container">
+    <h2 class="section-title">How It Works</h2>
+    <p class="section-subtitle">From npub to multi-sig address in 4 steps.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div>
+          <h4>Your Nostr key IS your Bitcoin key</h4>
+          <p>Every Nostr npub is a secp256k1 x-only public key — the exact same format Bitcoin Taproot uses. Your npub already has a corresponding bc1p... address. No new keys needed.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div>
+          <h4>Select keys from your social graph</h4>
+          <p>Browse your following list with profile pictures, NIP-05 verification, and display names. Search and select the npubs you want in your multi-sig. Choose any m-of-n threshold.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div>
+          <h4>Multi-sig address derived via Tapscript</h4>
+          <p>A BIP342 Tapscript is constructed using OP_CHECKSIGADD for each selected key. The script is placed in a Taproot tree with an unspendable internal key. Result: a standard bc1p... address.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div>
+          <h4>Coordinate signing over Nostr</h4>
+          <p>When you want to spend, initiate a signing round. The PSBT is passed to each signer via encrypted Nostr DMs. Track progress in real-time. Broadcast when threshold is reached.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Technical Spec -->
+<section class="technical" id="technical">
+  <div class="container">
+    <h2 class="section-title">Technical Specification</h2>
+    <p class="section-subtitle">Open protocols, no proprietary magic.</p>
+
+    <div class="tech-grid">
+      <div class="tech-block">
+        <h3>OP_RETURN Protocol (NSTR)</h3>
+        <pre><code>Byte layout (39-61 bytes, max 80):
+┌──────────────┬─────────┬────────┬──────────────────┬──────────────────┐
+│ "NSTR" (4B)  │ Ver (1) │ Kind   │ Event ID (32B)   │ Content Hash     │
+│ 0x4e535452   │  0x01   │ (2 LE) │ SHA-256 of event │ (20B, optional)  │
+└──────────────┴─────────┴────────┴──────────────────┴──────────────────┘
+
+Total sizes:
+  Without content hash: 41 bytes (OP_RETURN + push + payload)
+  With content hash:    61 bytes
+  Maximum allowed:      80 bytes (Knots policy)</code></pre>
+      </div>
+
+      <div class="tech-block">
+        <h3>Tapscript Multi-Sig (BIP342)</h3>
+        <pre><code>Script structure for m-of-n:
+
+  &lt;key1&gt; OP_CHECKSIG
+  &lt;key2&gt; OP_CHECKSIGADD
+  &lt;key3&gt; OP_CHECKSIGADD
+  ...
+  &lt;keyN&gt; OP_CHECKSIGADD
+  &lt;m&gt;    OP_NUMEQUAL
+
+Address derivation:
+  1. Build Tapscript from x-only pubkeys (npubs)
+  2. Compute TapLeaf hash
+  3. Use unspendable NUMS internal key
+  4. Q = P + tagged_hash("TapTweak", P || leaf) * G
+  5. Address = bech32m("bc", 1, x(Q))</code></pre>
+      </div>
+
+      <div class="tech-block">
+        <h3>Key Derivation</h3>
+        <pre><code>npub → x-only pubkey (32 bytes)
+     → BIP341 Taproot address (key-path)
+
+Multi-sig from npubs:
+  npub₁ → pubkey₁ (32B x-only)
+  npub₂ → pubkey₂ (32B x-only)
+  ...
+  npubₙ → pubkeyₙ (32B x-only)
+
+  script = CHECKSIGADD(pubkey₁..pubkeyₙ, threshold)
+  address = P2TR(NUMS, script)</code></pre>
+      </div>
+
+      <div class="tech-block">
+        <h3>Security Model</h3>
+        <pre><code>Key Storage:
+  • AES-256-GCM encryption at rest
+  • PBKDF2 key derivation (600,000 iterations)
+  • Auto-lock after 15 minutes
+  • Keys never leave background service worker
+
+Multi-Sig:
+  • Unspendable internal key (NUMS point)
+  • Script-path spending ONLY
+  • m-of-n threshold enforced on-chain
+  • Signing coordination via NIP-44 encrypted DMs
+
+Extension:
+  • Chrome Manifest V3 (minimal permissions)
+  • Content script = message bridge only
+  • No external servers required</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Wallet Management -->
+<section class="wallet-section" id="wallet">
+  <div class="container">
+    <h2 class="section-title">Wallet Management</h2>
+    <p class="section-subtitle">Hot wallet in the browser. Cold storage offline.</p>
+
+    <div class="wallet-grid">
+      <div class="wallet-card">
+        <h3>🔥 Hot Wallet (Browser Extension)</h3>
+        <p>For daily signing and small amounts. Keys encrypted on-device.</p>
+        <ul>
+          <li>NIP-07 signing for any Nostr web app</li>
+          <li>Quick Bitcoin transactions</li>
+          <li>Multi-sig initiation and coordination</li>
+          <li>Auto-lock with password protection</li>
+          <li>View balances via mempool.space</li>
+          <li>Export keys to external wallets</li>
+        </ul>
+      </div>
+
+      <div class="wallet-card">
+        <h3>🧊 Cold Storage (Offline Signing)</h3>
+        <p>For large amounts. Keys never touch the internet.</p>
+        <ul>
+          <li>Generate keys on air-gapped device</li>
+          <li>Export unsigned PSBT via QR code or file</li>
+          <li>Sign offline, return signed PSBT</li>
+          <li>Hardware wallet support (Ledger/Trezor)</li>
+          <li>Multi-sig with offline key holders</li>
+          <li>Sparrow / Electrum compatible export</li>
+        </ul>
+      </div>
+
+      <div class="wallet-card">
+        <h3>📱 Transaction Flow</h3>
+        <p>How to send a transaction with this signer.</p>
+        <ul>
+          <li>Open extension → "Send + Note"</li>
+          <li>Enter recipient address + amount</li>
+          <li>Optionally write a Nostr note to embed</li>
+          <li>Extension builds PSBT + signs Nostr event</li>
+          <li>For multi-sig: initiates signing round</li>
+          <li>Broadcast when all signatures collected</li>
+        </ul>
+      </div>
+
+      <div class="wallet-card">
+        <h3>🔄 Multi-Sig Signing Round</h3>
+        <p>Collecting signatures from your key group.</p>
+        <ul>
+          <li>Create transaction → signing round starts</li>
+          <li>PSBT sent to co-signers via Nostr DM</li>
+          <li>Each signer reviews + signs in their extension</li>
+          <li>Progress tracked: ████░░░░ 3/7 signed</li>
+          <li>Threshold met → "Broadcast" button appears</li>
+          <li>TX broadcast to Bitcoin network</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Downloads -->
+<section class="downloads" id="download">
+  <div class="container">
+    <h2 class="section-title">Download & Install</h2>
+    <p class="section-subtitle">Get the signer for your platform.</p>
+
+    <div class="download-grid">
+      <div class="download-card">
+        <div class="icon">🌐</div>
+        <h3>Chrome / Brave / Edge</h3>
+        <p>Load as unpacked extension in developer mode. Works on any Chromium browser.</p>
+        <span class="tag tag-ready">Ready Now</span>
+        <br><br>
+        <a href="https://github.com/nostr-onchain/signer/releases" class="btn btn-primary" style="font-size:13px; padding: 10px 20px;">
+          Download .zip
+        </a>
+        <p style="margin-top:12px; font-size:11px; color: var(--text-muted);">
+          Unzip → chrome://extensions → Developer mode → Load unpacked
+        </p>
+      </div>
+
+      <div class="download-card">
+        <div class="icon">🍎</div>
+        <h3>Safari (macOS / iOS)</h3>
+        <p>Convert to Safari Web Extension via Xcode. Runs on iPhone and Mac natively.</p>
+        <span class="tag tag-soon">Coming Soon</span>
+        <p style="margin-top:12px; font-size:11px; color: var(--text-muted);">
+          Requires: Xcode + xcrun safari-web-extension-converter
+        </p>
+      </div>
+
+      <div class="download-card">
+        <div class="icon">🦊</div>
+        <h3>Firefox</h3>
+        <p>Load as temporary add-on. Full WebExtension API support.</p>
+        <span class="tag tag-soon">Coming Soon</span>
+        <p style="margin-top:12px; font-size:11px; color: var(--text-muted);">
+          about:debugging → Load Temporary Add-on
+        </p>
+      </div>
+
+      <div class="download-card">
+        <div class="icon">💻</div>
+        <h3>Offline Signer (CLI)</h3>
+        <p>Air-gapped signing tool. Generate keys and sign PSBTs without internet.</p>
+        <span class="tag tag-planned">Planned</span>
+        <p style="margin-top:12px; font-size:11px; color: var(--text-muted);">
+          Node.js CLI tool — runs on any OS without network
+        </p>
+      </div>
+
+      <div class="download-card">
+        <div class="icon">📦</div>
+        <h3>NPM Package</h3>
+        <p>Use the core library in your own apps. Multi-sig derivation, OP_RETURN encoding, PSBT construction.</p>
+        <span class="tag tag-planned">Planned</span>
+        <p style="margin-top:12px; font-size:11px; color: var(--text-muted);">
+          npm install @nostr-onchain/signer
+        </p>
+      </div>
+
+      <div class="download-card">
+        <div class="icon">📖</div>
+        <h3>Source Code</h3>
+        <p>Fully open source. MIT license. Build from source, audit the code, contribute.</p>
+        <span class="tag tag-ready">Available</span>
+        <br><br>
+        <a href="https://github.com/nostr-onchain/signer" class="btn btn-secondary" style="font-size:13px; padding: 10px 20px;">
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Build from source -->
+<section style="padding: 60px 0;">
+  <div class="container">
+    <div class="tech-block" style="max-width: 700px; margin: 0 auto;">
+      <h3>Build From Source</h3>
+      <pre><code># Clone the repo
+git clone https://github.com/nostr-onchain/signer.git
+cd signer
+
+# Install dependencies
+npm install
+
+# Development (hot-reload web view)
+npm run dev
+
+# Build extension
+npm run build
+
+# Load in Chrome:
+#   1. Open chrome://extensions
+#   2. Enable "Developer mode" (top right toggle)
+#   3. Click "Load unpacked"
+#   4. Select the dist/ folder
+#   Done! Pin the extension and click to open.</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- Dependencies -->
+<section style="padding: 40px 0 80px;">
+  <div class="container">
+    <h2 class="section-title" style="font-size: 24px;">Dependencies & Packages</h2>
+    <p class="section-subtitle">Built on audited, widely-used Bitcoin and Nostr libraries.</p>
+
+    <div class="feature-grid" style="max-width: 800px; margin: 0 auto;">
+      <div class="feature-card">
+        <h3 style="font-size:14px;">Cryptography</h3>
+        <p>
+          <strong>@noble/curves</strong> — secp256k1, Schnorr (BIP340)<br>
+          <strong>@noble/hashes</strong> — SHA-256, PBKDF2, HMAC<br>
+          <strong>@scure/base</strong> — bech32, bech32m, base58<br>
+          <strong>@scure/btc-signer</strong> — PSBT, transaction building
+        </p>
+      </div>
+      <div class="feature-card">
+        <h3 style="font-size:14px;">Nostr</h3>
+        <p>
+          <strong>nostr-tools</strong> — event creation, NIP-04/44 encryption, relay pool<br>
+          <strong>NIP-07</strong> — browser signer interface<br>
+          <strong>NIP-17</strong> — encrypted DMs for signing coordination
+        </p>
+      </div>
+      <div class="feature-card">
+        <h3 style="font-size:14px;">Frontend</h3>
+        <p>
+          <strong>React 18</strong> — popup UI<br>
+          <strong>Tailwind CSS</strong> — styling<br>
+          <strong>Vite 6</strong> — build tooling<br>
+          <strong>TypeScript 5.6</strong> — type safety
+        </p>
+      </div>
+      <div class="feature-card">
+        <h3 style="font-size:14px;">Platform</h3>
+        <p>
+          <strong>Chrome MV3</strong> — extension manifest<br>
+          <strong>Web Crypto API</strong> — AES-GCM vault encryption<br>
+          <strong>WebHID</strong> — hardware wallet communication (planned)
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <p>
+      Nostr Onchain Signer — MIT License — 
+      <a href="https://github.com/nostr-onchain/signer">GitHub</a> — 
+      Built with ₿itcoin + Nostr
+    </p>
+    <p style="margin-top: 8px; font-size: 12px;">
+      No servers. No accounts. No tracking. Your keys, your coins, your notes.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
