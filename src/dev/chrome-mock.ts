@@ -120,6 +120,20 @@ const mockChrome = {
           const idx = (sessionGet('active_index') as number) ?? 0;
           const key = session[idx];
           const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
+
+          // If no private key (NIP-07 login), delegate to browser extension
+          if (!key.privateKeyHex) {
+            if (typeof (window as any).nostr?.signEvent === 'function') {
+              try {
+                const signed = await (window as any).nostr.signEvent({ ...event, pubkey: key.publicKeyHex });
+                return { id, result: signed };
+              } catch (err: any) {
+                return { id, error: `NIP-07 sign failed: ${err?.message || err}` };
+              }
+            }
+            return { id, error: 'No private key and no NIP-07 extension available' };
+          }
+
           const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
           const signed = signEvent(unsigned, key.privateKeyHex);
           return { id, result: signed };
@@ -146,7 +160,18 @@ const mockChrome = {
             kind: 1, content: noteContent, tags: [],
             created_at: Math.floor(Date.now() / 1000), pubkey: key.publicKeyHex,
           };
-          const signedNote = signEvent(noteEvent, key.privateKeyHex);
+
+          let signedNote;
+          if (!key.privateKeyHex) {
+            if (typeof (window as any).nostr?.signEvent === 'function') {
+              signedNote = await (window as any).nostr.signEvent(noteEvent);
+            } else {
+              return { id, error: 'No private key and no NIP-07 extension available' };
+            }
+          } else {
+            signedNote = signEvent(noteEvent, key.privateKeyHex);
+          }
+
           const { encodeNostrOpReturn } = await import('@/lib/bitcoin/opreturn');
           const opReturn = encodeNostrOpReturn({ eventId: signedNote.id, kind: signedNote.kind, content: noteContent });
           return { id, result: { signedNote, opReturn: { scriptHex: opReturn.scriptHex, size: opReturn.size }, recipientAddress, amountSats } };

@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, BookOpen, Edit3, Download, Lock,
-  Rss, Trophy,
+  Rss, Trophy, MessageCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
@@ -12,6 +12,7 @@ import { safeImageUrl } from '@/lib/utils';
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
   { to: '/feed', icon: Rss, label: 'Feed' },
+  { to: '/messages', icon: MessageCircle, label: 'Messages' },
   { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
   { to: '/signing', icon: Inbox, label: 'Signing' },

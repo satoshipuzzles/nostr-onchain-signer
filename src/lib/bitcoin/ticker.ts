@@ -4,7 +4,6 @@
  */
 
 const MEMPOOL_API = 'https://mempool.space/api';
-const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
 export interface BlockchainStatus {
   blockHeight: number;
@@ -65,10 +64,19 @@ async function fetchBlockHeight(): Promise<number> {
 }
 
 async function fetchBtcPrice(): Promise<number> {
-  const res = await fetch(`${COINGECKO_API}/simple/price?ids=bitcoin&vs_currencies=usd`);
+  // Use mempool.space price endpoint (no CORS issues unlike CoinGecko)
+  try {
+    const res = await fetch(`${MEMPOOL_API}/v1/prices`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.USD ?? 0;
+    }
+  } catch {}
+  // Fallback: blockchain.info ticker (also CORS-friendly)
+  const res = await fetch('https://blockchain.info/ticker');
   if (!res.ok) throw new Error('Failed to fetch BTC price');
   const data = await res.json();
-  return data.bitcoin?.usd ?? 0;
+  return data.USD?.last ?? 0;
 }
 
 async function fetchFees(): Promise<BlockchainStatus['fees']> {
