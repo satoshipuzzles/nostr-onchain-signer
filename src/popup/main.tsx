@@ -4,8 +4,18 @@ import { BrowserRouter } from 'react-router-dom';
 import { App } from './App';
 import './index.css';
 
-if (!globalThis.chrome?.runtime?.id || globalThis.chrome?.runtime?.id === 'pwa-mode') {
-  import('../dev/chrome-mock');
+const needsMock = !globalThis.chrome?.runtime?.id || globalThis.chrome?.runtime?.id === 'pwa-mode';
+
+function boot() {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
 }
 
 class ErrorBoundary extends React.Component<
@@ -18,7 +28,7 @@ class ErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error: error.message };
+    return { hasError: true, error: error.message || String(error) };
   }
 
   handleReset = () => {
@@ -59,12 +69,8 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </ErrorBoundary>
-  </React.StrictMode>
-);
+if (needsMock) {
+  import('../dev/chrome-mock').then(boot).catch(boot);
+} else {
+  boot();
+}

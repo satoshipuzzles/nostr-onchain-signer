@@ -163,6 +163,14 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
 
     if (allKeys.length < 2 || threshold > allKeys.length) return;
 
+    // Validate all keys are 64-char hex (32 bytes)
+    const invalidKeys = allKeys.filter(k => !k || k.length !== 64 || !/^[0-9a-f]+$/i.test(k));
+    if (invalidKeys.length > 0) {
+      console.error('Invalid pubkeys detected:', invalidKeys);
+      alert(`${invalidKeys.length} invalid key(s) found. Please deselect them and try again.`);
+      return;
+    }
+
     setSaving(true);
     try {
       const wallet = createMultisigFromPubkeys(allKeys, threshold);
@@ -182,23 +190,31 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
         .join(', ');
       const walletName = `${threshold}-of-${allKeys.length} with ${signerNames}${keyHolders.length > 4 ? '...' : ''}`;
 
-      // Save to storage
-      const archived = createArchivedMultisig(wallet, keyHolders, walletName);
+      // Save to storage (convert Uint8Arrays to hex for JSON serialization)
+      const serializableWallet = {
+        ...wallet,
+        script: undefined,
+        merkleRoot: undefined,
+        merkleRootHex: wallet.merkleRoot instanceof Uint8Array
+          ? Array.from(wallet.merkleRoot).map(b => b.toString(16).padStart(2, '0')).join('')
+          : String(wallet.merkleRoot ?? ''),
+      };
+      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, walletName);
       await saveMultisigWallet(archived);
-
-      // Try to fetch initial balance
-      try {
-        const bal = await fetchBalance(wallet.address);
-        if (bal.total > 0) {
-          archived.currentBalance = bal.total;
-          await saveMultisigWallet(archived);
-        }
-      } catch {}
 
       setResult({ address: wallet.address, threshold, total: allKeys.length, wallet });
       setStep('result');
+
+      // Fetch balance in background (don't block UI)
+      fetchBalance(wallet.address).then(bal => {
+        if (bal.total > 0) {
+          archived.currentBalance = bal.total;
+          saveMultisigWallet(archived).catch(() => {});
+        }
+      }).catch(() => {});
     } catch (err) {
       console.error('Failed to create multisig:', err);
+      alert(`Multi-sig creation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setSaving(false);
     }

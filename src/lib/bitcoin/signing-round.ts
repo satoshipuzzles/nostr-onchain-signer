@@ -230,7 +230,9 @@ export async function saveSigningRound(round: SigningRound): Promise<void> {
 
 export async function loadSigningRounds(): Promise<SigningRound[]> {
   const result = await chrome.storage.local.get('signingRounds');
-  return result.signingRounds ?? [];
+  const raw = result.signingRounds;
+  if (!Array.isArray(raw)) return [];
+  return raw;
 }
 
 export async function deleteSigningRound(id: string): Promise<void> {

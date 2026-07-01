@@ -62,7 +62,9 @@ export async function saveMultisigWallet(wallet: ArchivedMultisig): Promise<void
 
 export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_WALLETS);
-  return result[STORAGE_KEY_WALLETS] ?? [];
+  const raw = result[STORAGE_KEY_WALLETS];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((w: any) => w && w.id && w.wallet && w.wallet.address);
 }
 
 export async function getMultisigWallet(id: string): Promise<ArchivedMultisig | null> {

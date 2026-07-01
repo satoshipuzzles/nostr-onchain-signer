@@ -26,6 +26,14 @@ export interface AccountStore {
  */
 export function getAccountsFromVault(vaultData: VaultData[]): Account[] {
   return vaultData.map((data) => {
+    if (!data.privateKeyHex) {
+      return {
+        publicKeyHex: data.publicKeyHex,
+        npub: pubkeyToNpub(data.publicKeyHex),
+        label: data.label || 'NIP-07 Account',
+        createdAt: data.createdAt,
+      };
+    }
     const pair = keyPairFromPrivateKey(data.privateKeyHex);
     return {
       publicKeyHex: pair.publicKeyHex,

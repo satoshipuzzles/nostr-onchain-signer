@@ -50,11 +50,33 @@ interface AuthProviderProps {
 
 export function AuthProvider({ children, initialPublicKey, initialPassword }: AuthProviderProps) {
   const [publicKey, setPublicKey] = useState(initialPublicKey);
-  const [myProfile, setMyProfile] = useState<ProfileMetadata | null>(null);
-  const [following, setFollowing] = useState<Set<string>>(new Set());
+  const [myProfile, setMyProfileRaw] = useState<ProfileMetadata | null>(null);
+  const [following, setFollowingRaw] = useState<Set<string>>(new Set());
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [activeAccountIndex, setActiveAccountIndex] = useState(0);
   const [vaultPassword, setVaultPassword] = useState(initialPassword);
+
+  function setMyProfile(value: unknown) {
+    if (!value || typeof value !== 'object') {
+      setMyProfileRaw(value as ProfileMetadata | null);
+      return;
+    }
+    if (Object.keys(value).length === 0) {
+      setMyProfileRaw(null);
+      return;
+    }
+    setMyProfileRaw(value as ProfileMetadata);
+  }
+
+  function setFollowing(value: unknown) {
+    if (value instanceof Set) {
+      setFollowingRaw(value);
+    } else if (Array.isArray(value)) {
+      setFollowingRaw(new Set(value));
+    } else {
+      setFollowingRaw(new Set());
+    }
+  }
   const [selectedMultisigWallet, setSelectedMultisigWallet] = useState<ArchivedMultisig | null>(null);
   const [viewingUser, setViewingUser] = useState<DiscoveredUser | null>(null);
   const followingRef = useRef(following);
@@ -86,7 +108,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       }
 
       const stored = await chrome.storage.local.get('cached_accounts');
-      if (stored.cached_accounts) {
+      if (Array.isArray(stored.cached_accounts) && stored.cached_accounts.length > 0) {
         setAccounts(stored.cached_accounts);
         const idx = await loadActiveAccountIndex();
         setActiveAccountIndex(idx);

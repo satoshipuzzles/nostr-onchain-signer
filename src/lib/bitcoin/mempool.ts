@@ -69,7 +69,10 @@ export async function fetchBalance(address: string): Promise<{
   total: number;
 }> {
   try {
-    const res = await fetch(`${MEMPOOL_API}/address/${address}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`${MEMPOOL_API}/address/${address}`, { signal: controller.signal });
+    clearTimeout(timeout);
     if (!res.ok) return { confirmed: 0, unconfirmed: 0, total: 0 };
     const data: AddressInfo = await res.json();
 
