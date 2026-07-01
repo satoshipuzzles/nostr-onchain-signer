@@ -7,7 +7,7 @@ import { type Account, loadAccountMeta } from '@/lib/accounts';
 import { AccountSwitcher } from '@/popup/components/AccountSwitcher';
 import {
   Copy, Users, Send, Lock, Check, Radio, Compass,
-  Settings, Edit3, Server, Wallet, Download, Shield,
+  Edit3, Wallet, Download, Shield,
 } from 'lucide-react';
 
 type Page = 'loading' | 'setup' | 'unlock' | 'dashboard' | 'multisig' | 'multisig-vault' | 'request-sig' | 'send' | 'signing' | 'discover' | 'profile-view' | 'relays' | 'edit-profile' | 'wallet';
@@ -43,8 +43,8 @@ export function Dashboard({ publicKey, profile, followingCount, accounts, active
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
-      {/* Account Switcher + Actions */}
-      <div className="flex items-center gap-2 mb-4">
+      {/* Account Switcher + Lock */}
+      <div className="page-header">
         <AccountSwitcher
           accounts={accounts}
           activeIndex={activeAccountIndex}
@@ -52,13 +52,10 @@ export function Dashboard({ publicKey, profile, followingCount, accounts, active
           onAddAccount={onAddAccount}
         />
         <div className="flex-1" />
-        <button onClick={onBackupKeys} className="p-2 hover:bg-surface-700 rounded-lg" title="Backup Keys">
+        <button onClick={onBackupKeys} className="btn-icon" title="Backup Keys">
           <Download className="w-4 h-4 text-gray-400" />
         </button>
-        <button onClick={() => onNavigate('relays')} className="p-2 hover:bg-surface-700 rounded-lg" title="Relays">
-          <Server className="w-4 h-4 text-gray-400" />
-        </button>
-        <button onClick={handleLock} className="p-2 hover:bg-surface-700 rounded-lg" title="Lock">
+        <button onClick={handleLock} className="btn-icon" title="Lock">
           <Lock className="w-4 h-4 text-gray-400" />
         </button>
       </div>
@@ -136,10 +133,16 @@ export function Dashboard({ publicKey, profile, followingCount, accounts, active
           </button>
         </div>
 
-        <button onClick={() => onNavigate('signing')} className="btn-secondary w-full flex items-center justify-center gap-2 text-sm">
-          <Radio className="w-3.5 h-3.5" />
-          Signing Rounds
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => onNavigate('signing')} className="btn-secondary flex items-center justify-center gap-1.5 text-sm">
+            <Radio className="w-3.5 h-3.5" />
+            Signing Rounds
+          </button>
+          <button onClick={() => onNavigate('relays')} className="btn-secondary flex items-center justify-center gap-1.5 text-sm">
+            <Compass className="w-3.5 h-3.5" />
+            Relays
+          </button>
+        </div>
       </div>
 
       {/* Status footer */}

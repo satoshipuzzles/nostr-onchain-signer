@@ -9,19 +9,16 @@ function copyExtensionFiles() {
     closeBundle() {
       const dist = resolve(__dirname, 'dist');
 
-      // Copy manifest.json
       copyFileSync(
         resolve(__dirname, 'manifest.prod.json'),
         resolve(dist, 'manifest.json')
       );
 
-      // Copy nostr-provider.js
       copyFileSync(
         resolve(__dirname, 'src/content/nostr-provider.js'),
         resolve(dist, 'nostr-provider.js')
       );
 
-      // Copy icons
       const iconsDir = resolve(dist, 'icons');
       if (!existsSync(iconsDir)) mkdirSync(iconsDir, { recursive: true });
       const srcIcons = resolve(__dirname, 'public/icons');
@@ -36,17 +33,31 @@ function copyExtensionFiles() {
   };
 }
 
-export default defineConfig(({ command }) => {
+export default defineConfig(({ command, mode }) => {
   const isServe = command === 'serve';
+  const isWebBuild = mode === 'web';
 
+  // Web build (for Vercel/PWA) — just build index.html as a regular SPA
+  if (isWebBuild) {
+    return {
+      plugins: [react()],
+      resolve: {
+        alias: { '@': resolve(__dirname, './src') },
+      },
+      build: {
+        outDir: 'dist',
+        emptyOutDir: true,
+      },
+      define: { 'process.env': {} },
+    };
+  }
+
+  // Dev server or extension build
   return {
     plugins: [react(), ...(!isServe ? [copyExtensionFiles()] : [])],
     resolve: {
-      alias: {
-        '@': resolve(__dirname, './src'),
-      },
+      alias: { '@': resolve(__dirname, './src') },
     },
-    // Dev server uses index.html at root; build uses popup.html for extension
     ...(isServe
       ? {}
       : {
@@ -71,8 +82,6 @@ export default defineConfig(({ command }) => {
             },
           },
         }),
-    define: {
-      'process.env': {},
-    },
+    define: { 'process.env': {} },
   };
 });

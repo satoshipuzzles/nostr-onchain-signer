@@ -3,35 +3,100 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+  }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
   body {
     @apply bg-surface-900 text-white antialiased;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+    padding-top: var(--safe-top);
+    padding-bottom: var(--safe-bottom);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+
+  input, textarea {
+    user-select: text;
+    font-size: 16px !important; /* Prevents iOS zoom on focus */
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply bg-bitcoin hover:bg-bitcoin/90 text-white font-medium px-4 py-2 rounded-lg
-           transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply bg-bitcoin hover:bg-bitcoin/90 text-white font-semibold
+           px-4 py-3 rounded-xl transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed;
+    min-height: 48px;
   }
+  .btn-primary:active { transform: scale(0.97); }
 
   .btn-secondary {
-    @apply bg-surface-700 hover:bg-surface-200/10 text-white font-medium px-4 py-2 rounded-lg
-           border border-surface-200/20 transition-colors duration-150;
+    @apply bg-surface-700 hover:bg-surface-200/10 text-white font-medium
+           px-4 py-3 rounded-xl border border-surface-200/20 transition-all duration-150;
+    min-height: 48px;
   }
+  .btn-secondary:active { transform: scale(0.97); }
 
   .btn-nostr {
-    @apply bg-nostr hover:bg-nostr/90 text-white font-medium px-4 py-2 rounded-lg
-           transition-colors duration-150;
+    @apply bg-nostr hover:bg-nostr/90 text-white font-semibold
+           px-4 py-3 rounded-xl transition-all duration-150;
+    min-height: 48px;
   }
+  .btn-nostr:active { transform: scale(0.97); }
 
   .input-field {
-    @apply w-full bg-surface-800 border border-surface-200/20 rounded-lg px-3 py-2
+    @apply w-full bg-surface-800 border border-surface-200/20 rounded-xl px-4 py-3
            text-white placeholder-gray-500 focus:outline-none focus:border-bitcoin/50
            focus:ring-1 focus:ring-bitcoin/30 transition-colors;
+    min-height: 48px;
   }
 
   .card {
-    @apply bg-surface-800 border border-surface-200/10 rounded-xl p-4;
+    @apply bg-surface-800 border border-surface-200/10 rounded-2xl p-4;
   }
+
+  /* Back button - always accessible */
+  .btn-back {
+    @apply p-2.5 hover:bg-surface-700 rounded-xl transition-colors;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-back:active { background: rgba(255,255,255,0.05); }
+
+  /* Header - consistent across all pages */
+  .page-header {
+    @apply flex items-center gap-3 mb-4;
+    min-height: 48px;
+    padding-top: 4px;
+  }
+
+  .page-header h1 {
+    @apply text-lg font-bold flex-1 truncate;
+  }
+
+  /* Icon buttons in header */
+  .btn-icon {
+    @apply p-2.5 hover:bg-surface-700 rounded-xl transition-colors;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-icon:active { background: rgba(255,255,255,0.05); }
 }

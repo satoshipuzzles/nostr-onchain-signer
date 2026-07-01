@@ -14,7 +14,8 @@
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body, #root { width: 100%; height: 100%; overflow: hidden; }
       body { background: #0a0a0f; }
-      @media (min-width: 500px) {
+      /* Desktop: show a phone-like frame for dev */
+      @media (min-width: 500px) and (min-height: 700px) {
         body {
           display: flex;
           justify-content: center;
@@ -29,6 +30,10 @@
           overflow: hidden;
           box-shadow: 0 20px 60px rgba(0,0,0,0.6);
         }
+      }
+      /* Mobile: full screen, respect safe areas */
+      @media (max-width: 499px) {
+        #root { width: 100vw; height: 100vh; height: 100dvh; }
       }
     </style>
   </head>

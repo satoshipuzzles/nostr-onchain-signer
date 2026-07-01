@@ -1,0 +1,7 @@
+{
+  "buildCommand": "npm run build:web",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

@@ -94,28 +94,28 @@ export function App() {
 
   async function loadProfileAndFollows(pubkey: string) {
     if (!pubkey) return;
-    // Try local storage first for instant load
-    const stored = await chrome.storage.local.get(`profile_${pubkey}`);
+
+    // Load from local storage immediately (instant)
+    const stored = await chrome.storage.local.get([`profile_${pubkey}`, `following_${pubkey}`]);
     if (stored[`profile_${pubkey}`]) {
       setMyProfile(stored[`profile_${pubkey}`]);
     }
-    // Then fetch fresh from relays
+    if (stored[`following_${pubkey}`]) {
+      setFollowing(new Set(stored[`following_${pubkey}`]));
+    }
+
+    // Then fetch fresh from relays (background)
     const profile = await fetchMyProfile(pubkey);
     if (profile) {
       setMyProfile(profile);
       await chrome.storage.local.set({ [`profile_${pubkey}`]: profile });
       await updateAccountMeta(pubkey, { picture: profile.picture, displayName: profile.displayName || profile.name });
     }
-    // Load following list
+
     const contacts = await fetchFollowingList(pubkey);
     if (contacts.length > 0) {
       setFollowing(new Set(contacts.map((c) => c.pubkey)));
       await chrome.storage.local.set({ [`following_${pubkey}`]: contacts.map((c) => c.pubkey) });
-    } else {
-      const savedFollowing = await chrome.storage.local.get(`following_${pubkey}`);
-      if (savedFollowing[`following_${pubkey}`]) {
-        setFollowing(new Set(savedFollowing[`following_${pubkey}`]));
-      }
     }
   }
 
@@ -272,7 +272,7 @@ export function App() {
   if (page === 'unlock') return <Unlock onUnlocked={onUnlocked} />;
 
   if (page === 'multisig') {
-    return <MultiSig publicKey={publicKey} onBack={() => setPage('dashboard')} onCreated={() => setPage('multisig-vault')} />;
+    return <MultiSig publicKey={publicKey} followingPubkeys={following} onBack={() => setPage('dashboard')} onCreated={() => setPage('multisig-vault')} />;
   }
 
   if (page === 'multisig-vault') {

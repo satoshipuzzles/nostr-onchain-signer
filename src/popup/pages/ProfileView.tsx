@@ -33,9 +33,9 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack }:
         )}
         <button
           onClick={onBack}
-          className="absolute top-3 left-3 p-1.5 bg-black/50 backdrop-blur rounded-lg"
+          className="absolute top-3 left-3 btn-back bg-black/60 backdrop-blur"
         >
-          <ArrowLeft className="w-4 h-4" />
+          <ArrowLeft className="w-5 h-5" />
         </button>
       </div>
 

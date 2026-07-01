@@ -40,11 +40,11 @@ export function SigningRounds({ publicKey, onBack }: Props) {
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold">Signing Rounds</h1>
+        <h1>Signing Rounds</h1>
       </div>
 
       {loading ? (
@@ -108,11 +108,11 @@ function RoundDetail({ round, onBack }: { round: SigningRound; onBack: () => voi
 
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold">Signing Progress</h1>
+        <h1>Signing Progress</h1>
       </div>
 
       {/* Summary Card */}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowLeft, Search, Loader2, UserPlus, UserMinus, BadgeCheck, Zap, Globe, Database, RefreshCw, Clock, Filter } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type ProfileMetadata } from '@/lib/nostr/social';
@@ -28,6 +28,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   const [syncProgress, setSyncProgress] = useState('');
   const [activityWindow, setActivityWindow] = useState<ActivityWindow>('7d');
   const [showFilters, setShowFilters] = useState(false);
+  const globalSearchTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     init();
@@ -46,7 +47,12 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
     if (stats.totalProfiles > 0) {
       await loadFromCache(activityWindow);
       setLoading(false);
+      // Auto-refresh in background if stale (>5 min since last sync)
+      if (Date.now() - stats.lastSync > 5 * 60 * 1000) {
+        syncFromRelays();
+      }
     } else {
+      // First time — auto-sync immediately
       await syncFromRelays();
     }
   }
@@ -104,12 +110,14 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
 
   const handleLocalSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
+    if (globalSearchTimer.current) clearTimeout(globalSearchTimer.current);
+
     if (!query.trim()) {
       await loadFromCache(activityWindow);
       return;
     }
 
-    // Auto-trigger global search for npub/hex pastes
+    // Auto-trigger global search for npub/hex pastes immediately
     if (query.startsWith('npub1') && query.length > 60) {
       setSearching(true);
       try {
@@ -125,12 +133,32 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
       return;
     }
 
+    // Instant local search
     const results = await searchLocalCache(query);
     setProfiles(results.map((p) => ({
       profile: p,
       lastSeen: Math.floor(Date.now() / 1000),
       fetchedAt: Date.now(),
     })).filter((p) => p.profile.pubkey !== publicKey));
+
+    // Debounced global NIP-50 search (fires 800ms after stop typing)
+    if (query.length >= 3) {
+      globalSearchTimer.current = setTimeout(async () => {
+        setSearching(true);
+        try {
+          const globalResults = await searchProfilesNip50(query.trim());
+          if (globalResults.length > 0) {
+            setProfiles(globalResults.map((p) => ({
+              profile: p,
+              lastSeen: Math.floor(Date.now() / 1000),
+              fetchedAt: Date.now(),
+            })).filter((p) => p.profile.pubkey !== publicKey));
+          }
+        } catch {} finally {
+          setSearching(false);
+        }
+      }, 800);
+    }
   }, [activityWindow, publicKey]);
 
   function getWindowCount(window: ActivityWindow): number {
@@ -152,14 +180,14 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   return (
     <div className="h-full flex flex-col p-4">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-3">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold flex-1">Discover</h1>
+        <h1>Discover</h1>
         <button
           onClick={() => setShowFilters(!showFilters)}
-          className={`p-1.5 rounded-lg ${showFilters ? 'bg-bitcoin/20 text-bitcoin' : 'hover:bg-surface-700 text-gray-400'}`}
+          className={`btn-icon ${showFilters ? 'bg-bitcoin/20 text-bitcoin' : 'text-gray-400'}`}
           title="Activity filters"
         >
           <Filter className="w-4 h-4" />
@@ -167,7 +195,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
         <button
           onClick={syncFromRelays}
           disabled={syncing}
-          className="p-1.5 hover:bg-surface-700 rounded-lg"
+          className="btn-icon"
           title="Full sync from relays"
         >
           <RefreshCw className={`w-4 h-4 text-gray-400 ${syncing ? 'animate-spin' : ''}`} />

@@ -8,6 +8,7 @@
     "dev": "vite --host",
     "dev:ext": "vite build --watch --mode development",
     "build": "tsc && vite build",
+    "build:web": "tsc && vite build --mode web",
     "preview": "vite preview"
   },
   "dependencies": {

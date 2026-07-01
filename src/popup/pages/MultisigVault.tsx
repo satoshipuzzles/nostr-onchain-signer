@@ -60,13 +60,13 @@ export function MultisigVault({ publicKey, onCreateNew, onRequestSignature, onBa
   return (
     <div className="h-full flex flex-col p-4">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold flex-1">Multi-Sig Wallets</h1>
-        <button onClick={onCreateNew} className="p-1.5 bg-bitcoin/20 text-bitcoin rounded-lg hover:bg-bitcoin/30">
-          <Plus className="w-4 h-4" />
+        <h1>Multi-Sig Wallets</h1>
+        <button onClick={onCreateNew} className="btn-icon bg-bitcoin/20 text-bitcoin">
+          <Plus className="w-5 h-5" />
         </button>
       </div>
 
@@ -204,11 +204,11 @@ function WalletDetail({
   return (
     <div className="h-full flex flex-col p-4 overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold flex-1 truncate">{wallet.name}</h1>
+        <h1>{wallet.name}</h1>
         <span className="text-xs bg-bitcoin/15 text-bitcoin px-2 py-0.5 rounded-full font-medium">
           {wallet.wallet.config.threshold}-of-{wallet.wallet.config.pubkeys.length}
         </span>
@@ -280,14 +280,17 @@ function WalletDetail({
       )}
 
       {/* Actions */}
-      <div className="mt-auto space-y-2">
+      <div className="mt-auto space-y-2 pt-4">
         <button
           onClick={onRequestSignature}
           className="btn-primary w-full flex items-center justify-center gap-2"
         >
           <Send className="w-4 h-4" />
-          Request Signatures
+          Spend from Wallet
         </button>
+        <p className="text-[10px] text-gray-500 text-center">
+          Creates a transaction and requests signatures from {wallet.wallet.config.threshold - 1} co-signer{wallet.wallet.config.threshold > 2 ? 's' : ''}
+        </p>
       </div>
     </div>
   );

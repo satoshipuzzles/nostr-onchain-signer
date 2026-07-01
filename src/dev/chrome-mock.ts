@@ -1,95 +1,196 @@
 /**
- * Mock chrome.* APIs for standalone web development.
- * This lets you run the popup UI in a regular browser tab
- * without needing to load it as a Chrome extension.
+ * Mock chrome.* APIs for PWA / standalone web mode.
+ *
+ * Uses localStorage for persistence (survives page refreshes).
+ * Handles signing via the actual signEvent function with real keys.
  */
 
-const storage: Record<string, unknown> = {};
+import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
+import { generateKeyPair, keyPairFromPrivateKey } from '@/lib/nostr/keys';
+
+const STORAGE_PREFIX = 'nostr_onchain_';
+
+function storageGet(key: string): unknown {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? JSON.parse(raw) : undefined;
+  } catch { return undefined; }
+}
+
+function storageSet(key: string, value: unknown) {
+  localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+}
+
+function storageRemove(key: string) {
+  localStorage.removeItem(STORAGE_PREFIX + key);
+}
+
+function getAllStorage(keys: string | string[]): Record<string, unknown> {
+  const keyList = typeof keys === 'string' ? [keys] : keys;
+  const result: Record<string, unknown> = {};
+  for (const key of keyList) {
+    const val = storageGet(key);
+    if (val !== undefined) result[key] = val;
+  }
+  return result;
+}
+
+function setAllStorage(items: Record<string, unknown>) {
+  for (const [key, value] of Object.entries(items)) {
+    storageSet(key, value);
+  }
+}
+
+// Session state (cleared on tab close but survives refreshes via sessionStorage)
+function sessionGet(key: string): unknown {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? JSON.parse(raw) : undefined;
+  } catch { return undefined; }
+}
+
+function sessionSet(key: string, value: unknown) {
+  sessionStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+}
+
+function sessionRemove(key: string) {
+  sessionStorage.removeItem(STORAGE_PREFIX + key);
+}
 
 const mockChrome = {
   runtime: {
-    id: 'mock-extension-id',
+    id: 'pwa-mode',
     getURL: (path: string) => `/${path}`,
     sendMessage: async (message: { type: string; payload?: unknown; id: string }) => {
-      console.log('[Mock Chrome] sendMessage:', message.type, message.payload);
+      const { type, payload, id } = message;
 
-      switch (message.type) {
-        case 'vault:status':
+      switch (type) {
+        case 'vault:status': {
+          const vault = storageGet('vault');
+          const session = sessionGet('session_keys') as Array<{privateKeyHex: string; publicKeyHex: string}> | undefined;
+          const activeIdx = (sessionGet('active_index') as number) ?? 0;
           return {
-            id: message.id,
+            id,
             result: {
-              exists: !!storage['vault'],
-              unlocked: !!storage['__unlocked'],
-              publicKey: storage['__publicKey'] as string | undefined,
+              exists: !!vault,
+              unlocked: !!session,
+              publicKey: session?.[activeIdx]?.publicKeyHex,
             },
           };
-
-        case 'vault:create':
-        case 'vault:unlock': {
-          // In dev mode, just pretend unlock works
-          const { password } = (message.payload || {}) as { password?: string };
-          if (storage['vault'] && password) {
-            storage['__unlocked'] = true;
-            // Return a deterministic dev pubkey
-            const devPubkey = 'a'.repeat(64);
-            storage['__publicKey'] = devPubkey;
-            return { id: message.id, result: { publicKey: devPubkey } };
-          }
-          if (!storage['vault']) {
-            return { id: message.id, error: 'No vault found' };
-          }
-          return { id: message.id, error: 'Invalid password' };
         }
 
-        case 'vault:lock':
-          storage['__unlocked'] = false;
-          return { id: message.id, result: { locked: true } };
+        case 'vault:unlock': {
+          const { password } = (payload || {}) as { password?: string };
+          const vault = storageGet('vault') as any;
+          if (!vault) return { id, error: 'No vault found' };
+          try {
+            const { decryptVault } = await import('@/lib/crypto/vault');
+            const keys = await decryptVault(vault, password!);
+            sessionSet('session_keys', keys);
+            const idx = (sessionGet('active_index') as number) ?? 0;
+            return { id, result: { publicKey: keys[Math.min(idx, keys.length - 1)]?.publicKeyHex } };
+          } catch {
+            return { id, error: 'Invalid password' };
+          }
+        }
 
-        case 'nip07:getPublicKey':
-          return { id: message.id, result: storage['__publicKey'] };
+        case 'vault:lock': {
+          sessionRemove('session_keys');
+          return { id, result: { locked: true } };
+        }
+
+        case 'vault:switchAccount': {
+          const { index } = (payload || {}) as { index: number };
+          const session = sessionGet('session_keys') as any[];
+          if (!session || index >= session.length) return { id, error: 'Invalid index' };
+          sessionSet('active_index', index);
+          return { id, result: { publicKey: session[index].publicKeyHex } };
+        }
+
+        case 'nip07:getPublicKey': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = (sessionGet('active_index') as number) ?? 0;
+          return { id, result: session[idx].publicKeyHex };
+        }
+
+        case 'nip07:signEvent': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = (sessionGet('active_index') as number) ?? 0;
+          const key = session[idx];
+          const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
+          const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
+          const signed = signEvent(unsigned, key.privateKeyHex);
+          return { id, result: signed };
+        }
 
         case 'nip07:getRelays':
-          return { id: message.id, result: {} };
+          return { id, result: {} };
 
-        case 'btc:getAddress':
-          return {
-            id: message.id,
-            result: 'bc1p' + 'a'.repeat(58),
+        case 'btc:getAddress': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = (sessionGet('active_index') as number) ?? 0;
+          const { pubkeyToTaprootAddress } = await import('@/lib/bitcoin/address');
+          return { id, result: pubkeyToTaprootAddress(session[idx].publicKeyHex) };
+        }
+
+        case 'dual:signAndBroadcast': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = (sessionGet('active_index') as number) ?? 0;
+          const key = session[idx];
+          const { noteContent, recipientAddress, amountSats } = (payload || {}) as any;
+          const noteEvent: UnsignedEvent = {
+            kind: 1, content: noteContent, tags: [],
+            created_at: Math.floor(Date.now() / 1000), pubkey: key.publicKeyHex,
           };
+          const signedNote = signEvent(noteEvent, key.privateKeyHex);
+          const { encodeNostrOpReturn } = await import('@/lib/bitcoin/opreturn');
+          const opReturn = encodeNostrOpReturn({ eventId: signedNote.id, kind: signedNote.kind, content: noteContent });
+          return { id, result: { signedNote, opReturn: { scriptHex: opReturn.scriptHex, size: opReturn.size }, recipientAddress, amountSats } };
+        }
 
         default:
-          console.warn('[Mock Chrome] Unhandled message:', message.type);
-          return { id: message.id, error: `Mock: unhandled ${message.type}` };
+          console.warn('[PWA Mock] Unhandled:', type);
+          return { id, error: `PWA: unhandled ${type}` };
       }
     },
-    onMessage: {
-      addListener: () => {},
-    },
+    onMessage: { addListener: () => {} },
   },
   storage: {
     local: {
+      get: async (keys: string | string[]) => getAllStorage(keys),
+      set: async (items: Record<string, unknown>) => setAllStorage(items),
+      remove: async (keys: string | string[]) => {
+        const keyList = typeof keys === 'string' ? [keys] : keys;
+        for (const key of keyList) storageRemove(key);
+      },
+    },
+    session: {
       get: async (keys: string | string[]) => {
         const keyList = typeof keys === 'string' ? [keys] : keys;
         const result: Record<string, unknown> = {};
         for (const key of keyList) {
-          if (storage[key] !== undefined) result[key] = storage[key];
+          const val = sessionGet(key);
+          if (val !== undefined) result[key] = val;
         }
         return result;
       },
       set: async (items: Record<string, unknown>) => {
-        Object.assign(storage, items);
+        for (const [key, value] of Object.entries(items)) sessionSet(key, value);
       },
       remove: async (keys: string | string[]) => {
         const keyList = typeof keys === 'string' ? [keys] : keys;
-        for (const key of keyList) delete storage[key];
+        for (const key of keyList) sessionRemove(key);
       },
     },
   },
 };
 
-// Only inject if not already in a Chrome extension context
 if (typeof globalThis.chrome === 'undefined' || !globalThis.chrome?.runtime?.id) {
-  (globalThis as unknown as { chrome: typeof mockChrome }).chrome = mockChrome;
+  (globalThis as unknown as { chrome: typeof mockChrome }).chrome = mockChrome as any;
 }
 
 export {};

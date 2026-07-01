@@ -11,13 +11,14 @@ import {
 
 interface Props {
   publicKey: string;
+  followingPubkeys?: Set<string>;
   onBack: () => void;
   onCreated?: () => void;
 }
 
 type Step = 'select' | 'configure' | 'result';
 
-export function MultiSig({ publicKey, onBack, onCreated }: Props) {
+export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Props) {
   const [step, setStep] = useState<Step>('select');
   const [following, setFollowing] = useState<ContactInfo[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -38,15 +39,67 @@ export function MultiSig({ publicKey, onBack, onCreated }: Props) {
   async function loadFollowing() {
     setLoading(true);
     try {
-      const contacts = await fetchFollowingList(publicKey);
+      // First: use passed-in following set (already loaded in App.tsx)
+      let contactPubkeys: string[] = [];
+
+      if (followingPubkeys && followingPubkeys.size > 0) {
+        contactPubkeys = Array.from(followingPubkeys);
+      } else {
+        // Second: try local storage cache
+        const cached = await chrome.storage.local.get(`following_${publicKey}`);
+        if (cached[`following_${publicKey}`] && cached[`following_${publicKey}`].length > 0) {
+          contactPubkeys = cached[`following_${publicKey}`];
+        }
+      }
+
+      // Third: if still empty, fetch from relays
+      if (contactPubkeys.length === 0) {
+        const contacts = await fetchFollowingList(publicKey);
+        contactPubkeys = contacts.map((c) => c.pubkey);
+        // Save to local for next time
+        if (contactPubkeys.length > 0) {
+          await chrome.storage.local.set({ [`following_${publicKey}`]: contactPubkeys });
+        }
+      }
+
+      // Convert pubkeys to ContactInfo format
+      const contacts: ContactInfo[] = contactPubkeys.map((pk) => ({ pubkey: pk }));
       setFollowing(contacts);
 
-      // Fetch profiles in batches
+      // Fetch profiles
       if (contacts.length > 0) {
         setLoadingProfiles(true);
-        const pubkeys = contacts.map((c) => c.pubkey);
-        const profileData = await fetchProfiles(pubkeys);
-        setProfiles(profileData);
+
+        // Check local profile cache first
+        const profileMap = new Map<string, ProfileMetadata>();
+        const uncachedPubkeys: string[] = [];
+
+        for (const pk of contactPubkeys) {
+          const cached = await chrome.storage.local.get(`profile_${pk}`);
+          if (cached[`profile_${pk}`]) {
+            profileMap.set(pk, cached[`profile_${pk}`]);
+          } else {
+            uncachedPubkeys.push(pk);
+          }
+        }
+
+        // Show cached profiles immediately
+        if (profileMap.size > 0) {
+          setProfiles(new Map(profileMap));
+          setLoading(false);
+        }
+
+        // Fetch uncached from relays
+        if (uncachedPubkeys.length > 0) {
+          const fetched = await fetchProfiles(uncachedPubkeys);
+          for (const [pk, profile] of fetched) {
+            profileMap.set(pk, profile);
+            // Cache for next time
+            await chrome.storage.local.set({ [`profile_${pk}`]: profile });
+          }
+          setProfiles(new Map(profileMap));
+        }
+
         setLoadingProfiles(false);
       }
     } catch (err) {
@@ -163,11 +216,11 @@ export function MultiSig({ publicKey, onBack, onCreated }: Props) {
   if (step === 'result' && result) {
     return (
       <div className="h-full flex flex-col p-4">
-        <div className="flex items-center gap-2 mb-6">
-          <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-            <ArrowLeft className="w-4 h-4" />
+        <div className="page-header mb-6">
+          <button onClick={onBack} className="btn-back">
+            <ArrowLeft className="w-5 h-5" />
           </button>
-          <h1 className="text-lg font-bold">Multi-Sig Created</h1>
+          <h1>Multi-Sig Created</h1>
         </div>
 
         <div className="flex-1 flex flex-col items-center justify-center">
@@ -240,11 +293,11 @@ export function MultiSig({ publicKey, onBack, onCreated }: Props) {
   if (step === 'configure') {
     return (
       <div className="h-full flex flex-col p-4">
-        <div className="flex items-center gap-2 mb-4">
-          <button onClick={() => setStep('select')} className="p-1.5 hover:bg-surface-700 rounded-lg">
-            <ArrowLeft className="w-4 h-4" />
+        <div className="page-header">
+          <button onClick={() => setStep('select')} className="btn-back">
+            <ArrowLeft className="w-5 h-5" />
           </button>
-          <h1 className="text-lg font-bold">Configure Threshold</h1>
+          <h1>Configure Threshold</h1>
         </div>
 
         {/* Visual threshold selector */}
@@ -341,11 +394,11 @@ export function MultiSig({ publicKey, onBack, onCreated }: Props) {
   return (
     <div className="h-full flex flex-col p-4">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-3">
-        <button onClick={onBack} className="p-1.5 hover:bg-surface-700 rounded-lg">
-          <ArrowLeft className="w-4 h-4" />
+      <div className="page-header">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-bold">Social Multi-Sig</h1>
+        <h1>Social Multi-Sig</h1>
       </div>
 
       {/* Search */}
