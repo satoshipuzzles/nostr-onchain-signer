@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   ArrowLeft, Plus, Wallet, Users, Clock, ExternalLink,
-  Copy, Check, Send, Loader2, ChevronRight, Shield,
+  Copy, Check, Send, Loader2, Shield,
 } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { getMempoolAddressUrl, fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
@@ -32,6 +32,19 @@ export function MultisigVault({ publicKey, onCreateNew, onRequestSignature, onBa
     const all = await loadMultisigWallets();
     setWallets(all.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
     setLoading(false);
+
+    // Refresh balances in background for all wallets
+    for (const wallet of all) {
+      try {
+        const bal = await fetchBalance(wallet.wallet.address);
+        if (bal.total !== wallet.currentBalance) {
+          await updateMultisigBalance(wallet.id, bal.total);
+          setWallets((prev) =>
+            prev.map((w) => w.id === wallet.id ? { ...w, currentBalance: bal.total } : w)
+          );
+        }
+      } catch {}
+    }
   }
 
   if (selectedWallet) {
@@ -134,11 +147,12 @@ function WalletCard({ wallet, onClick }: { wallet: ArchivedMultisig; onClick: ()
         </div>
 
         <div className="text-right flex-shrink-0">
-          {wallet.currentBalance > 0 ? (
-            <p className="text-sm font-medium text-bitcoin">{formatSats(wallet.currentBalance)}</p>
-          ) : (
-            <ChevronRight className="w-4 h-4 text-gray-600" />
-          )}
+          <p className={`text-sm font-medium ${wallet.currentBalance > 0 ? 'text-bitcoin' : 'text-gray-500'}`}>
+            {formatSats(wallet.currentBalance)}
+          </p>
+          <p className="text-[10px] text-gray-600">
+            {new Date(wallet.createdAt).toLocaleDateString()}
+          </p>
         </div>
       </div>
     </button>

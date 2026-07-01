@@ -140,7 +140,7 @@ export function App() {
   if (page === 'unlock') return <Unlock onUnlocked={onUnlocked} />;
 
   if (page === 'multisig') {
-    return <MultiSig publicKey={publicKey} onBack={() => setPage('dashboard')} />;
+    return <MultiSig publicKey={publicKey} onBack={() => setPage('dashboard')} onCreated={() => setPage('multisig-vault')} />;
   }
 
   if (page === 'multisig-vault') {

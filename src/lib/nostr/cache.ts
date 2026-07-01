@@ -12,6 +12,7 @@
 import { type ProfileMetadata } from './social';
 import { KIND } from './events';
 import { getReadRelays, loadRelayList } from './relays';
+import { npubToPubkey } from './keys';
 
 const CACHE_KEY = 'profile_cache_v2';
 const BATCH_DELAY_MS = 300;
@@ -458,7 +459,6 @@ export async function searchProfilesNip50(
     let hex = query;
     if (query.startsWith('npub1')) {
       try {
-        const { npubToPubkey } = await import('./keys');
         hex = npubToPubkey(query);
       } catch {}
     }

@@ -1,20 +1,23 @@
 import { useState, useEffect, useMemo } from 'react';
 import { fetchFollowingList, fetchProfiles, type ContactInfo, type ProfileMetadata } from '@/lib/nostr/social';
-import { createMultisigFromPubkeys } from '@/lib/bitcoin/multisig';
+import { createMultisigFromPubkeys, type MultisigWallet } from '@/lib/bitcoin/multisig';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { saveMultisigWallet, createArchivedMultisig, type KeyHolder } from '@/lib/bitcoin/wallet-store';
+import { fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
 import {
   ArrowLeft, Users, Check, Loader2, Search, Shield, Copy,
-  ChevronDown, ChevronUp, BadgeCheck, Zap,
+  BadgeCheck, Zap,
 } from 'lucide-react';
 
 interface Props {
   publicKey: string;
   onBack: () => void;
+  onCreated?: () => void;
 }
 
 type Step = 'select' | 'configure' | 'result';
 
-export function MultiSig({ publicKey, onBack }: Props) {
+export function MultiSig({ publicKey, onBack, onCreated }: Props) {
   const [step, setStep] = useState<Step>('select');
   const [following, setFollowing] = useState<ContactInfo[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -24,8 +27,9 @@ export function MultiSig({ publicKey, onBack }: Props) {
   const [loading, setLoading] = useState(false);
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [result, setResult] = useState<{ address: string; threshold: number; total: number } | null>(null);
+  const [result, setResult] = useState<{ address: string; threshold: number; total: number; wallet: MultisigWallet } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     loadFollowing();
@@ -99,19 +103,51 @@ export function MultiSig({ publicKey, onBack }: Props) {
     setStep('configure');
   }
 
-  function handleCreate() {
+  async function handleCreate() {
     const allKeys = includeOwn
       ? [publicKey, ...Array.from(selectedKeys)]
       : Array.from(selectedKeys);
 
     if (allKeys.length < 2 || threshold > allKeys.length) return;
 
+    setSaving(true);
     try {
       const wallet = createMultisigFromPubkeys(allKeys, threshold);
-      setResult({ address: wallet.address, threshold, total: allKeys.length });
+
+      // Build key holder list with profiles
+      const keyHolders: KeyHolder[] = allKeys.map((pk) => ({
+        pubkey: pk,
+        profile: profiles.get(pk) || (pk === publicKey ? { pubkey: pk, name: 'You' } : undefined),
+        isOwnKey: pk === publicKey,
+      }));
+
+      // Create a readable name
+      const signerNames = keyHolders
+        .filter((h) => !h.isOwnKey)
+        .slice(0, 3)
+        .map((h) => h.profile?.displayName || h.profile?.name || h.pubkey.slice(0, 6))
+        .join(', ');
+      const walletName = `${threshold}-of-${allKeys.length} with ${signerNames}${keyHolders.length > 4 ? '...' : ''}`;
+
+      // Save to storage
+      const archived = createArchivedMultisig(wallet, keyHolders, walletName);
+      await saveMultisigWallet(archived);
+
+      // Try to fetch initial balance
+      try {
+        const bal = await fetchBalance(wallet.address);
+        if (bal.total > 0) {
+          archived.currentBalance = bal.total;
+          await saveMultisigWallet(archived);
+        }
+      } catch {}
+
+      setResult({ address: wallet.address, threshold, total: allKeys.length, wallet });
       setStep('result');
     } catch (err) {
       console.error('Failed to create multisig:', err);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -191,8 +227,8 @@ export function MultiSig({ publicKey, onBack }: Props) {
           <button onClick={() => { setResult(null); setStep('select'); }} className="btn-secondary w-full">
             Create Another
           </button>
-          <button onClick={onBack} className="btn-primary w-full">
-            Done
+          <button onClick={() => onCreated ? onCreated() : onBack()} className="btn-primary w-full">
+            View My Wallets
           </button>
         </div>
       </div>
@@ -291,8 +327,9 @@ export function MultiSig({ publicKey, onBack }: Props) {
         </label>
 
         <div className="mt-auto">
-          <button onClick={handleCreate} className="btn-primary w-full">
-            Create {threshold}-of-{totalKeys} Multi-Sig
+          <button onClick={handleCreate} disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
+            {saving ? 'Creating...' : `Create ${threshold}-of-${totalKeys} Multi-Sig`}
           </button>
         </div>
       </div>
