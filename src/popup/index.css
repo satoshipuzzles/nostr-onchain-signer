@@ -19,7 +19,6 @@
     @apply bg-surface-900 text-white antialiased;
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
     padding-top: var(--safe-top);
-    padding-bottom: var(--safe-bottom);
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
     -webkit-tap-highlight-color: transparent;
