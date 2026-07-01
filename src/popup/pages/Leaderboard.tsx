@@ -7,6 +7,7 @@ import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
+import { useAuth } from '../context/AuthContext';
 
 interface LeaderboardEntry {
   pubkey: string;
@@ -25,15 +26,16 @@ type DataSource = 'cornchat' | 'following';
 
 export function Leaderboard() {
   const navigate = useNavigate();
+  const { publicKey, following } = useAuth();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
-  const [dataSource, setDataSource] = useState<DataSource>('cornchat');
+  const [dataSource, setDataSource] = useState<DataSource>('following');
 
   useEffect(() => {
-    loadLeaderboard();
+    loadFromFollowing();
   }, []);
 
   async function fetchWithCorsProxy(url: string, signal: AbortSignal): Promise<Response> {
@@ -142,16 +144,21 @@ export function Leaderboard() {
     setProcessing('Loading from your following list...');
 
     try {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays
-        : ['wss://relay.damus.io', 'wss://nos.lol'];
-
-      const followingPubkeys = await fetchFollowingList(relayUrls);
+      // Use the following list from AuthContext (already loaded)
+      let followingPubkeys: string[] = [];
+      if (following instanceof Set && following.size > 0) {
+        followingPubkeys = Array.from(following);
+      } else {
+        // Fallback: try to load from storage
+        const stored = await chrome.storage.local.get(`following_${publicKey}`);
+        const raw = stored[`following_${publicKey}`];
+        if (Array.isArray(raw) && raw.length > 0) {
+          followingPubkeys = raw;
+        }
+      }
 
       if (followingPubkeys.length === 0) {
-        throw new Error('No following list found. Log in and follow some users first.');
+        throw new Error('No following list found. Follow some users first to see the leaderboard.');
       }
 
       const results: LeaderboardEntry[] = [];
