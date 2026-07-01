@@ -7,12 +7,10 @@ import {
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
-import { pubkeyToNpub } from '@/lib/nostr/keys';
 import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
-  Shield, ChevronRight, AlertTriangle, Copy, Link, FileText,
+  Shield, AlertTriangle, Copy, Link, FileText,
   Send,
 } from 'lucide-react';
 
@@ -193,6 +191,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       <RequestDetail
         request={selectedRequest}
         profile={profiles.get(selectedRequest.senderPubkey)}
+        publicKey={publicKey}
         onBack={() => setSelectedRequest(null)}
         onSigned={() => {
           setRequests((prev) =>
@@ -413,19 +412,88 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 function RequestDetail({
   request,
   profile,
+  publicKey,
   onBack,
   onSigned,
 }: {
   request: SigningRequest;
   profile?: ProfileMetadata | null;
+  publicKey: string;
   onBack: () => void;
   onSigned: () => void;
 }) {
+  const [signing, setSigning] = useState(false);
+  const [copied, setCopied] = useState('');
   const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
 
   async function handleSign() {
-    await markRequestStatus(request.eventId, 'signed');
-    onSigned();
+    setSigning(true);
+    try {
+      // Create a kind 9801 signing response
+      const responseEvent = {
+        kind: 9801,
+        content: JSON.stringify({
+          round_id: request.round_id,
+          psbt_hex: request.psbt_hex,
+          accepted: true,
+          message: 'Signed via Nostr Onchain',
+        }),
+        tags: [
+          ['p', request.senderPubkey],
+          ['r', request.round_id],
+          ['e', request.eventId],
+        ],
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: publicKey,
+      };
+
+      // Sign the response
+      const signResponse = await chrome.runtime.sendMessage({
+        type: 'nip07:signEvent',
+        payload: { event: responseEvent },
+        id: `sign_${Date.now()}`,
+      });
+
+      if (signResponse.error) throw new Error(signResponse.error);
+
+      // Publish to relays
+      const { publishEvent } = await import('@/lib/nostr/discovery');
+      await publishEvent(signResponse.result);
+
+      // Also send a DM to the requester notifying them
+      const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
+      const dmEvent = {
+        kind: 4,
+        content: dmContent,
+        tags: [['p', request.senderPubkey]],
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: publicKey,
+      };
+
+      const dmSignResponse = await chrome.runtime.sendMessage({
+        type: 'nip07:signEvent',
+        payload: { event: dmEvent },
+        id: `dm_${Date.now()}`,
+      });
+
+      if (!dmSignResponse.error && dmSignResponse.result) {
+        await publishEvent(dmSignResponse.result);
+      }
+
+      await markRequestStatus(request.eventId, 'signed');
+      onSigned();
+    } catch (err) {
+      console.error('Sign failed:', err);
+      alert(`Signing failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setSigning(false);
+    }
+  }
+
+  function copyLink(text: string, label: string) {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(''), 2000);
   }
 
   return (
@@ -437,7 +505,7 @@ function RequestDetail({
         <h1>Request Detail</h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      <div className="flex-1 overflow-y-auto px-4 pb-20">
         {/* Sender */}
         <div className="card mb-3">
           <div className="flex items-center gap-2 mb-3">
@@ -483,12 +551,22 @@ function RequestDetail({
 
           <div>
             <p className="text-[10px] text-gray-500 mb-0.5">Multisig Address</p>
-            <code className="text-[11px] text-gray-300 font-mono break-all">{request.multisig_address}</code>
+            <div className="flex items-center gap-1">
+              <code className="text-[11px] text-gray-300 font-mono break-all flex-1">{request.multisig_address}</code>
+              <button onClick={() => copyLink(request.multisig_address, 'addr')} className="p-1 text-gray-500 hover:text-white">
+                {copied === 'addr' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              </button>
+            </div>
           </div>
 
           <div>
             <p className="text-[10px] text-gray-500 mb-0.5">Round ID</p>
-            <code className="text-[11px] text-gray-300 font-mono break-all">{request.round_id}</code>
+            <div className="flex items-center gap-1">
+              <code className="text-[11px] text-gray-300 font-mono break-all flex-1">{request.round_id}</code>
+              <button onClick={() => copyLink(request.round_id, 'round')} className="p-1 text-gray-500 hover:text-white">
+                {copied === 'round' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              </button>
+            </div>
           </div>
 
           <div>
@@ -497,6 +575,21 @@ function RequestDetail({
               {new Date(request.expires_at * 1000).toLocaleString()}
             </p>
           </div>
+        </div>
+
+        {/* Shareable link */}
+        <div className="card mb-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Link className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Share</span>
+          </div>
+          <button
+            onClick={() => copyLink(`nostr:${request.eventId}`, 'link')}
+            className="w-full flex items-center gap-2 px-3 py-2 bg-surface-700 rounded-lg hover:bg-surface-600 transition-colors"
+          >
+            <span className="text-xs text-gray-300 truncate flex-1 font-mono">nostr:{request.eventId.slice(0, 24)}...</span>
+            {copied === 'link' ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-400" />}
+          </button>
         </div>
 
         {/* PSBT Preview */}
@@ -514,9 +607,16 @@ function RequestDetail({
 
         {/* Action */}
         {request.status === 'pending' && (
-          <button onClick={handleSign} className="btn-primary w-full flex items-center justify-center gap-2">
-            <Check className="w-4 h-4" />
-            Sign Transaction
+          <button
+            onClick={handleSign}
+            disabled={signing}
+            className="btn-primary w-full flex items-center justify-center gap-2"
+          >
+            {signing ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
+            ) : (
+              <><Check className="w-4 h-4" /> Sign &amp; Notify via DM</>
+            )}
           </button>
         )}
       </div>

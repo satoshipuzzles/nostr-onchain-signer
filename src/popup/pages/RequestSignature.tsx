@@ -88,6 +88,34 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
         if (!response.error && response.result) {
           await publishEvent(response.result);
           sentToPubkeys.push(signer.pubkey);
+
+          // Also send a DM with a signing link
+          const signerName = signer.profile?.displayName || signer.profile?.name || 'Hey';
+          const dmContent = `🔑 ${signerName}, you have a new signing request!\n\n` +
+            `📝 ${round.memo}\n` +
+            `💰 ${formatSats(amount)} sats\n` +
+            `📍 ${wallet.wallet.address.slice(0, 20)}...\n` +
+            `🔗 Round: ${round.id.slice(0, 16)}...\n\n` +
+            `Open your Nostr Onchain signer to review and sign.\n` +
+            `nostr:${response.result.id}`;
+
+          const dmEvent = {
+            kind: 4,
+            content: dmContent,
+            tags: [['p', signer.pubkey]],
+            created_at: Math.floor(Date.now() / 1000),
+            pubkey: publicKey,
+          };
+
+          const dmResponse = await chrome.runtime.sendMessage({
+            type: 'nip07:signEvent',
+            payload: { event: dmEvent },
+            id: createMessageId(),
+          });
+
+          if (!dmResponse.error && dmResponse.result) {
+            await publishEvent(dmResponse.result);
+          }
         }
 
         // Track as pending outbound
