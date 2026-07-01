@@ -3,9 +3,8 @@ import { createMessageId } from '@/shared/messages';
 import { createOnchainInvoice } from '@/lib/nostr/kinds';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
-import {
-  ArrowLeft, FileText, Loader2, Check, Send,
-} from 'lucide-react';
+import { npubToPubkey } from '@/lib/nostr/keys';
+import { ArrowLeft, Loader2, Send } from 'lucide-react';
 
 interface Props {
   publicKey: string;
@@ -37,7 +36,6 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
     try {
       let recipientHex = recipient;
       if (recipient.startsWith('npub1')) {
-        const { npubToPubkey } = await import('@/lib/nostr/keys');
         recipientHex = npubToPubkey(recipient);
       }
 

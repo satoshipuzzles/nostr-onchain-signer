@@ -4,15 +4,26 @@ import {
   markRequestStatus,
   type SigningRequest,
 } from '@/lib/nostr/signing-inbox';
+import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
+import { downloadPsbtFile } from '@/lib/bitcoin/psbt-builder';
+import { createMessageId } from '@/shared/messages';
+import { InvoiceCreator } from '@/popup/components/InvoiceCreator';
 import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
   Shield, AlertTriangle, Copy, Link, FileText,
-  Send,
+  Send, QrCode, Download, ExternalLink, CheckCircle2,
+  Plus,
 } from 'lucide-react';
+
+const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
+
+function signingUrl(roundId: string): string {
+  return `${VERCEL_URL}/sign/${roundId}`;
+}
 
 interface Props {
   publicKey: string;
@@ -62,6 +73,155 @@ function StatusBadge({ status }: { status: SigningRequest['status'] }) {
   }
 }
 
+// ─── Invoice types ─────────────────────────────────────────────
+
+interface InvoiceItem {
+  eventId: string;
+  pubkey: string;
+  createdAt: number;
+  direction: 'sent' | 'received';
+  invoice: OnchainInvoiceContent;
+}
+
+// ─── 9801 response subscription ────────────────────────────────
+
+function subscribeSigningResponses(
+  relayUrls: string[],
+  userPubkey: string,
+  onResponse: (roundId: string, responderPubkey: string) => void
+): () => void {
+  const connections: { ws: WebSocket; subId: string }[] = [];
+  const seenIds = new Set<string>();
+
+  for (const url of relayUrls) {
+    const subId = `resp_${Math.random().toString(36).slice(2, 10)}`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      continue;
+    }
+    connections.push({ ws, subId });
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify(['REQ', subId, {
+        kinds: [CUSTOM_KIND.SIGNING_RESPONSE],
+        '#p': [userPubkey],
+        limit: 50,
+      }]));
+    };
+
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data[0] === 'EVENT' && data[1] === subId) {
+          const event = data[2];
+          if (seenIds.has(event.id)) return;
+          seenIds.add(event.id);
+          try {
+            const content = JSON.parse(event.content);
+            if (content.round_id && content.accepted) {
+              onResponse(content.round_id, event.pubkey);
+            }
+          } catch { /* ignore malformed */ }
+        }
+      } catch { /* ignore */ }
+    };
+  }
+
+  return () => {
+    for (const conn of connections) {
+      try {
+        if (conn.ws.readyState === WebSocket.OPEN) {
+          conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+        }
+        conn.ws.close();
+      } catch { /* ignore */ }
+    }
+    connections.length = 0;
+  };
+}
+
+// ─── Invoice subscription ──────────────────────────────────────
+
+function subscribeInvoices(
+  relayUrls: string[],
+  userPubkey: string,
+  onInvoice: (item: InvoiceItem) => void,
+  onEose?: () => void
+): () => void {
+  const connections: { ws: WebSocket; subId: string }[] = [];
+  const seenIds = new Set<string>();
+  let eoseCount = 0;
+  let eoseFired = false;
+
+  for (const url of relayUrls) {
+    const subId = `inv_${Math.random().toString(36).slice(2, 10)}`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      continue;
+    }
+    connections.push({ ws, subId });
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify(['REQ', subId, {
+        kinds: [CUSTOM_KIND.ONCHAIN_INVOICE],
+        '#p': [userPubkey],
+        limit: 50,
+      }]));
+      ws.send(JSON.stringify(['REQ', `${subId}_out`, {
+        kinds: [CUSTOM_KIND.ONCHAIN_INVOICE],
+        authors: [userPubkey],
+        limit: 50,
+      }]));
+    };
+
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data[0] === 'EVENT' && (data[1] === subId || data[1] === `${subId}_out`)) {
+          const event = data[2];
+          if (seenIds.has(event.id)) return;
+          seenIds.add(event.id);
+          const parsed = parseOnchainInvoice(event.content);
+          if (parsed) {
+            onInvoice({
+              eventId: event.id,
+              pubkey: event.pubkey,
+              createdAt: event.created_at,
+              direction: event.pubkey === userPubkey ? 'sent' : 'received',
+              invoice: parsed,
+            });
+          }
+        } else if (data[0] === 'EOSE') {
+          eoseCount++;
+          if (!eoseFired && eoseCount >= Math.min(relayUrls.length, 2)) {
+            eoseFired = true;
+            onEose?.();
+          }
+        }
+      } catch { /* ignore */ }
+    };
+  }
+
+  return () => {
+    for (const conn of connections) {
+      try {
+        if (conn.ws.readyState === WebSocket.OPEN) {
+          conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+          conn.ws.send(JSON.stringify(['CLOSE', `${conn.subId}_out`]));
+        }
+        conn.ws.close();
+      } catch { /* ignore */ }
+    }
+    connections.length = 0;
+  };
+}
+
+// ─── useSigningCount hook ──────────────────────────────────────
+
 export function useSigningCount(publicKey: string): number {
   const [count, setCount] = useState(0);
 
@@ -101,23 +261,33 @@ export function useSigningCount(publicKey: string): number {
   return count;
 }
 
+// ─── Main Component ────────────────────────────────────────────
+
 export function SigningInbox({ publicKey, onBack }: Props) {
   const [requests, setRequests] = useState<SigningRequest[]>([]);
   const [outbound, setOutbound] = useState<PendingSignatureRequest[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [invoicesLoading, setInvoicesLoading] = useState(true);
   const [selectedRequest, setSelectedRequest] = useState<SigningRequest | null>(null);
   const [activeTab, setActiveTab] = useState<'incoming' | 'outbound' | 'invoices'>('incoming');
   const [copied, setCopied] = useState('');
+  const [showInvoiceCreator, setShowInvoiceCreator] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const responseCleanupRef = useRef<(() => void) | null>(null);
+  const invoiceCleanupRef = useRef<(() => void) | null>(null);
+  const requestsRef = useRef(requests);
+  requestsRef.current = requests;
 
   useEffect(() => {
     loadInbox();
     loadOutbound();
+    loadInvoices();
     return () => {
-      if (cleanupRef.current) {
-        cleanupRef.current();
-      }
+      cleanupRef.current?.();
+      responseCleanupRef.current?.();
+      invoiceCleanupRef.current?.();
     };
   }, [publicKey]);
 
@@ -151,7 +321,47 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       }
     );
 
+    // Feature 3: subscribe to kind 9801 responses for live signed_count updates
+    responseCleanupRef.current = subscribeSigningResponses(
+      relayUrls,
+      publicKey,
+      (roundId, _responderPubkey) => {
+        setRequests((prev) =>
+          prev.map((r) => {
+            if (r.round_id === roundId) {
+              return { ...r, signed_count: r.signed_count + 1 };
+            }
+            return r;
+          })
+        );
+      }
+    );
+
     setTimeout(() => setLoading(false), 15000);
+  }
+
+  async function loadInvoices() {
+    const relayList = await loadRelayList();
+    const relays = getReadRelays(relayList);
+    const relayUrls = relays.length > 0
+      ? relays
+      : ['wss://relay.damus.io', 'wss://nos.lol'];
+
+    const collected: InvoiceItem[] = [];
+
+    invoiceCleanupRef.current = subscribeInvoices(
+      relayUrls,
+      publicKey,
+      (item) => {
+        collected.push(item);
+        setInvoices([...collected].sort((a, b) => b.createdAt - a.createdAt));
+      },
+      () => {
+        setInvoicesLoading(false);
+      }
+    );
+
+    setTimeout(() => setInvoicesLoading(false), 15000);
   }
 
   const resolveProfile = useCallback(async (pubkey: string) => {
@@ -185,6 +395,19 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
   const outboundPending = outbound.filter((r) => r.status === 'pending').length;
+
+  if (showInvoiceCreator) {
+    return (
+      <InvoiceCreator
+        publicKey={publicKey}
+        onClose={() => setShowInvoiceCreator(false)}
+        onCreated={() => {
+          setShowInvoiceCreator(false);
+          loadInvoices();
+        }}
+      />
+    );
+  }
 
   if (selectedRequest) {
     return (
@@ -279,9 +502,36 @@ export function SigningInbox({ publicKey, onBack }: Props) {
             {requests.map((request) => {
               const profile = profiles.get(request.senderPubkey);
               const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
+              const isReady = request.signed_count >= request.threshold;
 
               return (
                 <div key={request.eventId} className="card mb-3">
+                  {/* Feature 5: threshold banner */}
+                  {isReady && (
+                    <div className="flex items-center gap-2 px-3 py-2 mb-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                      <CheckCircle2 className="w-4 h-4 text-green-400 flex-shrink-0" />
+                      <span className="text-xs font-medium text-green-400">Ready to Broadcast</span>
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <button
+                          onClick={() => downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`)}
+                          className="p-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 text-green-400 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                          title="Download PSBT"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <a
+                          href="https://mempool.space/tx/push"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 text-green-400 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                          title="Broadcast on mempool.space"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex items-start gap-3">
                     {profile?.picture ? (
                       <img src={profile.picture} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
@@ -304,21 +554,23 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                       )}
 
                       <div className="flex items-center gap-3 text-[10px] text-gray-500 mb-2">
-                        <span>{request.signed_count}/{request.threshold} signed</span>
+                        <span className={isReady ? 'text-green-400 font-medium' : ''}>
+                          {request.signed_count}/{request.threshold} signed
+                        </span>
                         <span>{request.total_signers} signers</span>
                       </div>
 
                       <div className="flex items-center gap-2">
                         <StatusBadge status={request.status} />
 
-                        {/* Copy link button */}
+                        {/* Feature 1: copy signing URL */}
                         <button
                           onClick={() => copyToClipboard(
-                            `nostr:${request.eventId}`,
+                            signingUrl(request.round_id),
                             request.eventId
                           )}
-                          className="p-1 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors"
-                          title="Copy request link"
+                          className="p-1 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[28px] min-h-[28px] flex items-center justify-center"
+                          title="Copy signing link"
                         >
                           {copied === request.eventId ? <Check className="w-3 h-3 text-green-400" /> : <Link className="w-3 h-3" />}
                         </button>
@@ -327,13 +579,13 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                           <div className="flex items-center gap-1.5 ml-auto">
                             <button
                               onClick={() => handleDecline(request)}
-                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors"
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors min-h-[28px]"
                             >
                               Decline
                             </button>
                             <button
                               onClick={() => handleAccept(request)}
-                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/30 hover:bg-bitcoin/25 transition-colors"
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/30 hover:bg-bitcoin/25 transition-colors min-h-[28px]"
                             >
                               Review
                             </button>
@@ -381,9 +633,9 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                         {req.status}
                       </span>
                       <button
-                        onClick={() => copyToClipboard(req.roundId, req.id)}
-                        className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors"
-                        title="Copy round ID"
+                        onClick={() => copyToClipboard(signingUrl(req.roundId), req.id)}
+                        className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                        title="Copy signing link"
                       >
                         {copied === req.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
                       </button>
@@ -396,18 +648,82 @@ export function SigningInbox({ publicKey, onBack }: Props) {
         )}
 
         {activeTab === 'invoices' && (
-          <div className="flex flex-col items-center justify-center py-12">
-            <FileText className="w-12 h-12 text-gray-600 mb-3" />
-            <p className="text-sm text-gray-400">No invoices yet</p>
-            <p className="text-xs text-gray-600 mt-1 text-center max-w-[240px]">
-              On-chain invoices (kind 9733) from others requesting payment will appear here
-            </p>
-          </div>
+          <>
+            {/* Feature 2: Create Invoice button */}
+            <button
+              onClick={() => setShowInvoiceCreator(true)}
+              className="btn-primary w-full flex items-center justify-center gap-2 mb-4 min-h-[44px]"
+            >
+              <Plus className="w-4 h-4" />
+              Create Invoice
+            </button>
+
+            {invoicesLoading && invoices.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 text-nostr animate-spin mb-3" />
+                <p className="text-sm text-gray-400">Loading invoices...</p>
+              </div>
+            )}
+
+            {!invoicesLoading && invoices.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-8">
+                <FileText className="w-12 h-12 text-gray-600 mb-3" />
+                <p className="text-sm text-gray-400">No invoices yet</p>
+                <p className="text-xs text-gray-600 mt-1 text-center max-w-[240px]">
+                  Create an onchain invoice or receive one from others
+                </p>
+              </div>
+            )}
+
+            {invoices.map((item) => (
+              <div key={item.eventId} className="card mb-3">
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
+                    item.direction === 'sent' ? 'bg-bitcoin/20' : 'bg-nostr/20'
+                  }`}>
+                    <FileText className={`w-4 h-4 ${
+                      item.direction === 'sent' ? 'text-bitcoin' : 'text-nostr'
+                    }`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="text-sm font-medium truncate">
+                        {item.invoice.memo || 'Onchain Invoice'}
+                      </span>
+                      <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
+                        item.direction === 'sent' ? 'bg-bitcoin/15 text-bitcoin' : 'bg-nostr/15 text-nostr'
+                      }`}>
+                        {item.direction === 'sent' ? 'Sent' : 'Received'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                      {item.invoice.amount_sats && (
+                        <span className="text-bitcoin font-medium">{item.invoice.amount_sats.toLocaleString()} sats</span>
+                      )}
+                      <span>{formatTimeAgo(item.createdAt)}</span>
+                    </div>
+                    <code className="text-[9px] text-gray-600 font-mono block mt-1 truncate">
+                      {item.invoice.address}
+                    </code>
+                  </div>
+                  <button
+                    onClick={() => copyToClipboard(item.eventId, `inv_${item.eventId}`)}
+                    className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
+                    title="Copy event ID"
+                  >
+                    {copied === `inv_${item.eventId}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </>
         )}
       </div>
     </div>
   );
 }
+
+// ─── Request Detail ────────────────────────────────────────────
 
 function RequestDetail({
   request,
@@ -425,11 +741,13 @@ function RequestDetail({
   const [signing, setSigning] = useState(false);
   const [copied, setCopied] = useState('');
   const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
+  const webSignUrl = signingUrl(request.round_id);
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(webSignUrl)}`;
+  const isReady = request.signed_count >= request.threshold;
 
   async function handleSign() {
     setSigning(true);
     try {
-      // Create a kind 9801 signing response
       const responseEvent = {
         kind: 9801,
         content: JSON.stringify({
@@ -447,20 +765,17 @@ function RequestDetail({
         pubkey: publicKey,
       };
 
-      // Sign the response
       const signResponse = await chrome.runtime.sendMessage({
         type: 'nip07:signEvent',
         payload: { event: responseEvent },
-        id: `sign_${Date.now()}`,
+        id: createMessageId(),
       });
 
       if (signResponse.error) throw new Error(signResponse.error);
 
-      // Publish to relays
       const { publishEvent } = await import('@/lib/nostr/discovery');
       await publishEvent(signResponse.result);
 
-      // Also send a DM to the requester notifying them
       const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
       const dmEvent = {
         kind: 4,
@@ -473,7 +788,7 @@ function RequestDetail({
       const dmSignResponse = await chrome.runtime.sendMessage({
         type: 'nip07:signEvent',
         payload: { event: dmEvent },
-        id: `dm_${Date.now()}`,
+        id: createMessageId(),
       });
 
       if (!dmSignResponse.error && dmSignResponse.result) {
@@ -506,6 +821,38 @@ function RequestDetail({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-20">
+        {/* Feature 5: threshold banner in detail view */}
+        {isReady && (
+          <div className="card mb-3 border-green-500/30 bg-green-500/5">
+            <div className="flex items-center gap-2 mb-3">
+              <CheckCircle2 className="w-5 h-5 text-green-400" />
+              <span className="text-sm font-semibold text-green-400">Ready to Broadcast</span>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              Threshold reached ({request.signed_count}/{request.threshold} signatures).
+              Download the final PSBT and broadcast to the network.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`)}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors text-xs font-medium min-h-[44px]"
+              >
+                <Download className="w-4 h-4" />
+                Download PSBT
+              </button>
+              <a
+                href="https://mempool.space/tx/push"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-xs font-medium min-h-[44px]"
+              >
+                <ExternalLink className="w-4 h-4" />
+                Broadcast
+              </a>
+            </div>
+          </div>
+        )}
+
         {/* Sender */}
         <div className="card mb-3">
           <div className="flex items-center gap-2 mb-3">
@@ -545,7 +892,10 @@ function RequestDetail({
             </div>
             <div>
               <p className="text-[10px] text-gray-500 mb-0.5">Signed</p>
-              <p className="text-sm text-white">{request.signed_count} / {request.threshold}</p>
+              <p className={`text-sm ${isReady ? 'text-green-400 font-semibold' : 'text-white'}`}>
+                {request.signed_count} / {request.threshold}
+                {isReady && ' ✓'}
+              </p>
             </div>
           </div>
 
@@ -553,7 +903,7 @@ function RequestDetail({
             <p className="text-[10px] text-gray-500 mb-0.5">Multisig Address</p>
             <div className="flex items-center gap-1">
               <code className="text-[11px] text-gray-300 font-mono break-all flex-1">{request.multisig_address}</code>
-              <button onClick={() => copyLink(request.multisig_address, 'addr')} className="p-1 text-gray-500 hover:text-white">
+              <button onClick={() => copyLink(request.multisig_address, 'addr')} className="p-1 text-gray-500 hover:text-white min-w-[28px] min-h-[28px] flex items-center justify-center">
                 {copied === 'addr' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
               </button>
             </div>
@@ -563,7 +913,7 @@ function RequestDetail({
             <p className="text-[10px] text-gray-500 mb-0.5">Round ID</p>
             <div className="flex items-center gap-1">
               <code className="text-[11px] text-gray-300 font-mono break-all flex-1">{request.round_id}</code>
-              <button onClick={() => copyLink(request.round_id, 'round')} className="p-1 text-gray-500 hover:text-white">
+              <button onClick={() => copyLink(request.round_id, 'round')} className="p-1 text-gray-500 hover:text-white min-w-[28px] min-h-[28px] flex items-center justify-center">
                 {copied === 'round' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
               </button>
             </div>
@@ -577,19 +927,58 @@ function RequestDetail({
           </div>
         </div>
 
-        {/* Shareable link */}
+        {/* Feature 1: Share section with both nostr: and web URL */}
         <div className="card mb-3">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-3">
             <Link className="w-3.5 h-3.5 text-gray-400" />
             <span className="text-[10px] text-gray-500 uppercase tracking-wider">Share</span>
           </div>
-          <button
-            onClick={() => copyLink(`nostr:${request.eventId}`, 'link')}
-            className="w-full flex items-center gap-2 px-3 py-2 bg-surface-700 rounded-lg hover:bg-surface-600 transition-colors"
-          >
-            <span className="text-xs text-gray-300 truncate flex-1 font-mono">nostr:{request.eventId.slice(0, 24)}...</span>
-            {copied === 'link' ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-400" />}
-          </button>
+
+          <div className="space-y-2">
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1">Signing URL</p>
+              <button
+                onClick={() => copyLink(webSignUrl, 'weblink')}
+                className="w-full flex items-center gap-2 px-3 py-2 bg-surface-700 rounded-lg hover:bg-surface-600 transition-colors min-h-[40px]"
+              >
+                <span className="text-xs text-bitcoin truncate flex-1 font-mono text-left">{webSignUrl}</span>
+                {copied === 'weblink' ? <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" /> : <Copy className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />}
+              </button>
+            </div>
+
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1">Nostr Reference</p>
+              <button
+                onClick={() => copyLink(`nostr:${request.eventId}`, 'nostrlink')}
+                className="w-full flex items-center gap-2 px-3 py-2 bg-surface-700 rounded-lg hover:bg-surface-600 transition-colors min-h-[40px]"
+              >
+                <span className="text-xs text-gray-300 truncate flex-1 font-mono text-left">nostr:{request.eventId.slice(0, 24)}...</span>
+                {copied === 'nostrlink' ? <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" /> : <Copy className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Feature 4: QR code for signing URL */}
+        <div className="card mb-3">
+          <div className="flex items-center gap-2 mb-3">
+            <QrCode className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Scan to Sign</span>
+          </div>
+          <div className="flex justify-center">
+            <div className="bg-white p-3 rounded-xl">
+              <img
+                src={qrCodeUrl}
+                alt="Signing QR Code"
+                width={200}
+                height={200}
+                className="block"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-gray-600 text-center mt-2">
+            Scan from another device to open the signing page
+          </p>
         </div>
 
         {/* PSBT Preview */}
@@ -610,7 +999,7 @@ function RequestDetail({
           <button
             onClick={handleSign}
             disabled={signing}
-            className="btn-primary w-full flex items-center justify-center gap-2"
+            className="btn-primary w-full flex items-center justify-center gap-2 min-h-[44px]"
           >
             {signing ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
