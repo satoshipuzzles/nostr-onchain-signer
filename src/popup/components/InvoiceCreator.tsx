@@ -4,16 +4,27 @@ import { createOnchainInvoice } from '@/lib/nostr/kinds';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { npubToPubkey } from '@/lib/nostr/keys';
-import { ArrowLeft, Loader2, Send, ImageIcon, X } from 'lucide-react';
+import { ArrowLeft, Loader2, Send, ImageIcon, X, Repeat } from 'lucide-react';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 
 const INVOICE_BASE_URL = 'https://nostr-onchain-signer.vercel.app/invoice';
+
+const EXPIRATION_OPTIONS = [
+  { label: '1 hour', seconds: 60 * 60 },
+  { label: '24 hours', seconds: 24 * 60 * 60 },
+  { label: '3 days', seconds: 3 * 24 * 60 * 60 },
+  { label: '7 days', seconds: 7 * 24 * 60 * 60 },
+  { label: '30 days', seconds: 30 * 24 * 60 * 60 },
+  { label: 'Never', seconds: 0 },
+] as const;
 
 interface Props {
   publicKey: string;
   onClose: () => void;
   onCreated: () => void;
 }
+
+type FrequencyUnit = 'days' | 'blocks';
 
 export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
   const [recipientPubkey, setRecipientPubkey] = useState('');
@@ -25,6 +36,11 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [expirationSeconds, setExpirationSeconds] = useState(7 * 24 * 60 * 60);
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [frequencyValue, setFrequencyValue] = useState('30');
+  const [frequencyUnit, setFrequencyUnit] = useState<FrequencyUnit>('days');
+  const [occurrences, setOccurrences] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -73,7 +89,9 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
           address: address.trim(),
           amount_sats: amount,
           memo: memoWithImage,
-          expires_at: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
+          expires_at: expirationSeconds > 0
+            ? Math.floor(Date.now() / 1000) + expirationSeconds
+            : 0,
         },
         recipientHex,
         publicKey
@@ -84,6 +102,15 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
       }
       if (imageUrl) {
         invoiceEvent.tags.push(['image', imageUrl]);
+      }
+      if (isRecurring) {
+        invoiceEvent.tags.push(['recurring', 'true']);
+        if (frequencyUnit === 'days') {
+          invoiceEvent.tags.push(['frequency_days', frequencyValue || '30']);
+        } else {
+          invoiceEvent.tags.push(['frequency_blocks', frequencyValue || '4320']);
+        }
+        invoiceEvent.tags.push(['occurrences', occurrences.trim() || 'unlimited']);
       }
 
       const signResponse = await chrome.runtime.sendMessage({
@@ -224,6 +251,87 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
             className="input-field text-sm"
           />
           <p className="text-[10px] text-gray-600 mt-1">If set, viewers must enter this password to see the Bitcoin address</p>
+        </div>
+
+        {/* Expiration selector */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Expiration</label>
+          <select
+            value={expirationSeconds}
+            onChange={(e) => setExpirationSeconds(Number(e.target.value))}
+            className="input-field text-sm"
+          >
+            {EXPIRATION_OPTIONS.map((opt) => (
+              <option key={opt.label} value={opt.seconds}>
+                {opt.label}{opt.seconds === 7 * 24 * 60 * 60 ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Recurring invoice */}
+        <div className="space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={isRecurring}
+              onChange={(e) => setIsRecurring(e.target.checked)}
+              className="w-4 h-4 rounded border-surface-200/20 bg-surface-700 text-bitcoin focus:ring-bitcoin/50"
+            />
+            <Repeat className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-xs text-gray-300">Make this a recurring invoice</span>
+          </label>
+
+          {isRecurring && (
+            <div className="pl-6 space-y-3 border-l-2 border-surface-200/10">
+              <div>
+                <label className="text-[10px] text-gray-500 mb-1 block">Frequency</label>
+                <div className="flex gap-2">
+                  <div className="flex-1 flex items-center gap-2">
+                    <span className="text-xs text-gray-400 whitespace-nowrap">Every</span>
+                    <input
+                      type="number"
+                      value={frequencyValue}
+                      onChange={(e) => setFrequencyValue(e.target.value)}
+                      className="input-field text-sm w-20"
+                      min="1"
+                    />
+                  </div>
+                  <select
+                    value={frequencyUnit}
+                    onChange={(e) => {
+                      const unit = e.target.value as FrequencyUnit;
+                      setFrequencyUnit(unit);
+                      if (unit === 'blocks' && frequencyValue === '30') {
+                        setFrequencyValue('4320');
+                      } else if (unit === 'days' && frequencyValue === '4320') {
+                        setFrequencyValue('30');
+                      }
+                    }}
+                    className="input-field text-sm w-24"
+                  >
+                    <option value="days">days</option>
+                    <option value="blocks">blocks</option>
+                  </select>
+                </div>
+                {frequencyUnit === 'blocks' && (
+                  <p className="text-[10px] text-gray-600 mt-1">~4320 blocks = ~30 days</p>
+                )}
+              </div>
+
+              <div>
+                <label className="text-[10px] text-gray-500 mb-1 block">Total occurrences</label>
+                <input
+                  type="text"
+                  value={occurrences}
+                  onChange={(e) => setOccurrences(e.target.value)}
+                  placeholder="Leave empty for unlimited"
+                  className="input-field text-sm"
+                />
+                <p className="text-[10px] text-gray-600 mt-1">Number of payments, or leave blank for unlimited</p>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}

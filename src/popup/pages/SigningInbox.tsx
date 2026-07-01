@@ -508,7 +508,11 @@ export function SigningInbox({ publicKey, onBack }: Props) {
               const isReady = request.signed_count >= request.threshold;
 
               return (
-                <div key={request.eventId} className="card mb-3">
+                <div
+                  key={request.eventId}
+                  className="card mb-3 cursor-pointer hover:bg-surface-700/50 transition-colors"
+                  onClick={() => handleAccept(request)}
+                >
                   {/* Feature 5: threshold banner */}
                   {isReady && (
                     <div className="flex items-center gap-2 px-3 py-2 mb-3 rounded-lg bg-green-500/10 border border-green-500/20">
@@ -516,7 +520,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                       <span className="text-xs font-medium text-green-400">Ready to Broadcast</span>
                       <div className="ml-auto flex items-center gap-1.5">
                         <button
-                          onClick={() => downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`)}
+                          onClick={(e) => { e.stopPropagation(); downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`); }}
                           className="p-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 text-green-400 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
                           title="Download PSBT"
                         >
@@ -526,6 +530,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                           href="https://mempool.space/tx/push"
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="p-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 text-green-400 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
                           title="Broadcast on mempool.space"
                         >
@@ -568,10 +573,10 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
                         {/* Feature 1: copy signing URL */}
                         <button
-                          onClick={() => copyToClipboard(
+                          onClick={(e) => { e.stopPropagation(); copyToClipboard(
                             signingUrl(request.round_id),
                             request.eventId
-                          )}
+                          ); }}
                           className="p-1 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[28px] min-h-[28px] flex items-center justify-center"
                           title="Copy signing link"
                         >
@@ -581,13 +586,13 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                         {request.status === 'pending' && (
                           <div className="flex items-center gap-1.5 ml-auto">
                             <button
-                              onClick={() => handleDecline(request)}
+                              onClick={(e) => { e.stopPropagation(); handleDecline(request); }}
                               className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors min-h-[28px]"
                             >
                               Decline
                             </button>
                             <button
-                              onClick={() => handleAccept(request)}
+                              onClick={(e) => { e.stopPropagation(); handleAccept(request); }}
                               className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/30 hover:bg-bitcoin/25 transition-colors min-h-[28px]"
                             >
                               Review

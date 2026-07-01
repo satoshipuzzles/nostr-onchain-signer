@@ -11,8 +11,8 @@ export function Landing({ onGetStarted }: Props) {
       <header className="sticky top-0 z-50 backdrop-blur-xl bg-black/80 border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center">
-              <Shield className="w-5 h-5 text-black" />
+            <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center">
+              <Shield className="w-5 h-5" />
             </div>
             <span className="font-bold text-base">Nostr Onchain</span>
           </div>
@@ -39,8 +39,8 @@ export function Landing({ onGetStarted }: Props) {
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.03)_0%,transparent_60%)]" />
         <div className="relative max-w-6xl mx-auto px-6 py-24 md:py-36 text-center">
-          <div className="w-20 h-20 md:w-24 md:h-24 rounded-3xl bg-white flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-white/5">
-            <Shield className="w-11 h-11 md:w-14 md:h-14 text-black" />
+          <div className="w-20 h-20 md:w-24 md:h-24 rounded-3xl bg-white text-black flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-white/5">
+            <Shield className="w-11 h-11 md:w-14 md:h-14" />
           </div>
           <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold mb-6 tracking-tight leading-[1.1]">
             Social Multi-Sig<br />
@@ -185,8 +185,8 @@ export function Landing({ onGetStarted }: Props) {
       <footer className="border-t border-white/5 bg-white/[0.02]">
         <div className="max-w-6xl mx-auto px-6 py-10 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-7 h-7 rounded-lg bg-white flex items-center justify-center">
-              <Shield className="w-4 h-4 text-black" />
+            <div className="w-7 h-7 rounded-lg bg-white text-black flex items-center justify-center">
+              <Shield className="w-4 h-4" />
             </div>
             <span className="text-sm font-medium text-gray-400">Nostr Onchain</span>
           </div>

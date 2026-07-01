@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Loader2, Copy, Check, ExternalLink, Lock } from 'lucide-react';
+import { Loader2, Copy, Check, ExternalLink, Lock, Repeat } from 'lucide-react';
 import { parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
@@ -220,6 +220,21 @@ export function InvoicePage() {
   const imageUrl = imageTag?.[1];
   const isExpired = invoice.expires_at ? invoice.expires_at * 1000 < Date.now() : false;
 
+  const recurringTag = event?.tags.find((t) => t[0] === 'recurring' && t[1] === 'true');
+  const frequencyDaysTag = event?.tags.find((t) => t[0] === 'frequency_days');
+  const frequencyBlocksTag = event?.tags.find((t) => t[0] === 'frequency_blocks');
+  const occurrencesTag = event?.tags.find((t) => t[0] === 'occurrences');
+
+  const isRecurring = !!recurringTag;
+  const recurringLabel = frequencyDaysTag
+    ? `Every ${frequencyDaysTag[1]} days`
+    : frequencyBlocksTag
+    ? `Every ${frequencyBlocksTag[1]} blocks`
+    : 'Recurring';
+  const occurrencesLabel = occurrencesTag
+    ? occurrencesTag[1] === 'unlimited' ? 'Unlimited' : `${occurrencesTag[1]} payments`
+    : null;
+
   return (
     <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
       <div className="w-full max-w-sm bg-surface-800 rounded-2xl p-6 border border-surface-200/10">
@@ -280,6 +295,20 @@ export function InvoicePage() {
             <span className={`text-xs font-medium ${isExpired ? 'text-red-400' : 'text-green-400'}`}>
               {formatExpiry(invoice.expires_at)}
             </span>
+          </div>
+        )}
+
+        {/* Recurring / Subscription */}
+        {isRecurring && (
+          <div className="bg-surface-700 rounded-xl p-3 mb-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Repeat className="w-3.5 h-3.5 text-nostr" />
+              <span className="text-xs font-medium text-nostr">Subscription</span>
+            </div>
+            <p className="text-sm text-white">{recurringLabel}</p>
+            {occurrencesLabel && (
+              <p className="text-[10px] text-gray-500 mt-0.5">{occurrencesLabel}</p>
+            )}
           </div>
         )}
 

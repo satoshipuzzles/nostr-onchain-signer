@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trophy, Search, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
+import { Trophy, Search, Loader2, RefreshCw, ExternalLink, Users } from 'lucide-react';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
@@ -17,8 +17,11 @@ interface LeaderboardEntry {
 }
 
 const CORNY_CHAT_API = 'https://cornychat.com/_/pantry/api/v1/users/active';
+const CORS_PROXY = 'https://corsproxy.io/?';
 const CACHE_KEY = 'leaderboard_cache';
 const CACHE_TTL = 5 * 60_000; // 5 minutes
+
+type DataSource = 'cornchat' | 'following';
 
 export function Leaderboard() {
   const navigate = useNavigate();
@@ -27,10 +30,24 @@ export function Leaderboard() {
   const [processing, setProcessing] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
+  const [dataSource, setDataSource] = useState<DataSource>('cornchat');
 
   useEffect(() => {
     loadLeaderboard();
   }, []);
+
+  async function fetchWithCorsProxy(url: string, signal: AbortSignal): Promise<Response> {
+    try {
+      const res = await fetch(url, { signal });
+      if (res.ok) return res;
+      throw new Error(`HTTP ${res.status}`);
+    } catch (directErr: any) {
+      if (directErr.name === 'AbortError') throw directErr;
+      const proxyRes = await fetch(`${CORS_PROXY}${encodeURIComponent(url)}`, { signal });
+      if (!proxyRes.ok) throw new Error(`Proxy also failed: HTTP ${proxyRes.status}`);
+      return proxyRes;
+    }
+  }
 
   async function loadLeaderboard() {
     setLoading(true);
@@ -45,19 +62,19 @@ export function Leaderboard() {
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      const timeout = setTimeout(() => controller.abort(), 10000);
       let res: Response;
       try {
-        res = await fetch(CORNY_CHAT_API, { signal: controller.signal });
+        res = await fetchWithCorsProxy(CORNY_CHAT_API, controller.signal);
       } catch (err: any) {
         clearTimeout(timeout);
         if (err.name === 'AbortError') {
           throw new Error('Request timed out — CornChat API may be unavailable');
         }
-        throw new Error('Network error — unable to reach CornChat API');
+        throw new Error('Network error — unable to reach CornChat API (direct + CORS proxy failed)');
       }
       clearTimeout(timeout);
-      if (!res.ok) throw new Error(`CornChat API returned ${res.status}`);
+
       const data = await res.json();
 
       if (!data?.users || !Array.isArray(data.users)) {
@@ -69,6 +86,7 @@ export function Leaderboard() {
       );
 
       setProcessing(`Processing ${users.length} users...`);
+      setDataSource('cornchat');
 
       const results: LeaderboardEntry[] = [];
       const batchSize = 5;
@@ -111,6 +129,70 @@ export function Leaderboard() {
       cacheLeaderboard(finalSorted);
     } catch (err: any) {
       setError(err.message || 'Failed to load leaderboard');
+    } finally {
+      setLoading(false);
+      setProcessing('');
+    }
+  }
+
+  async function loadFromFollowing() {
+    setLoading(true);
+    setError('');
+    setDataSource('following');
+    setProcessing('Loading from your following list...');
+
+    try {
+      const relayList = await loadRelayList();
+      const relays = getReadRelays(relayList);
+      const relayUrls = relays.length > 0
+        ? relays
+        : ['wss://relay.damus.io', 'wss://nos.lol'];
+
+      const followingPubkeys = await fetchFollowingList(relayUrls);
+
+      if (followingPubkeys.length === 0) {
+        throw new Error('No following list found. Log in and follow some users first.');
+      }
+
+      const results: LeaderboardEntry[] = [];
+      const batchSize = 5;
+      const maxUsers = Math.min(followingPubkeys.length, 50);
+
+      for (let i = 0; i < maxUsers; i += batchSize) {
+        const batch = followingPubkeys.slice(i, i + batchSize);
+        setProcessing(`Checking balances ${i + 1}-${Math.min(i + batchSize, maxUsers)} of ${maxUsers}...`);
+
+        const batchResults = await Promise.allSettled(
+          batch.map(async (pubkey) => {
+            const taprootAddress = pubkeyToTaprootAddress(pubkey);
+            const bal = await fetchBalance(taprootAddress);
+            const profile = await getCachedProfile(pubkey);
+
+            return {
+              pubkey,
+              npub: pubkeyToNpub(pubkey),
+              profile: profile || { name: `User ${pubkey.slice(0, 8)}` } as ProfileMetadata,
+              taprootAddress,
+              balance: bal.total,
+            };
+          })
+        );
+
+        for (const r of batchResults) {
+          if (r.status === 'fulfilled' && r.value) {
+            results.push(r.value);
+          }
+        }
+
+        const sorted = [...results].sort((a, b) => b.balance - a.balance);
+        setEntries(sorted);
+      }
+
+      const finalSorted = results.sort((a, b) => b.balance - a.balance);
+      setEntries(finalSorted);
+      cacheLeaderboard(finalSorted);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load from following list');
     } finally {
       setLoading(false);
       setProcessing('');
@@ -178,6 +260,7 @@ export function Leaderboard() {
           onClick={loadLeaderboard}
           disabled={loading}
           className="p-2 rounded-lg hover:bg-surface-700 text-gray-400 hover:text-white transition-colors"
+          title="Retry"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
@@ -185,6 +268,7 @@ export function Leaderboard() {
 
       <p className="text-xs text-gray-500 mb-3">
         Nostr users ranked by on-chain Taproot balance
+        {dataSource === 'following' && ' (from your following list)'}
       </p>
 
       {/* Search */}
@@ -222,6 +306,24 @@ export function Leaderboard() {
           <p className="text-[10px] text-gray-500 mt-1">
             Try refreshing or search for users directly by npub.
           </p>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={loadLeaderboard}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 transition-colors"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Retry
+            </button>
+            <button
+              onClick={loadFromFollowing}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin hover:bg-bitcoin/25 transition-colors"
+            >
+              <Users className="w-3 h-3" />
+              Use Following List
+            </button>
+          </div>
         </div>
       )}
 
@@ -323,6 +425,54 @@ function cacheLeaderboard(entries: LeaderboardEntry[]) {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ data: entries, timestamp: Date.now() }));
   } catch {}
+}
+
+async function fetchFollowingList(relayUrls: string[]): Promise<string[]> {
+  const pubkeys: string[] = [];
+  const seen = new Set<string>();
+
+  const promises = relayUrls.slice(0, 3).map((url) => {
+    return new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => resolve(), 8000);
+
+      try {
+        const ws = new WebSocket(url);
+        const subId = `follow_${Math.random().toString(36).slice(2, 8)}`;
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['REQ', subId, { kinds: [3], limit: 1 }]));
+        };
+
+        ws.onmessage = (msg) => {
+          try {
+            const data = JSON.parse(msg.data);
+            if (data[0] === 'EVENT' && data[2]) {
+              const event = data[2];
+              for (const tag of event.tags) {
+                if (tag[0] === 'p' && tag[1] && !seen.has(tag[1])) {
+                  seen.add(tag[1]);
+                  pubkeys.push(tag[1]);
+                }
+              }
+            } else if (data[0] === 'EOSE') {
+              ws.close();
+              clearTimeout(timeout);
+              resolve();
+            }
+          } catch {}
+        };
+
+        ws.onerror = () => { clearTimeout(timeout); resolve(); };
+        ws.onclose = () => { clearTimeout(timeout); resolve(); };
+      } catch {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+
+  await Promise.allSettled(promises);
+  return pubkeys;
 }
 
 async function searchRelaysForProfiles(relayUrls: string[], term: string): Promise<(ProfileMetadata & { pubkey: string })[]> {
