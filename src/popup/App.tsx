@@ -5,6 +5,8 @@ import { Setup } from './pages/Setup';
 import { Layout } from './Layout';
 import { Home } from './pages/Home';
 import { Wallets } from './pages/Wallets';
+import { Leaderboard } from './pages/Leaderboard';
+import { FeedPage } from './pages/FeedPage';
 import { SigningInboxWrapper } from './pages/SigningInboxWrapper';
 import { DiscoverWrapper } from './pages/DiscoverWrapper';
 import { ProfileViewWrapper } from './pages/ProfileViewWrapper';
@@ -89,6 +91,8 @@ export function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Home />} />
+          <Route path="feed" element={<FeedPage />} />
+          <Route path="leaderboard" element={<Leaderboard />} />
           <Route path="wallets" element={<Wallets />} />
           <Route path="wallets/create" element={<MultiSigWrapper />} />
           <Route path="wallets/personal" element={<WalletViewWrapper />} />
