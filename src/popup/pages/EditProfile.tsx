@@ -291,7 +291,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
           </div>
         )}
 
-        <div className="pt-2 pb-4">
+        <div className="pt-2 pb-24 md:pb-4">
           <button type="submit" disabled={publishing} className="btn-primary w-full flex items-center justify-center gap-2">
             {publishing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
             {publishing ? 'Publishing to relays...' : 'Publish Profile'}

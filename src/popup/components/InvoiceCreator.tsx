@@ -178,7 +178,7 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
         <h1>Create Invoice</h1>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-4 pb-20 space-y-4">
+      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-4 pb-24 space-y-4">
         <div>
           <label className="text-xs text-gray-400 mb-1 block">Recipient (npub or hex pubkey)</label>
           <input

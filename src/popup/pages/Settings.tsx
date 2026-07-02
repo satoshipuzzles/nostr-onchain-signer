@@ -1,8 +1,10 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Lock, Shield, Users, Key } from 'lucide-react';
+import { Radio, Edit3, Download, Lock, Zap, Check, X, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
+import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
 
 export function Settings() {
   const navigate = useNavigate();
@@ -12,6 +14,46 @@ export function Settings() {
   } = useAuth();
 
   const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
+
+  const [nwcUri, setNwcUri] = useState('');
+  const [nwcConnected, setNwcConnected] = useState(false);
+  const [nwcError, setNwcError] = useState('');
+  const [nwcSaving, setNwcSaving] = useState(false);
+  const [showNwcUri, setShowNwcUri] = useState(false);
+
+  useEffect(() => {
+    loadNwcConnection().then((conn) => {
+      if (conn) setNwcConnected(true);
+    });
+  }, []);
+
+  async function handleNwcSave() {
+    setNwcError('');
+    if (!nwcUri.trim()) return;
+
+    const parsed = parseNwcUri(nwcUri);
+    if (!parsed) {
+      setNwcError('Invalid NWC connection string');
+      return;
+    }
+
+    setNwcSaving(true);
+    try {
+      await saveNwcConnection(parsed);
+      setNwcConnected(true);
+      setNwcUri('');
+    } catch {
+      setNwcError('Failed to save connection');
+    } finally {
+      setNwcSaving(false);
+    }
+  }
+
+  async function handleNwcDisconnect() {
+    await saveNwcConnection(null);
+    setNwcConnected(false);
+    setNwcUri('');
+  }
 
   async function handleLock() {
     await chrome.runtime.sendMessage({ type: 'vault:lock', id: createMessageId() });
@@ -84,6 +126,63 @@ export function Settings() {
             <p className="text-xs text-gray-500">Update your Nostr profile metadata</p>
           </div>
         </button>
+      </div>
+
+      {/* Wallet Connect (NWC) */}
+      <div className="mb-4">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider px-1 mb-2">Wallet</p>
+        <div className="card">
+          <div className="flex items-center gap-3 mb-3">
+            <Zap className={`w-5 h-5 ${nwcConnected ? 'text-bitcoin' : 'text-gray-400'}`} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">Nostr Wallet Connect</p>
+              <p className="text-xs text-gray-500">
+                {nwcConnected ? 'Wallet connected' : 'Link your Lightning wallet for zaps'}
+              </p>
+            </div>
+            {nwcConnected && (
+              <div className="flex items-center gap-1.5">
+                <Check className="w-4 h-4 text-green-400" />
+                <button
+                  onClick={handleNwcDisconnect}
+                  className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                >
+                  Disconnect
+                </button>
+              </div>
+            )}
+          </div>
+          {!nwcConnected && (
+            <>
+              <div className="relative">
+                <input
+                  type={showNwcUri ? 'text' : 'password'}
+                  value={nwcUri}
+                  onChange={(e) => { setNwcUri(e.target.value); setNwcError(''); }}
+                  placeholder="nostr+walletconnect://..."
+                  className="w-full bg-surface-700/50 rounded-lg px-3 py-2 pr-9 text-xs text-white placeholder-gray-600 outline-none border border-surface-200/10 focus:border-bitcoin/30 font-mono"
+                />
+                <button
+                  onClick={() => setShowNwcUri(!showNwcUri)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                >
+                  {showNwcUri ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              {nwcError && <p className="text-xs text-red-400 mt-1.5">{nwcError}</p>}
+              <button
+                onClick={handleNwcSave}
+                disabled={!nwcUri.trim() || nwcSaving}
+                className="mt-2 w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
+              >
+                {nwcSaving ? 'Connecting...' : 'Connect Wallet'}
+              </button>
+              <p className="text-[10px] text-gray-600 mt-2">
+                Get a connection string from Alby, Mutiny, or any NWC-compatible wallet.
+              </p>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Security section */}

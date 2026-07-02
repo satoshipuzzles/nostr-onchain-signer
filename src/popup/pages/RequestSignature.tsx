@@ -153,7 +153,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
 
   if (sent) {
     return (
-      <div className="h-full flex flex-col p-4 items-center justify-center">
+      <div className="h-full flex flex-col p-4 pb-24 md:pb-4 items-center justify-center">
         <div className="w-14 h-14 rounded-full bg-green-500/20 flex items-center justify-center mb-4">
           <Check className="w-7 h-7 text-green-400" />
         </div>
@@ -193,7 +193,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
   }
 
   return (
-    <div className="h-full flex flex-col p-4 overflow-y-auto pb-20">
+    <div className="h-full flex flex-col p-4 overflow-y-auto pb-24">
       {/* Header */}
       <div className="page-header">
         <button onClick={onBack} className="btn-back">

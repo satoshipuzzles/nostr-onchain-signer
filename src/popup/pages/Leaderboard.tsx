@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trophy, Search, Loader2, RefreshCw, ExternalLink, Users } from 'lucide-react';
+import { Trophy, Search, Loader2, RefreshCw, ExternalLink, Users, Globe } from 'lucide-react';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
@@ -17,12 +17,17 @@ interface LeaderboardEntry {
   balance: number;
 }
 
-const CORNY_CHAT_API = 'https://cornychat.com/_/pantry/api/v1/users/active';
-const CORS_PROXY = 'https://corsproxy.io/?';
 const CACHE_KEY = 'leaderboard_cache';
+const CACHE_KEY_GLOBAL = 'leaderboard_cache_global';
 const CACHE_TTL = 5 * 60_000; // 5 minutes
 
-type DataSource = 'cornchat' | 'following';
+type ViewTab = 'following' | 'global';
+
+const DISCOVERY_RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.nostr.band',
+];
 
 export function Leaderboard() {
   const navigate = useNavigate();
@@ -32,124 +37,36 @@ export function Leaderboard() {
   const [processing, setProcessing] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
-  const [dataSource, setDataSource] = useState<DataSource>('following');
+  const [activeTab, setActiveTab] = useState<ViewTab>('following');
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    loadFromFollowing();
-  }, []);
+    loadTab(activeTab);
+    return () => { abortRef.current?.abort(); };
+  }, [activeTab]);
 
-  async function fetchWithCorsProxy(url: string, signal: AbortSignal): Promise<Response> {
-    try {
-      const res = await fetch(url, { signal });
-      if (res.ok) return res;
-      throw new Error(`HTTP ${res.status}`);
-    } catch (directErr: any) {
-      if (directErr.name === 'AbortError') throw directErr;
-      const proxyRes = await fetch(`${CORS_PROXY}${encodeURIComponent(url)}`, { signal });
-      if (!proxyRes.ok) throw new Error(`Proxy also failed: HTTP ${proxyRes.status}`);
-      return proxyRes;
+  function loadTab(tab: ViewTab) {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    if (tab === 'following') {
+      loadFromFollowing(abortRef.current.signal);
+    } else {
+      loadGlobal(abortRef.current.signal);
     }
   }
 
-  async function loadLeaderboard() {
+  async function loadFromFollowing(signal: AbortSignal) {
     setLoading(true);
     setError('');
-
-    const cached = getCachedLeaderboard();
-    if (cached) {
-      setEntries(cached);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      let res: Response;
-      try {
-        res = await fetchWithCorsProxy(CORNY_CHAT_API, controller.signal);
-      } catch (err: any) {
-        clearTimeout(timeout);
-        if (err.name === 'AbortError') {
-          throw new Error('Request timed out — CornChat API may be unavailable');
-        }
-        throw new Error('Network error — unable to reach CornChat API (direct + CORS proxy failed)');
-      }
-      clearTimeout(timeout);
-
-      const data = await res.json();
-
-      if (!data?.users || !Array.isArray(data.users)) {
-        throw new Error('Unexpected API response');
-      }
-
-      const users = data.users.filter(
-        (u: { npub?: string }) => u.npub && u.npub.startsWith('npub1')
-      );
-
-      setProcessing(`Processing ${users.length} users...`);
-      setDataSource('cornchat');
-
-      const results: LeaderboardEntry[] = [];
-      const batchSize = 5;
-
-      for (let i = 0; i < users.length; i += batchSize) {
-        const batch = users.slice(i, i + batchSize);
-        setProcessing(`Processing ${i + 1}-${Math.min(i + batchSize, users.length)} of ${users.length}...`);
-
-        const batchResults = await Promise.allSettled(
-          batch.map(async (user: { npub: string; name?: string }) => {
-            const pubkey = npubToHex(user.npub);
-            if (!pubkey) return null;
-
-            const taprootAddress = pubkeyToTaprootAddress(pubkey);
-            const bal = await fetchBalance(taprootAddress);
-            const profile = await getCachedProfile(pubkey);
-
-            return {
-              pubkey,
-              npub: user.npub,
-              profile: profile || { name: user.name || `User ${pubkey.slice(0, 8)}` } as ProfileMetadata,
-              taprootAddress,
-              balance: bal.total,
-            };
-          })
-        );
-
-        for (const r of batchResults) {
-          if (r.status === 'fulfilled' && r.value) {
-            results.push(r.value);
-          }
-        }
-
-        const sorted = [...results].sort((a, b) => b.balance - a.balance);
-        setEntries(sorted);
-      }
-
-      const finalSorted = results.sort((a, b) => b.balance - a.balance);
-      setEntries(finalSorted);
-      cacheLeaderboard(finalSorted);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load leaderboard');
-    } finally {
-      setLoading(false);
-      setProcessing('');
-    }
-  }
-
-  async function loadFromFollowing() {
-    setLoading(true);
-    setError('');
-    setDataSource('following');
+    setEntries([]);
     setProcessing('Loading from your following list...');
 
     try {
-      // Use the following list from AuthContext (already loaded)
       let followingPubkeys: string[] = [];
       if (following instanceof Set && following.size > 0) {
         followingPubkeys = Array.from(following);
       } else {
-        // Fallback: try to load from storage
         const stored = await chrome.storage.local.get(`following_${publicKey}`);
         const raw = stored[`following_${publicKey}`];
         if (Array.isArray(raw) && raw.length > 0) {
@@ -158,51 +75,119 @@ export function Leaderboard() {
       }
 
       if (followingPubkeys.length === 0) {
-        throw new Error('No following list found. Follow some users first to see the leaderboard.');
+        throw new Error('No following list found. Follow some users first, or switch to Global.');
       }
 
-      const results: LeaderboardEntry[] = [];
-      const batchSize = 5;
-      const maxUsers = Math.min(followingPubkeys.length, 50);
+      const cached = getCachedLeaderboard(CACHE_KEY);
+      if (cached) {
+        setEntries(cached);
+        setLoading(false);
+        setProcessing('');
+        return;
+      }
 
-      for (let i = 0; i < maxUsers; i += batchSize) {
-        const batch = followingPubkeys.slice(i, i + batchSize);
-        setProcessing(`Checking balances ${i + 1}-${Math.min(i + batchSize, maxUsers)} of ${maxUsers}...`);
+      await batchCheckBalances(followingPubkeys, signal, CACHE_KEY);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setError(err.message || 'Failed to load from following list');
+      }
+    } finally {
+      if (!signal.aborted) {
+        setLoading(false);
+        setProcessing('');
+      }
+    }
+  }
 
-        const batchResults = await Promise.allSettled(
-          batch.map(async (pubkey) => {
-            const taprootAddress = pubkeyToTaprootAddress(pubkey);
-            const bal = await fetchBalance(taprootAddress);
-            const profile = await getCachedProfile(pubkey);
+  async function loadGlobal(signal: AbortSignal) {
+    setLoading(true);
+    setError('');
+    setEntries([]);
 
-            return {
-              pubkey,
-              npub: pubkeyToNpub(pubkey),
-              profile: profile || { name: `User ${pubkey.slice(0, 8)}` } as ProfileMetadata,
-              taprootAddress,
-              balance: bal.total,
-            };
-          })
-        );
+    const cached = getCachedLeaderboard(CACHE_KEY_GLOBAL);
+    if (cached) {
+      setEntries(cached);
+      setLoading(false);
+      return;
+    }
 
-        for (const r of batchResults) {
-          if (r.status === 'fulfilled' && r.value) {
-            results.push(r.value);
-          }
+    setProcessing('Discovering users from relays...');
+
+    try {
+      // Gather pubkeys from following list + relay discovery in parallel
+      let followingPubkeys: string[] = [];
+      if (following instanceof Set && following.size > 0) {
+        followingPubkeys = Array.from(following);
+      }
+
+      const discoveredPubkeys = await discoverUsers(signal);
+      if (signal.aborted) return;
+
+      const allPubkeys = new Set([...followingPubkeys, ...discoveredPubkeys]);
+      allPubkeys.delete(publicKey);
+
+      setProcessing(`Found ${allPubkeys.size} users. Checking balances...`);
+      await batchCheckBalances(Array.from(allPubkeys), signal, CACHE_KEY_GLOBAL);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setError(err.message || 'Failed to load global leaderboard');
+      }
+    } finally {
+      if (!signal.aborted) {
+        setLoading(false);
+        setProcessing('');
+      }
+    }
+  }
+
+  async function batchCheckBalances(
+    pubkeys: string[],
+    signal: AbortSignal,
+    cacheKey: string,
+  ) {
+    const results: LeaderboardEntry[] = [];
+    const batchSize = 5;
+    const total = pubkeys.length;
+
+    for (let i = 0; i < total; i += batchSize) {
+      if (signal.aborted) return;
+
+      const batch = pubkeys.slice(i, i + batchSize);
+      setProcessing(`Checking ${i + 1}/${total} users...`);
+
+      const batchResults = await Promise.allSettled(
+        batch.map(async (pubkey) => {
+          const taprootAddress = pubkeyToTaprootAddress(pubkey);
+          const bal = await fetchBalance(taprootAddress);
+          if (bal.total === 0) return null;
+
+          const profile = await getCachedProfile(pubkey);
+          return {
+            pubkey,
+            npub: pubkeyToNpub(pubkey),
+            profile: profile || { name: `User ${pubkey.slice(0, 8)}`, pubkey } as ProfileMetadata,
+            taprootAddress,
+            balance: bal.total,
+          };
+        })
+      );
+
+      for (const r of batchResults) {
+        if (r.status === 'fulfilled' && r.value) {
+          results.push(r.value);
         }
+      }
 
+      if (!signal.aborted) {
         const sorted = [...results].sort((a, b) => b.balance - a.balance);
         setEntries(sorted);
       }
+    }
 
+    if (!signal.aborted) {
       const finalSorted = results.sort((a, b) => b.balance - a.balance);
       setEntries(finalSorted);
-      cacheLeaderboard(finalSorted);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load from following list');
-    } finally {
-      setLoading(false);
-      setProcessing('');
+      cacheLeaderboard(cacheKey, finalSorted);
     }
   }
 
@@ -214,12 +199,9 @@ export function Leaderboard() {
     try {
       const relayList = await loadRelayList();
       const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays
-        : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+      const relayUrls = relays.length > 0 ? relays : DISCOVERY_RELAYS;
 
       const foundProfiles = await searchRelaysForProfiles(relayUrls, searchTerm);
-
       const results: LeaderboardEntry[] = [];
 
       for (const profile of foundProfiles) {
@@ -238,7 +220,6 @@ export function Leaderboard() {
       const newEntries = results.filter(r => !existingPubkeys.has(r.pubkey));
       const merged = [...entries, ...newEntries].sort((a, b) => b.balance - a.balance);
       setEntries(merged);
-      cacheLeaderboard(merged);
     } catch (err: any) {
       setError(err.message || 'Search failed');
     } finally {
@@ -256,30 +237,62 @@ export function Leaderboard() {
       })
     : entries;
 
+  const nonZeroCount = entries.filter(e => e.balance > 0).length;
+
   return (
     <div className="h-full flex flex-col p-4 md:p-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Trophy className="w-5 h-5 text-bitcoin" />
           <h1 className="text-lg font-bold">Leaderboard</h1>
         </div>
         <button
-          onClick={loadLeaderboard}
+          onClick={() => loadTab(activeTab)}
           disabled={loading}
           className="p-2 rounded-lg hover:bg-surface-700 text-gray-400 hover:text-white transition-colors"
-          title="Retry"
+          title="Refresh"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
-      <p className="text-xs text-gray-500 mb-3">
-        Nostr users ranked by on-chain Taproot balance
-        {dataSource === 'following' && ' (from your following list)'}
-      </p>
+      {/* Header stat */}
+      {nonZeroCount > 0 && (
+        <div className="rounded-xl bg-bitcoin/10 border border-bitcoin/20 px-3 py-2 mb-3">
+          <p className="text-xs font-medium text-bitcoin">
+            {nonZeroCount} user{nonZeroCount !== 1 ? 's' : ''} with Bitcoin on Taproot
+          </p>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-3">
+        <button
+          onClick={() => setActiveTab('following')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+            activeTab === 'following'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          My Network
+        </button>
+        <button
+          onClick={() => setActiveTab('global')}
+          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+            activeTab === 'global'
+              ? 'bg-white/10 text-white'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          <Globe className="w-3.5 h-3.5" />
+          Global
+        </button>
+      </div>
 
       {/* Search */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-3">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
           <input
@@ -313,24 +326,6 @@ export function Leaderboard() {
           <p className="text-[10px] text-gray-500 mt-1">
             Try refreshing or search for users directly by npub.
           </p>
-          <div className="flex gap-2 mt-2">
-            <button
-              onClick={loadLeaderboard}
-              disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 transition-colors"
-            >
-              <RefreshCw className="w-3 h-3" />
-              Retry
-            </button>
-            <button
-              onClick={loadFromFollowing}
-              disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium bg-bitcoin/15 text-bitcoin hover:bg-bitcoin/25 transition-colors"
-            >
-              <Users className="w-3 h-3" />
-              Use Following List
-            </button>
-          </div>
         </div>
       )}
 
@@ -341,7 +336,11 @@ export function Leaderboard() {
             <Loader2 className="w-6 h-6 animate-spin text-bitcoin" />
           </div>
         ) : filtered.length === 0 ? (
-          <p className="text-center text-gray-500 py-8 text-sm">No users found</p>
+          <p className="text-center text-gray-500 py-8 text-sm">
+            {activeTab === 'following'
+              ? 'No users with balance found in your network'
+              : 'No users found'}
+          </p>
         ) : (
           filtered.map((entry, idx) => (
             <div
@@ -406,7 +405,7 @@ export function Leaderboard() {
   );
 }
 
-// Helpers
+// ─── Helpers ─────────────────────────────────────────────────────
 
 function npubToHex(npub: string): string | null {
   try {
@@ -416,9 +415,9 @@ function npubToHex(npub: string): string | null {
   }
 }
 
-function getCachedLeaderboard(): LeaderboardEntry[] | null {
+function getCachedLeaderboard(key: string): LeaderboardEntry[] | null {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (Date.now() - parsed.timestamp > CACHE_TTL) return null;
@@ -428,58 +427,63 @@ function getCachedLeaderboard(): LeaderboardEntry[] | null {
   }
 }
 
-function cacheLeaderboard(entries: LeaderboardEntry[]) {
+function cacheLeaderboard(key: string, entries: LeaderboardEntry[]) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ data: entries, timestamp: Date.now() }));
+    localStorage.setItem(key, JSON.stringify({ data: entries, timestamp: Date.now() }));
   } catch {}
 }
 
-async function fetchFollowingList(relayUrls: string[]): Promise<string[]> {
-  const pubkeys: string[] = [];
-  const seen = new Set<string>();
+async function discoverUsers(signal: AbortSignal): Promise<string[]> {
+  const pubkeys = new Set<string>();
 
-  const promises = relayUrls.slice(0, 3).map((url) => {
-    return new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => resolve(), 8000);
+  const relayPromises = DISCOVERY_RELAYS.map((relayUrl) =>
+    new Promise<void>((resolve) => {
+      if (signal.aborted) { resolve(); return; }
 
+      const timeout = setTimeout(() => { ws.close(); resolve(); }, 10000);
+
+      let ws: WebSocket;
       try {
-        const ws = new WebSocket(url);
-        const subId = `follow_${Math.random().toString(36).slice(2, 8)}`;
-
-        ws.onopen = () => {
-          ws.send(JSON.stringify(['REQ', subId, { kinds: [3], limit: 1 }]));
-        };
-
-        ws.onmessage = (msg) => {
-          try {
-            const data = JSON.parse(msg.data);
-            if (data[0] === 'EVENT' && data[2]) {
-              const event = data[2];
-              for (const tag of event.tags) {
-                if (tag[0] === 'p' && tag[1] && !seen.has(tag[1])) {
-                  seen.add(tag[1]);
-                  pubkeys.push(tag[1]);
-                }
-              }
-            } else if (data[0] === 'EOSE') {
-              ws.close();
-              clearTimeout(timeout);
-              resolve();
-            }
-          } catch {}
-        };
-
-        ws.onerror = () => { clearTimeout(timeout); resolve(); };
-        ws.onclose = () => { clearTimeout(timeout); resolve(); };
+        ws = new WebSocket(relayUrl);
       } catch {
         clearTimeout(timeout);
         resolve();
+        return;
       }
-    });
-  });
 
-  await Promise.allSettled(promises);
-  return pubkeys;
+      const subId = `disc_${Math.random().toString(36).slice(2, 8)}`;
+
+      signal.addEventListener('abort', () => {
+        clearTimeout(timeout);
+        ws.close();
+        resolve();
+      }, { once: true });
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify(['REQ', subId, { kinds: [1], limit: 500 }]));
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg[0] === 'EVENT' && msg[2]?.pubkey) {
+            pubkeys.add(msg[2].pubkey);
+          }
+          if (msg[0] === 'EOSE') {
+            clearTimeout(timeout);
+            ws.close();
+            resolve();
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => { clearTimeout(timeout); resolve(); };
+      ws.onclose = () => { clearTimeout(timeout); resolve(); };
+    })
+  );
+
+  await Promise.allSettled(relayPromises);
+  return Array.from(pubkeys);
 }
 
 async function searchRelaysForProfiles(relayUrls: string[], term: string): Promise<(ProfileMetadata & { pubkey: string })[]> {

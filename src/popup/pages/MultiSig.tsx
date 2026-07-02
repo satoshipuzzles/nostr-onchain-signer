@@ -292,7 +292,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           </div>
         </div>
 
-        <div className="space-y-2 mt-4">
+        <div className="space-y-2 mt-4 pb-24 md:pb-0">
           <button onClick={() => { setResult(null); setStep('select'); }} className="btn-secondary w-full">
             Create Another
           </button>
@@ -395,7 +395,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           </div>
         </label>
 
-        <div className="mt-auto">
+        <div className="mt-auto pb-24 md:pb-0">
           <button onClick={handleCreate} disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
             {saving ? 'Creating...' : `Create ${threshold}-of-${totalKeys} Multi-Sig`}
@@ -472,7 +472,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
       </div>
 
       {/* Bottom action */}
-      <div className="pt-3 border-t border-surface-200/10 mt-2">
+      <div className="pt-3 border-t border-surface-200/10 mt-2 pb-24 md:pb-0">
         <button
           onClick={handleConfigure}
           disabled={totalKeys < 2}

@@ -10,7 +10,7 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
-import { downloadPsbtFile } from '@/lib/bitcoin/psbt-builder';
+
 import { createMessageId } from '@/shared/messages';
 import { InvoiceCreator } from '@/popup/components/InvoiceCreator';
 import {
@@ -482,7 +482,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 pb-20">
+      <div className="flex-1 overflow-y-auto px-4 pb-24">
         {activeTab === 'incoming' && (
           <>
             {loading && (
@@ -520,7 +520,18 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                       <span className="text-xs font-medium text-green-400">Ready to Broadcast</span>
                       <div className="ml-auto flex items-center gap-1.5">
                         <button
-                          onClick={(e) => { e.stopPropagation(); downloadPsbtFile(btoa(request.psbt_hex), `signing-round-${request.round_id.slice(0, 8)}.psbt`); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const blob = new Blob([request.psbt_hex], { type: 'application/octet-stream' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `signing-round-${request.round_id.slice(0, 8)}.psbt`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                          }}
                           className="p-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 text-green-400 transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
                           title="Download PSBT"
                         >
@@ -971,7 +982,7 @@ function RequestDetail({
         <h1>Request Detail</h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-20">
+      <div className="flex-1 overflow-y-auto px-4 pb-24">
         {/* Combine & Broadcast section */}
         {isReady && (
           <div className="card mb-3 border-green-500/30 bg-green-500/5">

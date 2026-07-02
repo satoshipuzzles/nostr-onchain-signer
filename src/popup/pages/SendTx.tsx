@@ -182,9 +182,9 @@ export function SendTx({ publicKey, onBack }: Props) {
 
   if (psbtResult) {
     return (
-      <div className="h-full flex flex-col p-4 overflow-y-auto">
-        <div className="page-header">
-          <button onClick={() => setPsbtResult(null)} className="btn-back">
+    <div className="h-full flex flex-col p-4 overflow-y-auto pb-24 md:pb-4">
+      <div className="page-header">
+        <button onClick={() => setPsbtResult(null)} className="btn-back">
             <ArrowLeft className="w-5 h-5" />
           </button>
           <h1>PSBT Ready</h1>
@@ -290,7 +290,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   // ─── BUILD FORM ──────────────────────────────────────────────
 
   return (
-    <div className="h-full flex flex-col p-4 overflow-y-auto">
+    <div className="h-full flex flex-col p-4 overflow-y-auto pb-24 md:pb-4">
       <div className="page-header">
         <button onClick={onBack} className="btn-back">
           <ArrowLeft className="w-5 h-5" />

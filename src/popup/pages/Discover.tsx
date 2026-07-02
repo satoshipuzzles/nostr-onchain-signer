@@ -329,38 +329,48 @@ function UserRow({
   onUnfollow: () => void;
   onViewProfile: () => void;
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
   const displayName = profile.displayName || profile.name || profile.pubkey.slice(0, 12);
   const npub = pubkeyToNpub(profile.pubkey);
+  const initial = displayName.charAt(0).toUpperCase();
+
+  const avatarFallback = (
+    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
+      <span className="text-sm font-bold text-white/70">{initial}</span>
+    </div>
+  );
 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-700/60 transition-colors">
       <button onClick={onViewProfile} className="flex-shrink-0">
-        {profile.picture ? (
+        {profile.picture && !imgFailed ? (
           <img
             src={safeImageUrl(profile.picture)}
             alt=""
             className="w-10 h-10 rounded-full object-cover bg-surface-700"
-            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            onError={() => setImgFailed(true)}
           />
         ) : (
-          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
-            <span className="text-sm font-bold text-white/70">
-              {displayName.charAt(0).toUpperCase()}
-            </span>
-          </div>
+          avatarFallback
         )}
       </button>
 
       <button onClick={onViewProfile} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">
           <p className="text-sm font-medium truncate">{displayName}</p>
-          {profile.nip05 && <BadgeCheck className="w-3.5 h-3.5 text-nostr flex-shrink-0" />}
+          {profile.nip05 && (
+            <span className="flex items-center gap-0.5 flex-shrink-0">
+              <BadgeCheck className="w-3.5 h-3.5 text-nostr" />
+            </span>
+          )}
           {profile.lud16 && <Zap className="w-3 h-3 text-yellow-500/60 flex-shrink-0" />}
         </div>
         <div className="flex items-center gap-2">
-          <p className="text-xs text-gray-500 truncate flex-1">
-            {profile.nip05 || `${npub.slice(0, 20)}...`}
-          </p>
+          {profile.nip05 ? (
+            <p className="text-xs text-nostr/70 truncate flex-1">{profile.nip05}</p>
+          ) : (
+            <p className="text-xs text-gray-500 truncate flex-1">{npub.slice(0, 20)}...</p>
+          )}
           <span className="text-[9px] text-gray-600 flex-shrink-0">{lastSeen}</span>
         </div>
       </button>

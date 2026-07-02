@@ -15,6 +15,7 @@ export function ComposeNote({ onPublished }: Props) {
   const [publishing, setPublishing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [uploadError, setUploadError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -22,10 +23,13 @@ export function ComposeNote({ onPublished }: Props) {
     if (!file) return;
 
     setUploading(true);
+    setUploadError('');
     try {
       const url = await uploadImageToNostrBuild(file);
       setImageUrls((prev) => [...prev, url]);
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      setUploadError(message);
       console.error('Image upload failed:', err);
     } finally {
       setUploading(false);
@@ -108,6 +112,9 @@ export function ComposeNote({ onPublished }: Props) {
                 </div>
               ))}
             </div>
+          )}
+          {uploadError && (
+            <p className="text-xs text-red-400 mb-2 px-1">{uploadError}</p>
           )}
           <div className="flex items-center justify-between pt-2 border-t border-surface-200/10">
             <div className="flex items-center gap-2">

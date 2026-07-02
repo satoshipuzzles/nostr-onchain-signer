@@ -9,13 +9,40 @@ export async function uploadImageToNostrBuild(file: File): Promise<string> {
   const formData = new FormData();
   formData.append('file', file);
 
-  const res = await fetch(NOSTR_BUILD_UPLOAD_URL, {
-    method: 'POST',
-    body: formData,
-  });
+  let res: Response;
+  try {
+    res = await fetch(NOSTR_BUILD_UPLOAD_URL, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (err) {
+    throw new Error(
+      `Network error: ${err instanceof Error ? err.message : 'could not connect to nostr.build'}`,
+    );
+  }
 
-  if (!res.ok) throw new Error('Upload failed');
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const text = await res.text();
+      if (text) detail = `: ${text.slice(0, 200)}`;
+    } catch { /* ignore */ }
+    throw new Error(`Upload failed (HTTP ${res.status})${detail}`);
+  }
 
-  const data = await res.json();
-  return data.data?.[0]?.url || data.url;
+  let data: Record<string, unknown>;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Invalid response from nostr.build');
+  }
+
+  const nested = data?.data as Array<{ url?: string }> | undefined;
+  const url = nested?.[0]?.url || (data?.url as string | undefined);
+
+  if (!url || typeof url !== 'string') {
+    throw new Error('No image URL in upload response');
+  }
+
+  return url;
 }

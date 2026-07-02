@@ -260,7 +260,7 @@ export function Messages() {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="border-t border-white/10 px-4 py-3">
+        <div className="border-t border-white/10 px-4 py-3 pb-24 md:pb-3">
           <div className="flex items-center gap-2">
             <input
               type="text"

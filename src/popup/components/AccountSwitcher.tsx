@@ -37,7 +37,7 @@ export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount 
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 w-56 bg-surface-800 border border-surface-200/20 rounded-xl shadow-xl z-50 overflow-hidden">
+          <div className="absolute bottom-full left-0 mb-1 w-56 bg-surface-800 border border-surface-200/20 rounded-xl shadow-xl z-50 max-h-[60vh] overflow-y-auto">
             {accounts.map((account, idx) => (
               <button
                 key={account.publicKeyHex}
