@@ -10,6 +10,30 @@ import { generateKeyPair, keyPairFromPrivateKey } from '@/lib/nostr/keys';
 
 const STORAGE_PREFIX = 'nostr_onchain_';
 
+function logSignedEvent(event: any, origin: string) {
+  const log = (storageGet('signed_events_log') as any[]) || [];
+  log.unshift({
+    id: event.id,
+    kind: event.kind,
+    content: (event.content || '').slice(0, 100),
+    created_at: event.created_at,
+    origin,
+    pubkey: event.pubkey,
+  });
+  if (log.length > 500) log.length = 500;
+  storageSet('signed_events_log', log);
+
+  const apps = (storageGet('connected_apps') as any[]) || [];
+  const existing = apps.find((a: any) => a.origin === origin);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    existing.signCount++;
+  } else {
+    apps.push({ origin, name: origin, firstUsed: Date.now(), lastUsed: Date.now(), signCount: 1, permission: 'always' });
+  }
+  storageSet('connected_apps', apps);
+}
+
 function storageGet(key: string): unknown {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + key);
@@ -129,6 +153,7 @@ const mockChrome = {
             if (typeof (window as any).nostr?.signEvent === 'function') {
               try {
                 const signed = await (window as any).nostr.signEvent({ ...event, pubkey: key.publicKeyHex });
+                logSignedEvent(signed, 'nostr-onchain-pwa');
                 return { id, result: signed };
               } catch (err: any) {
                 return { id, error: `NIP-07 sign failed: ${err?.message || err}` };
@@ -139,6 +164,7 @@ const mockChrome = {
 
           const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
           const signed = signEvent(unsigned, key.privateKeyHex);
+          logSignedEvent(signed, 'nostr-onchain-pwa');
           return { id, result: signed };
         }
 
@@ -175,6 +201,8 @@ const mockChrome = {
           } else {
             signedNote = signEvent(noteEvent, key.privateKeyHex);
           }
+
+          logSignedEvent(signedNote, 'nostr-onchain-pwa');
 
           const { encodeNostrOpReturn } = await import('@/lib/bitcoin/opreturn');
           const opReturn = encodeNostrOpReturn({ eventId: signedNote.id, kind: signedNote.kind, content: noteContent });

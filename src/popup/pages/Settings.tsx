@@ -1,16 +1,19 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Lock, Zap, Check, X, Eye, EyeOff } from 'lucide-react';
+import { Radio, Edit3, Download, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
 import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
+import { loadVault, decryptVault } from '@/lib/crypto/vault';
+import { privkeyToNsec } from '@/lib/nostr/keys';
 
 export function Settings() {
   const navigate = useNavigate();
   const {
     publicKey, myProfile, accounts, activeAccountIndex,
     handleSwitchAccount, handleAddAccount, handleBackupKeys,
+    vaultPassword,
   } = useAuth();
 
   const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
@@ -21,11 +24,58 @@ export function Settings() {
   const [nwcSaving, setNwcSaving] = useState(false);
   const [showNwcUri, setShowNwcUri] = useState(false);
 
+  // Reveal nsec state machine: 'idle' | 'warning' | 'revealed'
+  const [revealState, setRevealState] = useState<'idle' | 'warning' | 'revealed'>('idle');
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
+  const [revealedNsec, setRevealedNsec] = useState('');
+  const [nsecCopied, setNsecCopied] = useState(false);
+  const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     loadNwcConnection().then((conn) => {
       if (conn) setNwcConnected(true);
     });
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoHideTimer.current) clearTimeout(autoHideTimer.current);
+    };
+  }, []);
+
+  function hideNsec() {
+    setRevealState('idle');
+    setRevealedNsec('');
+    setRiskAcknowledged(false);
+    setNsecCopied(false);
+    if (autoHideTimer.current) {
+      clearTimeout(autoHideTimer.current);
+      autoHideTimer.current = null;
+    }
+  }
+
+  async function handleRevealNsec() {
+    if (!vaultPassword) return;
+    try {
+      const vault = await loadVault();
+      if (!vault) return;
+      const vaultData = await decryptVault(vault, vaultPassword);
+      const activeKey = vaultData[activeAccountIndex];
+      if (!activeKey) return;
+      const nsec = privkeyToNsec(activeKey.privateKeyHex);
+      setRevealedNsec(nsec);
+      setRevealState('revealed');
+      autoHideTimer.current = setTimeout(hideNsec, 30_000);
+    } catch {
+      setRevealState('idle');
+    }
+  }
+
+  async function handleCopyNsec() {
+    await navigator.clipboard.writeText(revealedNsec);
+    setNsecCopied(true);
+    setTimeout(() => setNsecCopied(false), 2000);
+  }
 
   async function handleNwcSave() {
     setNwcError('');
@@ -126,6 +176,28 @@ export function Settings() {
             <p className="text-xs text-gray-500">Update your Nostr profile metadata</p>
           </div>
         </button>
+
+        <button
+          onClick={() => navigate('/settings/apps')}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+        >
+          <Globe className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Connected Apps</p>
+            <p className="text-xs text-gray-500">Manage app permissions</p>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/settings/events')}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+        >
+          <FileText className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Signed Events</p>
+            <p className="text-xs text-gray-500">View signing history</p>
+          </div>
+        </button>
       </div>
 
       {/* Wallet Connect (NWC) */}
@@ -188,6 +260,92 @@ export function Settings() {
       {/* Security section */}
       <div className="space-y-1 mb-4">
         <p className="text-[10px] text-gray-500 uppercase tracking-wider px-1 mb-2">Security</p>
+
+        {/* Reveal Secret Key */}
+        {revealState === 'idle' && (
+          <button
+            onClick={() => setRevealState('warning')}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+          >
+            <Key className="w-5 h-5 text-gray-400" />
+            <div className="flex-1 text-left">
+              <p className="text-sm font-medium">Reveal Secret Key</p>
+              <p className="text-xs text-gray-500">Show your nsec for the active account</p>
+            </div>
+          </button>
+        )}
+
+        {revealState === 'warning' && (
+          <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Key className="w-4 h-4 text-red-400" />
+              <p className="text-sm font-semibold text-red-400">Danger Zone</p>
+            </div>
+            <p className="text-xs text-red-400 mb-3">
+              Your secret key gives full control of your account. Never share it with anyone.
+            </p>
+            <label className="flex items-center gap-2 mb-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={riskAcknowledged}
+                onChange={(e) => setRiskAcknowledged(e.target.checked)}
+                className="rounded border-red-500/50 bg-surface-700 text-red-500 focus:ring-red-500/30"
+              />
+              <span className="text-xs text-gray-300">I understand the risks</span>
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRevealNsec}
+                disabled={!riskAcknowledged}
+                className="flex-1 py-2 bg-red-600 text-white rounded-lg text-xs font-medium disabled:opacity-40 hover:bg-red-500 transition-colors"
+              >
+                Show nsec
+              </button>
+              <button
+                onClick={hideNsec}
+                className="flex-1 py-2 bg-surface-700 text-gray-300 rounded-lg text-xs font-medium hover:bg-surface-600 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {revealState === 'revealed' && (
+          <div className="bg-red-900/20 border border-red-500/30 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Key className="w-4 h-4 text-red-400" />
+                <p className="text-xs font-semibold text-red-400">Secret Key (nsec)</p>
+              </div>
+              <button
+                onClick={hideNsec}
+                className="text-xs text-gray-400 hover:text-white transition-colors"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="font-mono text-xs break-all bg-surface-700 rounded-lg p-3 text-white/90">
+              {revealedNsec}
+            </div>
+            <button
+              onClick={handleCopyNsec}
+              className="mt-2 flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            >
+              {nsecCopied ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+                  <span className="text-green-400">Copied</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy to clipboard</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         <button
           onClick={handleBackupKeys}

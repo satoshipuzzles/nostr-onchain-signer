@@ -20,6 +20,8 @@ import { WalletViewWrapper } from './pages/WalletViewWrapper';
 import { RelaySettingsWrapper } from './pages/RelaySettingsWrapper';
 import { EditProfileWrapper } from './pages/EditProfileWrapper';
 import { Settings } from './pages/Settings';
+import { ConnectedApps } from './pages/ConnectedApps';
+import { SignedEventsLog } from './pages/SignedEventsLog';
 import { InvoicePage } from './pages/InvoicePage';
 import { SignPage } from './pages/SignPage';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -136,6 +138,8 @@ export function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="settings/relays" element={<RelaySettingsWrapper />} />
           <Route path="settings/profile" element={<EditProfileWrapper />} />
+          <Route path="settings/apps" element={<ConnectedApps />} />
+          <Route path="settings/events" element={<SignedEventsLog />} />
           <Route path="invoice/:eventId" element={<InvoicePage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
