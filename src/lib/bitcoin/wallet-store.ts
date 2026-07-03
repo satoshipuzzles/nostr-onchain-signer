@@ -65,16 +65,21 @@ export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
   const result = await chrome.storage.local.get(STORAGE_KEY_WALLETS);
   const raw = result[STORAGE_KEY_WALLETS];
   if (!Array.isArray(raw)) return [];
-  return raw.filter((w: any) => w && w.id && w.wallet && w.wallet.address);
+  return raw.filter((w: any) => w && w.id && w.wallet);
 }
 
 export async function loadMyMultisigWallets(ownerPubkey: string): Promise<ArchivedMultisig[]> {
   const all = await loadMultisigWallets();
   return all.filter((w) =>
+    !w.ownerPubkey ||
     w.ownerPubkey === ownerPubkey ||
     w.wallet?.config?.pubkeys?.includes(ownerPubkey) ||
     w.keyHolders?.some((kh) => kh.pubkey === ownerPubkey)
   );
+}
+
+export async function loadAllMultisigWallets(): Promise<ArchivedMultisig[]> {
+  return loadMultisigWallets();
 }
 
 /**

@@ -36,7 +36,10 @@ export function Wallets() {
       ]);
       if (bal.status === 'fulfilled') setBalance(bal.value.total);
       if (multisigs.status === 'fulfilled') {
+        console.log('[Wallets] Found', multisigs.value.length, 'wallets for', publicKey.slice(0, 8));
         setWallets(multisigs.value.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
+      } else {
+        console.error('[Wallets] Failed to load:', multisigs.reason);
       }
     } catch {} finally {
       setLoading(false);
