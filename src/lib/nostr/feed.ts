@@ -7,6 +7,16 @@ import { CUSTOM_KIND } from './kinds';
 
 export type FeedMode = 'global' | 'following' | 'media' | 'onchain' | 'hashtag' | 'kind';
 
+export interface NostrEvent {
+  id: string;
+  pubkey: string;
+  content: string;
+  created_at: number;
+  tags: string[][];
+  kind: number;
+  sig?: string;
+}
+
 export interface FeedNote {
   id: string;
   pubkey: string;
@@ -92,6 +102,87 @@ function passesClientFilter(note: FeedNote, filter: FeedFilter): boolean {
   }
 
   return true;
+}
+
+/**
+ * Subscribe to a Nostr feed across multiple relays.
+ * Returns a cleanup function to close all connections.
+ */
+/**
+ * Generic subscription: fetch events matching an arbitrary filter from relays.
+ * Returns a cleanup function. Calls onEvent for each new event.
+ */
+export function subscribeEvents(
+  relayUrls: string[],
+  filter: Record<string, unknown>,
+  onEvent: (event: NostrEvent) => void,
+  onEose?: () => void
+): () => void {
+  const connections: RelayConnection[] = [];
+  const seenIds = new Set<string>();
+  let eoseCount = 0;
+  let eoseFired = false;
+  const totalRelays = relayUrls.length;
+
+  for (const url of relayUrls) {
+    const subId = `sub_${Math.random().toString(36).slice(2, 10)}`;
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      continue;
+    }
+
+    const conn: RelayConnection = { ws, url, subId };
+    connections.push(conn);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify(['REQ', subId, filter]));
+    };
+
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data[0] === 'EVENT' && data[1] === subId) {
+          const event = data[2];
+          if (seenIds.has(event.id)) return;
+          seenIds.add(event.id);
+          onEvent(event);
+        } else if (data[0] === 'EOSE' && data[1] === subId) {
+          eoseCount++;
+          if (!eoseFired && eoseCount >= Math.min(totalRelays, 2)) {
+            eoseFired = true;
+            onEose?.();
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    ws.onerror = () => {
+      eoseCount++;
+      if (!eoseFired && eoseCount >= totalRelays) {
+        eoseFired = true;
+        onEose?.();
+      }
+    };
+  }
+
+  return () => {
+    for (const conn of connections) {
+      try {
+        if (conn.ws.readyState === WebSocket.OPEN) {
+          conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+        }
+        conn.ws.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+    connections.length = 0;
+  };
 }
 
 /**

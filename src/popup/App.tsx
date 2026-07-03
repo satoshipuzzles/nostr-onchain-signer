@@ -27,6 +27,7 @@ import { SignPage } from './pages/SignPage';
 import { SocialUnlocks } from './pages/SocialUnlocks';
 import { SocialUnlockPage } from './pages/SocialUnlockPage';
 import { LightOps } from './pages/LightOps';
+import { OnchainExplorer } from './pages/OnchainExplorer';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
@@ -140,6 +141,7 @@ export function App() {
           <Route path="discover/:pubkey" element={<ProfileViewWrapper />} />
           <Route path="send" element={<SendTxWrapper />} />
           <Route path="lightops" element={<LightOps />} />
+          <Route path="explorer" element={<OnchainExplorer />} />
           <Route path="settings" element={<Settings />} />
           <Route path="settings/relays" element={<RelaySettingsWrapper />} />
           <Route path="settings/profile" element={<EditProfileWrapper />} />

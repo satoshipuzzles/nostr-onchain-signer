@@ -10,6 +10,7 @@ interface Props {
   publicKey: string;
   followingPubkeys: Set<string>;
   onBack: () => void;
+  onViewProfile?: (pubkey: string) => void;
 }
 
 const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
@@ -21,7 +22,7 @@ const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
   { mode: 'kind', label: 'Kind', icon: Layers },
 ];
 
-export function Feed({ publicKey, followingPubkeys, onBack }: Props) {
+export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Props) {
   const [activeMode, setActiveMode] = useState<FeedMode>('global');
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -235,7 +236,7 @@ export function Feed({ publicKey, followingPubkeys, onBack }: Props) {
       )}
 
       {/* Feed Content */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-24">
         {/* Loading */}
         {loading && (
           <div className="flex flex-col items-center justify-center py-12">
@@ -279,6 +280,7 @@ export function Feed({ publicKey, followingPubkeys, onBack }: Props) {
             key={note.id}
             note={note}
             profile={profiles.get(note.pubkey)}
+            onViewProfile={onViewProfile}
           />
         ))}
 

@@ -3,11 +3,22 @@ import { useNavigate } from 'react-router-dom';
 import { Feed } from './Feed';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { useState } from 'react';
+import { getCachedProfile } from '@/lib/nostr/cache';
 
 export function FeedPage() {
-  const { publicKey, following } = useAuth();
+  const { publicKey, following, setViewingUser } = useAuth();
   const navigate = useNavigate();
   const [refreshKey, setRefreshKey] = useState(0);
+
+  async function handleViewProfile(pubkey: string) {
+    const profile = await getCachedProfile(pubkey);
+    setViewingUser({
+      pubkey,
+      lastActive: Math.floor(Date.now() / 1000),
+      profile: profile || undefined,
+    });
+    navigate(`/discover/${pubkey}`);
+  }
 
   return (
     <div className="h-full flex flex-col">
@@ -20,6 +31,7 @@ export function FeedPage() {
           publicKey={publicKey}
           followingPubkeys={following}
           onBack={() => navigate('/')}
+          onViewProfile={handleViewProfile}
         />
       </div>
     </div>

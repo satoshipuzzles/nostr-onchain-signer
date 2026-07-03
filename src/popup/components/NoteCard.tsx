@@ -1,24 +1,27 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
-import { type FeedNote } from '@/lib/nostr/feed';
+import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { safeImageUrl } from '@/lib/utils';
 import {
   Clock, MessageCircle, Repeat2, Heart, Zap, Link2, Check, Loader2,
+  MoreHorizontal, Copy, ExternalLink, Flag,
 } from 'lucide-react';
 import { useAuth } from '@/popup/context/AuthContext';
 import { createMessageId } from '@/shared/messages';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { KIND, type SignedEvent } from '@/lib/nostr/events';
-import { loadRelayList, getWriteRelays } from '@/lib/nostr/relays';
+import { loadRelayList, getWriteRelays, getReadRelays } from '@/lib/nostr/relays';
 import { ReplyComposer } from './ReplyComposer';
 import { ZapDialog } from './ZapDialog';
 import { bech32 } from '@scure/base';
 import { hexToBytes } from '@noble/hashes/utils';
+import { getCachedProfile } from '@/lib/nostr/cache';
 
 interface Props {
   note: FeedNote;
   profile?: ProfileMetadata | null;
   onNotePublished?: () => void;
+  onViewProfile?: (pubkey: string) => void;
 }
 
 const IMAGE_REGEX = /https?:\/\/\S+\.(jpg|jpeg|png|gif|webp)(\?\S*)?/gi;
@@ -92,7 +95,26 @@ function encodeNoteId(eventId: string): string {
   return bech32.encode('note', words, 1000);
 }
 
-export function NoteCard({ note, profile, onNotePublished }: Props) {
+function formatSats(amount: number): string {
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`;
+  if (amount >= 1_000) return `${(amount / 1_000).toFixed(amount >= 10_000 ? 0 : 1)}k`;
+  return amount.toString();
+}
+
+interface ZapperInfo {
+  pubkey: string;
+  amount: number;
+  timestamp: number;
+  profile?: ProfileMetadata | null;
+}
+
+interface ReactionGroup {
+  emoji: string;
+  count: number;
+  pubkeys: string[];
+}
+
+export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Props) {
   const { publicKey } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [imageError, setImageError] = useState<Set<string>>(new Set());
@@ -106,7 +128,150 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
   const [copied, setCopied] = useState(false);
   const [actionPending, setActionPending] = useState<string | null>(null);
 
+  // Three-dot menu
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [menuToast, setMenuToast] = useState('');
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+
+  // Reactions
+  const [reactions, setReactions] = useState<ReactionGroup[]>([]);
+  const [totalReactions, setTotalReactions] = useState(0);
+  const [userReacted, setUserReacted] = useState(false);
+
+  // Zap tallies
+  const [zapTotal, setZapTotal] = useState(0);
+  const [zappers, setZappers] = useState<ZapperInfo[]>([]);
+  const [showZappers, setShowZappers] = useState(false);
+  const zappersRef = useRef<HTMLDivElement>(null);
+
   const boostMenuRef = useRef<HTMLDivElement>(null);
+
+  // Fetch reactions and zaps on mount
+  useEffect(() => {
+    let cancelled = false;
+    const cleanups: (() => void)[] = [];
+
+    async function fetchMetadata() {
+      const relayList = await loadRelayList();
+      const relays = getReadRelays(relayList);
+      const relayUrls = relays.length > 0
+        ? relays.slice(0, 3)
+        : ['wss://relay.damus.io', 'wss://nos.lol'];
+
+      // Fetch reactions (kind 7) for this note
+      const reactionMap = new Map<string, { count: number; pubkeys: string[] }>();
+      const cleanup1 = subscribeEvents(
+        relayUrls,
+        { kinds: [7], '#e': [note.id], limit: 100 },
+        (event: NostrEvent) => {
+          if (cancelled) return;
+          const emoji = event.content || '+';
+          const normalized = emoji === '+' || emoji === '' ? '❤️' : emoji;
+          const existing = reactionMap.get(normalized);
+          if (existing) {
+            existing.count++;
+            existing.pubkeys.push(event.pubkey);
+          } else {
+            reactionMap.set(normalized, { count: 1, pubkeys: [event.pubkey] });
+          }
+          if (event.pubkey === publicKey) {
+            setUserReacted(true);
+            setLiked(true);
+          }
+          const groups: ReactionGroup[] = Array.from(reactionMap.entries())
+            .map(([emoji, data]) => ({ emoji, count: data.count, pubkeys: data.pubkeys }))
+            .sort((a, b) => b.count - a.count);
+          setReactions(groups);
+          setTotalReactions(groups.reduce((sum, g) => sum + g.count, 0));
+        },
+      );
+      cleanups.push(cleanup1);
+
+      // Fetch zaps (kind 9735) for this note
+      const zapList: ZapperInfo[] = [];
+      const cleanup2 = subscribeEvents(
+        relayUrls,
+        { kinds: [9735], '#e': [note.id], limit: 50 },
+        (event: NostrEvent) => {
+          if (cancelled) return;
+          let amount = 0;
+          let zapperPubkey = '';
+
+          // Parse bolt11 amount from description tag or content
+          const descTag = event.tags.find((t) => t[0] === 'description');
+          if (descTag && descTag[1]) {
+            try {
+              const zapReq = JSON.parse(descTag[1]);
+              zapperPubkey = zapReq.pubkey || '';
+              const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
+              if (amountTag) {
+                amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
+              }
+            } catch { /* ignore */ }
+          }
+
+          if (!zapperPubkey) {
+            const pTag = event.tags.find((t) => t[0] === 'P');
+            if (pTag) zapperPubkey = pTag[1];
+          }
+
+          // Try bolt11 tag for amount
+          if (amount === 0) {
+            const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
+            if (bolt11Tag && bolt11Tag[1]) {
+              const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
+              if (match) {
+                const value = parseInt(match[1], 10);
+                const unit = match[2];
+                if (unit === 'm') amount = value * 100_000;
+                else if (unit === 'u') amount = value * 100;
+                else if (unit === 'n') amount = Math.floor(value / 10);
+                else if (unit === 'p') amount = Math.floor(value / 10_000);
+                else amount = value * 100_000_000;
+              }
+            }
+          }
+
+          if (amount > 0 || zapperPubkey) {
+            zapList.push({
+              pubkey: zapperPubkey,
+              amount,
+              timestamp: event.created_at,
+            });
+            setZappers([...zapList].sort((a, b) => b.amount - a.amount));
+            setZapTotal(zapList.reduce((sum, z) => sum + z.amount, 0));
+          }
+        },
+      );
+      cleanups.push(cleanup2);
+    }
+
+    fetchMetadata();
+
+    return () => {
+      cancelled = true;
+      cleanups.forEach((fn) => fn());
+    };
+  }, [note.id, publicKey]);
+
+  // Resolve zapper profiles
+  useEffect(() => {
+    async function resolveZapperProfiles() {
+      const updated = [...zappers];
+      let changed = false;
+      for (const zapper of updated) {
+        if (zapper.pubkey && !zapper.profile) {
+          const p = await getCachedProfile(zapper.pubkey);
+          if (p) {
+            zapper.profile = p;
+            changed = true;
+          }
+        }
+      }
+      if (changed) setZappers([...updated]);
+    }
+    if (zappers.length > 0) resolveZapperProfiles();
+  }, [zappers.length]);
 
   useEffect(() => {
     if (!showBoostMenu) return;
@@ -121,6 +286,28 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showBoostMenu]);
+
+  useEffect(() => {
+    if (!showMoreMenu) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setShowMoreMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showMoreMenu]);
+
+  useEffect(() => {
+    if (!showZappers) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (zappersRef.current && !zappersRef.current.contains(e.target as Node)) {
+        setShowZappers(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showZappers]);
 
   const displayName =
     profile?.displayName || profile?.name || note.pubkey.slice(0, 12);
@@ -160,6 +347,8 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
         content: '+',
       });
       setLiked(true);
+      setUserReacted(true);
+      setTotalReactions((prev) => prev + 1);
     } catch (err) {
       console.error('Failed to like:', err);
     } finally {
@@ -218,35 +407,135 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
     }
   }
 
+  // Three-dot menu actions
+  function handleCopyEventId() {
+    navigator.clipboard.writeText(note.id);
+    setMenuToast('Event ID copied');
+    setShowMoreMenu(false);
+    setTimeout(() => setMenuToast(''), 2000);
+  }
+
+  function handleCopyNoteUrl() {
+    const noteId = encodeNoteId(note.id);
+    navigator.clipboard.writeText(`https://njump.me/${noteId}`);
+    setMenuToast('Note URL copied');
+    setShowMoreMenu(false);
+    setTimeout(() => setMenuToast(''), 2000);
+  }
+
+  function handleCopyEventJson() {
+    const json = JSON.stringify({
+      id: note.id,
+      pubkey: note.pubkey,
+      content: note.content,
+      created_at: note.created_at,
+      tags: note.tags,
+      kind: note.kind,
+    }, null, 2);
+    navigator.clipboard.writeText(json);
+    setMenuToast('Event JSON copied');
+    setShowMoreMenu(false);
+    setTimeout(() => setMenuToast(''), 2000);
+  }
+
+  function handleViewOnNjump() {
+    const noteId = encodeNoteId(note.id);
+    window.open(`https://njump.me/${noteId}`, '_blank');
+    setShowMoreMenu(false);
+  }
+
+  function handleReport() {
+    setMenuToast('Reported');
+    setShowMoreMenu(false);
+    setTimeout(() => setMenuToast(''), 2000);
+  }
+
   const noteRef = `nostr:${encodeNoteId(note.id)}`;
 
   return (
-    <div className="card mb-3">
-      {/* Author Header */}
-      <div className="flex items-center gap-2.5 mb-2.5">
-        {profile?.picture ? (
-          <img
-            src={safeImageUrl(profile.picture)}
-            alt=""
-            className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0"
-          />
-        ) : (
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
-            <span className="text-xs font-bold text-white/80">
-              {displayName.charAt(0).toUpperCase()}
-            </span>
+    <div className="card mb-3 relative">
+      {/* Three-dot menu */}
+      <div className="absolute top-2 right-2 z-10" ref={moreMenuRef}>
+        <button
+          onClick={() => setShowMoreMenu(!showMoreMenu)}
+          className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-surface-700 transition-colors"
+        >
+          <MoreHorizontal className="w-4 h-4" />
+        </button>
+
+        {showMoreMenu && (
+          <div className="absolute top-full right-0 mt-1 bg-surface-700 rounded-xl shadow-xl border border-surface-200/10 overflow-hidden min-w-[180px] z-20">
+            <button
+              onClick={handleCopyEventId}
+              className="w-full text-left px-3 py-2.5 text-xs text-gray-300 hover:bg-surface-600 hover:text-white transition-colors flex items-center gap-2"
+            >
+              <Copy className="w-3.5 h-3.5" /> Copy Event ID
+            </button>
+            <button
+              onClick={handleCopyNoteUrl}
+              className="w-full text-left px-3 py-2.5 text-xs text-gray-300 hover:bg-surface-600 hover:text-white transition-colors flex items-center gap-2 border-t border-surface-200/10"
+            >
+              <Link2 className="w-3.5 h-3.5" /> Copy Note URL
+            </button>
+            <button
+              onClick={handleCopyEventJson}
+              className="w-full text-left px-3 py-2.5 text-xs text-gray-300 hover:bg-surface-600 hover:text-white transition-colors flex items-center gap-2 border-t border-surface-200/10"
+            >
+              <Copy className="w-3.5 h-3.5" /> Copy Event JSON
+            </button>
+            <button
+              onClick={handleViewOnNjump}
+              className="w-full text-left px-3 py-2.5 text-xs text-gray-300 hover:bg-surface-600 hover:text-white transition-colors flex items-center gap-2 border-t border-surface-200/10"
+            >
+              <ExternalLink className="w-3.5 h-3.5" /> View on njump.me
+            </button>
+            <button
+              onClick={handleReport}
+              className="w-full text-left px-3 py-2.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2 border-t border-surface-200/10"
+            >
+              <Flag className="w-3.5 h-3.5" /> Report
+            </button>
           </div>
         )}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-white truncate">
-            {displayName}
-          </p>
-          {profile?.nip05 && (
-            <p className="text-[10px] text-gray-500 truncate">
-              {profile.nip05}
-            </p>
-          )}
+      </div>
+
+      {/* Toast */}
+      {menuToast && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-green-500/20 text-green-400 text-xs font-medium px-3 py-1.5 rounded-lg border border-green-500/30 z-20">
+          {menuToast}
         </div>
+      )}
+
+      {/* Author Header */}
+      <div className="flex items-center gap-2.5 mb-2.5 pr-8">
+        <button
+          onClick={() => onViewProfile?.(note.pubkey)}
+          className="flex items-center gap-2.5 min-w-0 flex-1"
+        >
+          {profile?.picture ? (
+            <img
+              src={safeImageUrl(profile.picture)}
+              alt=""
+              className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0"
+            />
+          ) : (
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
+              <span className="text-xs font-bold text-white/80">
+                {displayName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+          )}
+          <div className="flex-1 min-w-0 text-left">
+            <p className="text-sm font-medium text-white truncate">
+              {displayName}
+            </p>
+            {profile?.nip05 && (
+              <p className="text-[10px] text-gray-500 truncate">
+                {profile.nip05}
+              </p>
+            )}
+          </div>
+        </button>
         <div className="flex items-center gap-1 text-gray-500 flex-shrink-0">
           <Clock className="w-3 h-3" />
           <span className="text-[11px]">{formatTimeAgo(note.created_at)}</span>
@@ -307,6 +596,20 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
               className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-nostr/15 text-nostr border border-nostr/20"
             >
               #{tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Emoji Reactions Display */}
+      {reactions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2.5">
+          {reactions.slice(0, 8).map((group) => (
+            <span
+              key={group.emoji}
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-surface-700/80 text-gray-300 border border-surface-200/10"
+            >
+              {group.emoji} <span className="text-gray-400">{group.count}</span>
             </span>
           ))}
         </div>
@@ -373,7 +676,7 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
           onClick={handleLike}
           disabled={liked || actionPending === 'like'}
           className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs transition-colors ${
-            liked
+            liked || userReacted
               ? 'text-red-400'
               : 'text-gray-500 hover:text-red-400 hover:bg-red-400/10'
           }`}
@@ -381,17 +684,74 @@ export function NoteCard({ note, profile, onNotePublished }: Props) {
           {actionPending === 'like' ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
-            <Heart className={`w-4 h-4 ${liked ? 'fill-current' : ''}`} />
+            <Heart className={`w-4 h-4 ${liked || userReacted ? 'fill-current' : ''}`} />
+          )}
+          {totalReactions > 0 && (
+            <span className="text-[11px]">{totalReactions}</span>
           )}
         </button>
 
-        {/* Zap */}
-        <button
-          onClick={() => setShowZapDialog(true)}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-500 hover:text-bitcoin hover:bg-bitcoin/10 transition-colors"
-        >
-          <Zap className="w-4 h-4" />
-        </button>
+        {/* Zap with tally */}
+        <div className="relative" ref={zappersRef}>
+          <button
+            onClick={() => {
+              if (zappers.length > 0) {
+                setShowZappers(!showZappers);
+              } else {
+                setShowZapDialog(true);
+              }
+            }}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-500 hover:text-bitcoin hover:bg-bitcoin/10 transition-colors"
+          >
+            <Zap className={`w-4 h-4 ${zapTotal > 0 ? 'text-yellow-500' : ''}`} />
+            {zapTotal > 0 && (
+              <span className="text-[11px] text-yellow-500 font-medium">
+                {formatSats(zapTotal)}
+              </span>
+            )}
+          </button>
+
+          {/* Zappers popup */}
+          {showZappers && zappers.length > 0 && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-surface-700 rounded-xl shadow-xl border border-surface-200/10 p-3 min-w-[220px] max-h-[200px] overflow-y-auto z-20">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-yellow-500 flex items-center gap-1">
+                  <Zap className="w-3 h-3" /> {formatSats(zapTotal)} sats
+                </p>
+                <button
+                  onClick={() => setShowZapDialog(true)}
+                  className="text-[10px] text-bitcoin hover:text-bitcoin/80 font-medium"
+                >
+                  Zap
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                {zappers.slice(0, 10).map((z, i) => (
+                  <button
+                    key={`${z.pubkey}-${i}`}
+                    onClick={() => {
+                      if (z.pubkey) onViewProfile?.(z.pubkey);
+                      setShowZappers(false);
+                    }}
+                    className="flex items-center gap-2 w-full text-left hover:bg-surface-600 rounded-lg px-1.5 py-1 transition-colors"
+                  >
+                    {z.profile?.picture ? (
+                      <img src={safeImageUrl(z.profile.picture)} alt="" className="w-5 h-5 rounded-full object-cover" />
+                    ) : (
+                      <div className="w-5 h-5 rounded-full bg-surface-600" />
+                    )}
+                    <span className="text-[11px] text-gray-300 truncate flex-1">
+                      {z.profile?.displayName || z.profile?.name || z.pubkey?.slice(0, 8) || 'anon'}
+                    </span>
+                    <span className="text-[11px] text-yellow-500 font-medium">
+                      {formatSats(z.amount)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Copy Link */}
         <button

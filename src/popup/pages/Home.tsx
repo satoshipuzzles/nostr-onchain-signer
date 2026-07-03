@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock } from 'lucide-react';
+import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
@@ -195,11 +195,11 @@ export function Home() {
             Social Unlocks
           </button>
           <button
-            onClick={() => navigate('/discover')}
+            onClick={() => navigate('/explorer')}
             className="btn-secondary flex items-center justify-center gap-1.5 text-sm"
           >
-            <Send className="w-3.5 h-3.5 rotate-45" />
-            Discover Users
+            <Blocks className="w-3.5 h-3.5" />
+            Explorer
           </button>
         </div>
       </div>
