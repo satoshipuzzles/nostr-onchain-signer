@@ -4,9 +4,24 @@
  *
  * The content script acts as a bridge between the page context
  * (where window.nostr lives) and the extension background.
+ *
+ * We skip injection on our own PWA so Alby/nos2x remain reachable there.
  */
 
-const EXTENSION_ID = chrome.runtime.id;
+const OWN_APP_HOSTS = [
+  'nostr-onchain-signer.vercel.app',
+  'localhost',
+  '127.0.0.1',
+];
+
+function isOwnAppPage(): boolean {
+  try {
+    const host = location.hostname;
+    return OWN_APP_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+  } catch {
+    return false;
+  }
+}
 
 // Inject the provider script into the page
 function injectProvider() {
@@ -17,7 +32,9 @@ function injectProvider() {
   script.onload = () => script.remove();
 }
 
-injectProvider();
+if (!isOwnAppPage()) {
+  injectProvider();
+}
 
 // Bridge messages from page to background
 window.addEventListener('message', async (event) => {

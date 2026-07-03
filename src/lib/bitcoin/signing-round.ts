@@ -242,6 +242,15 @@ export async function deleteSigningRound(id: string): Promise<void> {
   });
 }
 
+export function recordBroadcast(round: SigningRound, txid: string): SigningRound {
+  return {
+    ...round,
+    status: 'broadcast',
+    txid,
+    updatedAt: Math.floor(Date.now() / 1000),
+  };
+}
+
 function generateRoundId(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);

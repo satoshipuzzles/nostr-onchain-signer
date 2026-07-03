@@ -8,6 +8,9 @@ import { type MultisigWallet, type MultisigConfig, createMultisigFromPubkeys } f
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
 
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
+
 export interface KeyHolder {
   pubkey: string;
   profile?: ProfileMetadata;
@@ -174,6 +177,41 @@ export async function getPendingInbound(): Promise<PendingSignatureRequest[]> {
 export async function getPendingOutbound(): Promise<PendingSignatureRequest[]> {
   const requests = await loadPendingRequests();
   return requests.filter((r) => r.direction === 'outbound' && r.status === 'pending');
+}
+
+export async function renameMultisigWallet(id: string, name: string): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Wallet name is required');
+  const wallets = await loadMultisigWallets();
+  const wallet = wallets.find((w) => w.id === id);
+  if (!wallet) throw new Error('Wallet not found');
+  wallet.name = trimmed;
+  wallet.lastActivityAt = Date.now();
+  await chrome.storage.local.set({ [STORAGE_KEY_WALLETS]: wallets });
+  syncWalletsToRelay().catch(() => {});
+}
+
+/** Short display ID from address — not a Nostr npub. */
+export function addressFingerprint(address: string): string {
+  const hash = sha256(new TextEncoder().encode(address));
+  return bytesToHex(hash).slice(0, 8);
+}
+
+const PERSONAL_LABEL_KEY = 'personal_wallet_labels';
+
+export async function getPersonalWalletLabel(pubkey: string): Promise<string> {
+  const result = await chrome.storage.local.get(PERSONAL_LABEL_KEY);
+  const labels = (result[PERSONAL_LABEL_KEY] || {}) as Record<string, string>;
+  return labels[pubkey] || 'Personal Wallet';
+}
+
+export async function setPersonalWalletLabel(pubkey: string, name: string): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Wallet name is required');
+  const result = await chrome.storage.local.get(PERSONAL_LABEL_KEY);
+  const labels = (result[PERSONAL_LABEL_KEY] || {}) as Record<string, string>;
+  labels[pubkey] = trimmed;
+  await chrome.storage.local.set({ [PERSONAL_LABEL_KEY]: labels });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────

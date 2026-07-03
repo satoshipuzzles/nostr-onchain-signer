@@ -20,7 +20,7 @@ interface Props {
   activeAccountIndex: number;
   onNavigate: (page: Page) => void;
   onSwitchAccount: (index: number) => void;
-  onAddAccount: () => void;
+  onAddAccount: (mode?: 'generated' | 'nip07' | 'nsec') => void;
   onBackupKeys: () => void;
 }
 

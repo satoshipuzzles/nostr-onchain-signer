@@ -247,6 +247,35 @@ export function verifyLightOp(scriptHex: string, eventId: string): boolean {
   return decoded.hash === computedHash;
 }
 
+/**
+ * Encode a plain-text memo into OP_RETURN (no Nostr event / kind 1).
+ * Max ~75 bytes of UTF-8 text per standard relay policy.
+ */
+export function encodePlainMemoOpReturn(memo: string): OpReturnOutput {
+  const trimmed = memo.trim();
+  if (!trimmed) throw new Error('Memo cannot be empty');
+  const bytes = new TextEncoder().encode(trimmed);
+  if (bytes.length > 75) {
+    throw new Error(`Memo too long (${bytes.length} bytes, max 75)`);
+  }
+  const script = concatBytes(
+    new Uint8Array([0x6a]),
+    new Uint8Array([bytes.length]),
+    bytes
+  );
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    breakdown: {
+      protocolId: 'MEMO',
+      version: 0,
+      kind: 0,
+      eventId: '',
+    },
+  };
+}
+
 // "NINV" protocol identifier for invoice OP_RETURN
 const INVOICE_PROTOCOL_ID = new Uint8Array([0x4e, 0x49, 0x4e, 0x56]);
 

@@ -22,8 +22,10 @@ interface LeaderboardEntry {
 const CACHE_KEY = 'leaderboard_cache';
 const CACHE_KEY_GLOBAL = 'leaderboard_cache_global';
 const CACHE_TTL = 5 * 60_000; // 5 minutes
-const MAX_PUBKEYS_TO_CHECK = 40;
-const BALANCE_CONCURRENCY = 5;
+const MAX_PUBKEYS_GLOBAL = 300;
+const MAX_PUBKEYS_FOLLOWING = 80;
+const KNOWN_PUBKEYS_KEY = 'leaderboard_known_pubkeys';
+const BALANCE_CONCURRENCY = 8;
 
 type ViewTab = 'following' | 'global';
 
@@ -91,7 +93,7 @@ export function Leaderboard() {
       }
 
       setProcessing('Checking balances...');
-      await batchCheckBalances(followingPubkeys.slice(0, MAX_PUBKEYS_TO_CHECK), signal, CACHE_KEY);
+      await batchCheckBalances(followingPubkeys.slice(0, MAX_PUBKEYS_FOLLOWING), signal, CACHE_KEY);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         log.error('Leaderboard', 'Following load failed:', err.message);
@@ -124,21 +126,35 @@ export function Leaderboard() {
         followingPubkeys = Array.from(following);
       }
 
-      // Use cached profiles + following — skip slow relay discovery
-      setProcessing('Loading known users...');
-      const cachedProfiles = await getAllCachedProfiles();
-      const cachedPubkeys = cachedProfiles.map((p) => p.profile.pubkey);
+      setProcessing('Discovering users...');
+      const [trending, discovered, cachedProfiles] = await Promise.all([
+        fetchTrendingPubkeys(),
+        discoverUsers(signal).catch(() => [] as string[]),
+        getAllCachedProfiles(),
+      ]);
 
-      const allPubkeys = new Set([...followingPubkeys, ...cachedPubkeys]);
+      const cached = getCachedLeaderboard(CACHE_KEY_GLOBAL);
+      const cachedPubkeys = (cached || []).map((e) => e.pubkey);
+      const known = loadKnownPubkeys();
+
+      const allPubkeys = new Set([
+        ...trending,
+        ...discovered,
+        ...followingPubkeys,
+        ...cachedProfiles.map((p) => p.profile.pubkey),
+        ...known,
+        ...cachedPubkeys,
+      ]);
       allPubkeys.delete(publicKey);
-      const toCheck = Array.from(allPubkeys).slice(0, MAX_PUBKEYS_TO_CHECK);
+      const toCheck = Array.from(allPubkeys).slice(0, MAX_PUBKEYS_GLOBAL);
+      saveKnownPubkeys(toCheck);
 
       if (toCheck.length === 0) {
-        throw new Error('No users in cache yet. Visit Discover or Follow users first.');
+        throw new Error('No users found yet. Try again in a moment.');
       }
 
-      setProcessing(`Checking ${toCheck.length} users...`);
-      log.info('Leaderboard', `Checking ${toCheck.length} cached/following users`);
+      setProcessing(`Scanning ${toCheck.length} users...`);
+      log.info('Leaderboard', `Scanning ${toCheck.length} global users`);
       await batchCheckBalances(toCheck, signal, CACHE_KEY_GLOBAL);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -157,11 +173,32 @@ export function Leaderboard() {
     signal: AbortSignal,
     cacheKey: string,
   ) {
+    // Try server-side scan first (fast, no browser rate limits)
+    const serverResults = await tryServerScan(pubkeys, signal);
+    if (serverResults.length > 0 && !signal.aborted) {
+      const results: LeaderboardEntry[] = [];
+      for (const r of serverResults) {
+        const profile = await getCachedProfile(r.pubkey);
+        results.push({
+          pubkey: r.pubkey,
+          npub: pubkeyToNpub(r.pubkey),
+          profile: profile || { name: `User ${r.pubkey.slice(0, 8)}`, pubkey: r.pubkey } as ProfileMetadata,
+          taprootAddress: r.address,
+          balance: r.balance,
+        });
+      }
+      const sorted = results.sort((a, b) => b.balance - a.balance);
+      setEntries(sorted);
+      cacheLeaderboard(cacheKey, sorted);
+      log.info('Leaderboard', 'Server scan:', sorted.length, 'entries');
+      return;
+    }
+
+    // Fallback: client-side balance checks
     const results: LeaderboardEntry[] = [];
     const seen = new Set<string>();
     let checked = 0;
 
-    // Process with limited concurrency
     for (let i = 0; i < pubkeys.length; i += BALANCE_CONCURRENCY) {
       if (signal.aborted) return;
 
@@ -449,6 +486,88 @@ function cacheLeaderboard(key: string, entries: LeaderboardEntry[]) {
   try {
     localStorage.setItem(key, JSON.stringify({ data: entries, timestamp: Date.now() }));
   } catch {}
+}
+
+function loadKnownPubkeys(): string[] {
+  try {
+    const raw = localStorage.getItem(KNOWN_PUBKEYS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveKnownPubkeys(pubkeys: string[]) {
+  try {
+    const existing = new Set(loadKnownPubkeys());
+    pubkeys.forEach((p) => existing.add(p));
+    localStorage.setItem(KNOWN_PUBKEYS_KEY, JSON.stringify(Array.from(existing).slice(0, 1000)));
+  } catch {}
+}
+
+async function fetchTrendingPubkeys(): Promise<string[]> {
+  try {
+    const res = await fetch('/api/leaderboard');
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.pubkeys) && data.pubkeys.length > 0) {
+        return data.pubkeys.slice(0, 200);
+      }
+    }
+  } catch {}
+
+  try {
+    const res = await fetch('https://api.nostr.band/v0/trending/notes');
+    if (!res.ok) return [];
+    const data = await res.json();
+    const pubkeys = new Set<string>();
+    for (const note of data.notes || []) {
+      if (note.event?.pubkey) pubkeys.add(note.event.pubkey);
+    }
+    return Array.from(pubkeys).slice(0, 200);
+  } catch {
+    return [];
+  }
+}
+
+async function tryServerScan(
+  pubkeys: string[],
+  signal: AbortSignal,
+): Promise<{ pubkey: string; balance: number; address: string }[]> {
+  const addresses = pubkeys.map((pubkey) => ({
+    pubkey,
+    address: pubkeyToTaprootAddress(pubkey),
+  }));
+
+  const results: { pubkey: string; balance: number; address: string }[] = [];
+
+  for (let i = 0; i < addresses.length; i += 100) {
+    if (signal.aborted) break;
+    const batch = addresses.slice(i, i + 100);
+    try {
+      const res = await fetch('/api/leaderboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addresses: batch }),
+        signal,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        for (const entry of data.entries || []) {
+          results.push({
+            pubkey: entry.pubkey,
+            balance: entry.balance,
+            address: entry.address,
+          });
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      log.warn('Leaderboard', 'Server scan batch failed');
+    }
+  }
+
+  return results;
 }
 
 async function discoverUsers(signal: AbortSignal): Promise<string[]> {

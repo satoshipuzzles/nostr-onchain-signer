@@ -195,24 +195,41 @@ function balanceFromCache(entry: BalanceCacheEntry, stale = false): BalanceResul
 
 // ─── Fetch ───────────────────────────────────────────────────────
 
-async function fetchWithTimeout(url: string, ms = 12_000): Promise<Response> {
+function isWebDeploy(): boolean {
+  try {
+    const id = chrome?.runtime?.id;
+    return !id || id === 'pwa-mode';
+  } catch {
+    return true;
+  }
+}
+
+async function fetchWithTimeout(url: string, ms = 12_000, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { signal: controller.signal, ...init });
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function fetchEsplora(path: string, ms = 12_000): Promise<Response> {
+async function fetchEsplora(path: string, ms = 12_000, init?: RequestInit): Promise<Response> {
+  if (isWebDeploy()) {
+    const proxyUrl = `/api/mempool?path=${encodeURIComponent(path)}`;
+    const res = await scheduleRequest(() => fetchWithTimeout(proxyUrl, ms, init));
+    if (res.ok) return res;
+    const errText = await res.text().catch(() => '');
+    throw new Error(errText || `HTTP ${res.status}`);
+  }
+
   let lastError = 'All providers failed';
   const startIdx = providerCursor;
 
   for (let attempt = 0; attempt < PROVIDERS.length; attempt++) {
     const base = PROVIDERS[(startIdx + attempt) % PROVIDERS.length];
     try {
-      const res = await scheduleRequest(() => fetchWithTimeout(`${base}${path}`, ms));
+      const res = await scheduleRequest(() => fetchWithTimeout(`${base}${path}`, ms, init));
       if (res.ok) {
         providerCursor = (startIdx + attempt + 1) % PROVIDERS.length;
         return res;
@@ -337,4 +354,30 @@ export function formatSats(sats: number): string {
   if (sats >= 1_000_000) return `${(sats / 1_000_000).toFixed(2)}M sats`;
   if (sats >= 1_000) return `${(sats / 1_000).toFixed(1)}k sats`;
   return `${sats.toLocaleString()} sats`;
+}
+
+/** Broadcast a finalized raw transaction hex; returns txid. */
+export async function broadcastTransaction(rawTxHex: string): Promise<string> {
+  const clean = rawTxHex.replace(/\s/g, '');
+
+  try {
+    const { loadBitcoinNodeConfig, broadcastViaNode } = await import('./node');
+    const node = await loadBitcoinNodeConfig();
+    if (node?.enabled && node.rpcUrl) {
+      return await broadcastViaNode(node, clean);
+    }
+  } catch (err) {
+    log.warn('Mempool', 'Node broadcast failed, falling back to Esplora:', err);
+  }
+
+  const res = await fetchEsplora('/tx', 30_000, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: clean,
+  });
+  const text = (await res.text()).trim();
+  if (!/^[a-f0-9]{64}$/i.test(text)) {
+    throw new Error(text || 'Invalid broadcast response');
+  }
+  return text;
 }

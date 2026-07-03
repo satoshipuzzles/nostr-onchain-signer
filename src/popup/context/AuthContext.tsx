@@ -5,6 +5,8 @@ import { type ArchivedMultisig, migrateUnownedWallets } from '@/lib/bitcoin/wall
 import {
   type Account, getAccountsFromVault, loadActiveAccountIndex,
   saveActiveAccountIndex, loadAccountMeta, updateAccountMeta, addAccountToVault,
+  addNip07AccountToVault, addNsecAccountToVault,
+  upgradeAccountWithNsec,
 } from '@/lib/accounts';
 import { decryptVault, loadVault } from '@/lib/crypto/vault';
 import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
@@ -34,7 +36,7 @@ interface AuthActions {
   handleFollow: (pubkey: string) => Promise<void>;
   handleUnfollow: (pubkey: string) => Promise<void>;
   handleSwitchAccount: (index: number) => Promise<void>;
-  handleAddAccount: () => Promise<void>;
+  handleAddAccount: (mode?: 'generated' | 'nip07' | 'nsec') => Promise<void>;
   handleBackupKeys: () => Promise<void>;
   confirmAndSign: (event: Omit<UnsignedEvent, 'pubkey'>) => Promise<SignedEvent>;
   signingRequest: SigningRequest | null;
@@ -42,6 +44,8 @@ interface AuthActions {
   setViewingUser: (u: DiscoveredUser | null) => void;
   setMyProfile: (p: ProfileMetadata | null) => void;
   setVaultPassword: (pw: string) => void;
+  canSignOnchain: boolean;
+  handleUpgradeWithNsec: (nsec: string) => Promise<void>;
 }
 
 type AuthContextType = AuthState & AuthActions;
@@ -180,6 +184,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
           npub: pubkeyToNpub(initialPublicKey),
           label: 'Primary Key',
           createdAt: Date.now(),
+          canSignOnchain: true,
         }]);
       }
     } catch {
@@ -188,6 +193,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
         npub: pubkeyToNpub(initialPublicKey),
         label: 'Primary Key',
         createdAt: Date.now(),
+        canSignOnchain: true,
       }]);
     }
   }
@@ -296,7 +302,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     loadProfileAndFollows(acct.publicKeyHex);
   }
 
-  async function handleAddAccount() {
+  async function handleAddAccount(mode: 'generated' | 'nip07' | 'nsec' = 'generated') {
     let pw = vaultPassword;
     if (!pw) {
       const entered = prompt('Enter your vault password to add an account');
@@ -312,11 +318,27 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       }
     }
     try {
-      const { accounts: newAccounts, newIndex } = await addAccountToVault(pw);
+      let newAccounts: Account[];
+      let newIndex: number;
+
+      if (mode === 'nip07') {
+        const hint = 'Switch to the account you want in your NIP-07 extension, then click OK.';
+        if (!confirm(hint)) return;
+        ({ accounts: newAccounts, newIndex } = await addNip07AccountToVault(pw));
+      } else if (mode === 'nsec') {
+        const nsec = prompt('Paste nsec for the new account');
+        if (!nsec?.trim()) return;
+        ({ accounts: newAccounts, newIndex } = await addNsecAccountToVault(pw, nsec.trim()));
+      } else {
+        ({ accounts: newAccounts, newIndex } = await addAccountToVault(pw));
+      }
+
       setAccounts(newAccounts);
       await chrome.storage.local.set({ cached_accounts: newAccounts });
       await handleSwitchAccount(newIndex);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to add account';
+      alert(msg);
       console.error('Failed to add account:', err);
     }
   }
@@ -385,6 +407,19 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     });
   }
 
+  async function handleUpgradeWithNsec(nsec: string) {
+    if (!vaultPassword) throw new Error('Unlock your vault first');
+    const updated = await upgradeAccountWithNsec(vaultPassword, publicKey, nsec);
+    setAccounts(updated);
+    await chrome.runtime.sendMessage({
+      type: 'vault:unlock',
+      payload: { password: vaultPassword },
+      id: createMessageId(),
+    });
+  }
+
+  const canSignOnchain = accounts[activeAccountIndex]?.canSignOnchain ?? false;
+
   return (
     <AuthContext.Provider value={{
       publicKey,
@@ -406,6 +441,8 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       setViewingUser,
       setMyProfile,
       setVaultPassword,
+      canSignOnchain,
+      handleUpgradeWithNsec,
     }}>
       {children}
     </AuthContext.Provider>

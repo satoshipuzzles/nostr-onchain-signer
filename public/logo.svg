@@ -1,12 +1,3 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <g fill="none" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
-    <line x1="220" y1="108" x2="220" y2="148"/>
-    <line x1="272" y1="108" x2="272" y2="148"/>
-    <line x1="220" y1="364" x2="220" y2="404"/>
-    <line x1="272" y1="364" x2="272" y2="404"/>
-  </g>
-  <path fill="#000000" stroke="#FFFFFF" stroke-width="22" stroke-linejoin="round"
-    d="M196 148h96c40 0 72 26 72 60 0 26-16 48-40 58 28 8 48 32 48 62 0 36-32 66-76 66H196V148z
-       M234 186v52h48c22 0 40-11 40-26s-18-26-40-26h-48z
-       M234 274v60h56c26 0 44-13 44-30s-18-30-44-30h-56z"/>
+  <path fill="#FFFFFF" d="M196 108h96c52 0 92 34 92 78 0 32-18 58-46 70 32 10 54 38 54 76 0 44-38 80-88 80H196V108zm38 52v56h52c24 0 42-12 42-28s-18-28-42-28h-52zm0 112v72h60c30 0 50-14 50-36s-20-36-50-36h-60z"/>
 </svg>

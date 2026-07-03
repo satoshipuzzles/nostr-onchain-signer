@@ -188,6 +188,31 @@ async function handleMessage(
       return { id, result: wallet };
     }
 
+    case 'btc:signPsbt': {
+      const key = await getActiveKey();
+      if (!key) return { id, error: 'Vault is locked' };
+      const { psbtHex } = payload as { psbtHex: string };
+      if (!psbtHex) return { id, error: 'Missing psbtHex' };
+      const hasValidKey =
+        typeof key.privateKeyHex === 'string' &&
+        key.privateKeyHex.length === 64 &&
+        /^[0-9a-f]+$/i.test(key.privateKeyHex);
+      if (!hasValidKey) {
+        return {
+          id,
+          error: 'This account uses an external NIP-07 signer. Sign from the web app with Alby, or import nsec.',
+        };
+      }
+      try {
+        const { signAndFinalizePsbt } = await import('@/lib/bitcoin/psbt-builder');
+        const result = signAndFinalizePsbt(psbtHex, key.privateKeyHex);
+        return { id, result };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to sign PSBT';
+        return { id, error: msg };
+      }
+    }
+
     case 'dual:signAndBroadcast': {
       const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };

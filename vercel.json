@@ -1,5 +1,6 @@
 {
   "buildCommand": "npm run build:web",
+  "outputDirectory": "dist-web",
   "framework": "vite",
   "headers": [
     {
@@ -16,6 +17,6 @@
     }
   ],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

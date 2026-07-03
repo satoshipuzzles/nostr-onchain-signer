@@ -2,13 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Wallet, Shield, Loader2, ExternalLink,
-  Copy, Check, RefreshCw,
+  Copy, Check, RefreshCw, Send, ArrowDownLeft,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getCachedBalance } from '@/lib/bitcoin/mempool';
 import {
   loadMyMultisigWallets, updateMultisigBalance,
+  getPersonalWalletLabel, addressFingerprint,
   type ArchivedMultisig,
 } from '@/lib/bitcoin/wallet-store';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
@@ -23,6 +24,7 @@ export function Wallets() {
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [personalLabel, setPersonalLabel] = useState('Personal Wallet');
   const fetchGenRef = useRef(0);
 
   const address = pubkeyToTaprootAddress(publicKey);
@@ -39,6 +41,7 @@ export function Wallets() {
       // Instant: load wallets from local storage first
       const multisigs = await loadMyMultisigWallets(publicKey);
       setWallets(multisigs.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
+      setPersonalLabel(await getPersonalWalletLabel(publicKey));
       log.info('Wallets', 'Loaded', multisigs.length, 'wallets from storage');
 
       const cachedBal = getCachedBalance(address);
@@ -137,32 +140,51 @@ export function Wallets() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3">
-          <button
-            onClick={() => navigate('/wallets/personal')}
-            className="card w-full text-left hover:border-bitcoin/30 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-bitcoin/15 flex items-center justify-center flex-shrink-0">
-                <Wallet className="w-5 h-5 text-bitcoin" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="text-sm font-medium">Personal Wallet</p>
-                  <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
-                    Taproot
-                  </span>
+          <div className="card">
+            <button
+              onClick={() => navigate('/wallets/personal')}
+              className="w-full text-left hover:opacity-90 transition-opacity"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-bitcoin/15 flex items-center justify-center flex-shrink-0">
+                  <Wallet className="w-5 h-5 text-bitcoin" />
                 </div>
-                <p className="text-xs text-gray-500 font-mono truncate">
-                  {address.slice(0, 16)}...{address.slice(-6)}
-                </p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium">{personalLabel}</p>
+                    <p className="text-[10px] text-gray-500 font-mono">ID {addressFingerprint(address)}</p>
+                    <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
+                      Taproot
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 font-mono truncate">
+                    {address.slice(0, 16)}...{address.slice(-6)}
+                  </p>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className={`text-sm font-bold ${balance !== null && balance > 0 ? 'text-bitcoin' : 'text-gray-400'}`}>
+                    {balance !== null ? formatSats(balance) : '—'}
+                  </p>
+                </div>
               </div>
-              <div className="text-right flex-shrink-0">
-                <p className={`text-sm font-bold ${balance !== null && balance > 0 ? 'text-bitcoin' : 'text-gray-400'}`}>
-                  {balance !== null ? formatSats(balance) : '—'}
-                </p>
-              </div>
+            </button>
+            <div className="flex gap-2 mt-3 pt-3 border-t border-surface-200/10">
+              <button
+                onClick={() => navigate('/send')}
+                className="btn-primary flex-1 flex items-center justify-center gap-1.5 text-sm py-2"
+              >
+                <Send className="w-3.5 h-3.5" />
+                Send
+              </button>
+              <button
+                onClick={() => navigate('/wallets/personal')}
+                className="btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm py-2"
+              >
+                <ArrowDownLeft className="w-3.5 h-3.5" />
+                Receive
+              </button>
             </div>
-          </button>
+          </div>
 
           {wallets.length > 0 && (
             <div className="pt-2">
@@ -171,53 +193,70 @@ export function Wallets() {
               </p>
               <div className="space-y-2">
                 {wallets.map((wallet) => (
-                  <button
-                    key={wallet.id}
-                    onClick={() => navigate(`/wallets/${wallet.id}`)}
-                    className="card w-full text-left hover:border-bitcoin/30 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="flex -space-x-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
-                        {wallet.keyHolders.slice(0, 3).map((holder, i) => (
-                          <div key={holder.pubkey} className="relative" style={{ zIndex: 3 - i }}>
-                            <ClickableAvatar
-                              pubkey={holder.pubkey}
-                              picture={holder.profile?.picture}
-                              name={holder.profile?.displayName || holder.profile?.name}
-                              size="md"
-                              border="border-2 border-surface-800"
-                            />
-                          </div>
-                        ))}
-                        {wallet.keyHolders.length > 3 && (
-                          <div className="w-8 h-8 rounded-full bg-surface-700 border-2 border-surface-800 flex items-center justify-center">
-                            <span className="text-[10px] text-gray-400">+{wallet.keyHolders.length - 3}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-medium truncate">{wallet.name}</p>
-                          <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
-                            {wallet.wallet.config.threshold}/{wallet.wallet.config.pubkeys.length}
-                          </span>
+                  <div key={wallet.id} className="card hover:border-bitcoin/30 transition-colors">
+                    <button
+                      onClick={() => navigate(`/wallets/${wallet.id}`)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="flex -space-x-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                          {wallet.keyHolders.slice(0, 3).map((holder, i) => (
+                            <div key={holder.pubkey} className="relative" style={{ zIndex: 3 - i }}>
+                              <ClickableAvatar
+                                pubkey={holder.pubkey}
+                                picture={holder.profile?.picture}
+                                name={holder.profile?.displayName || holder.profile?.name}
+                                size="md"
+                                border="border-2 border-surface-800"
+                              />
+                            </div>
+                          ))}
+                          {wallet.keyHolders.length > 3 && (
+                            <div className="w-8 h-8 rounded-full bg-surface-700 border-2 border-surface-800 flex items-center justify-center">
+                              <span className="text-[10px] text-gray-400">+{wallet.keyHolders.length - 3}</span>
+                            </div>
+                          )}
                         </div>
-                        <p className="text-xs text-gray-500 font-mono truncate">
-                          {wallet.wallet.address.slice(0, 16)}...
-                        </p>
-                      </div>
 
-                      <div className="text-right flex-shrink-0">
-                        <p className={`text-sm font-medium ${wallet.currentBalance > 0 ? 'text-bitcoin' : 'text-gray-500'}`}>
-                          {formatSats(wallet.currentBalance)}
-                        </p>
-                        <p className="text-[10px] text-gray-600">
-                          {new Date(wallet.createdAt).toLocaleDateString()}
-                        </p>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium truncate">{wallet.name}</p>
+                            <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
+                              {wallet.wallet.config.threshold}/{wallet.wallet.config.pubkeys.length}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-500 font-mono truncate">
+                            {wallet.wallet.address.slice(0, 16)}...
+                          </p>
+                        </div>
+
+                        <div className="text-right flex-shrink-0">
+                          <p className={`text-sm font-medium ${wallet.currentBalance > 0 ? 'text-bitcoin' : 'text-gray-500'}`}>
+                            {formatSats(wallet.currentBalance)}
+                          </p>
+                          <p className="text-[10px] text-gray-600">
+                            {new Date(wallet.createdAt).toLocaleDateString()}
+                          </p>
+                        </div>
                       </div>
+                    </button>
+                    <div className="flex gap-2 mt-2 pt-2 border-t border-surface-200/10">
+                      <button
+                        onClick={() => navigate(`/wallets/${wallet.id}`)}
+                        className="btn-primary flex-1 text-xs py-1.5 flex items-center justify-center gap-1"
+                      >
+                        <Send className="w-3 h-3" />
+                        Spend
+                      </button>
+                      <button
+                        onClick={() => navigate(`/wallets/${wallet.id}`)}
+                        className="btn-secondary flex-1 text-xs py-1.5 flex items-center justify-center gap-1"
+                      >
+                        <ArrowDownLeft className="w-3 h-3" />
+                        Receive
+                      </button>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText } from 'lucide-react';
+import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
@@ -9,6 +9,7 @@ import { loadVault, decryptVault } from '@/lib/crypto/vault';
 import { privkeyToNsec } from '@/lib/nostr/keys';
 import { loadMultisigWallets, walletToSyncConfig, syncConfigToWallet, saveMultisigWallet } from '@/lib/bitcoin/wallet-store';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
+import { loadBitcoinNodeConfig, saveBitcoinNodeConfig, testNodeConnection, type BitcoinNodeConfig } from '@/lib/bitcoin/node';
 
 export function Settings() {
   const navigate = useNavigate();
@@ -26,6 +27,14 @@ export function Settings() {
   const [nwcSaving, setNwcSaving] = useState(false);
   const [showNwcUri, setShowNwcUri] = useState(false);
 
+  const [nodeEnabled, setNodeEnabled] = useState(false);
+  const [nodeRpcUrl, setNodeRpcUrl] = useState('http://127.0.0.1:8332');
+  const [nodeRpcUser, setNodeRpcUser] = useState('');
+  const [nodeRpcPassword, setNodeRpcPassword] = useState('');
+  const [nodeStatus, setNodeStatus] = useState('');
+  const [nodeTesting, setNodeTesting] = useState(false);
+  const [nodeSaving, setNodeSaving] = useState(false);
+
   // Reveal nsec state machine: 'idle' | 'warning' | 'revealed'
   const [revealState, setRevealState] = useState<'idle' | 'warning' | 'revealed'>('idle');
   const [riskAcknowledged, setRiskAcknowledged] = useState(false);
@@ -37,6 +46,14 @@ export function Settings() {
   useEffect(() => {
     loadNwcConnection().then((conn) => {
       if (conn) setNwcConnected(true);
+    });
+    loadBitcoinNodeConfig().then((cfg) => {
+      if (cfg) {
+        setNodeEnabled(cfg.enabled);
+        setNodeRpcUrl(cfg.rpcUrl);
+        setNodeRpcUser(cfg.rpcUser || '');
+        setNodeRpcPassword(cfg.rpcPassword || '');
+      }
     });
   }, []);
 
@@ -124,6 +141,46 @@ export function Settings() {
     await saveNwcConnection(null);
     setNwcConnected(false);
     setNwcUri('');
+  }
+
+  async function handleNodeSave() {
+    setNodeSaving(true);
+    setNodeStatus('');
+    try {
+      const config: BitcoinNodeConfig = {
+        enabled: nodeEnabled,
+        rpcUrl: nodeRpcUrl.trim(),
+        rpcUser: nodeRpcUser.trim() || undefined,
+        rpcPassword: nodeRpcPassword || undefined,
+      };
+      if (nodeEnabled && !config.rpcUrl) {
+        setNodeStatus('RPC URL required when node broadcast is enabled');
+        return;
+      }
+      await saveBitcoinNodeConfig(config);
+      setNodeStatus('Saved');
+    } catch {
+      setNodeStatus('Failed to save');
+    } finally {
+      setNodeSaving(false);
+    }
+  }
+
+  async function handleNodeTest() {
+    setNodeTesting(true);
+    setNodeStatus('');
+    const result = await testNodeConnection({
+      enabled: true,
+      rpcUrl: nodeRpcUrl.trim(),
+      rpcUser: nodeRpcUser.trim() || undefined,
+      rpcPassword: nodeRpcPassword || undefined,
+    });
+    setNodeTesting(false);
+    if (result.ok) {
+      setNodeStatus(`Connected — block height ${result.blocks ?? '?'}`);
+    } else {
+      setNodeStatus(result.error || 'Connection failed');
+    }
   }
 
   async function handleLock() {
@@ -317,6 +374,72 @@ export function Settings() {
               </p>
             </>
           )}
+        </div>
+
+        <div className="card mt-3">
+          <div className="flex items-center gap-3 mb-3">
+            <Server className={`w-5 h-5 ${nodeEnabled ? 'text-bitcoin' : 'text-gray-400'}`} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">Bitcoin Node Broadcast</p>
+              <p className="text-xs text-gray-500">
+                Pair your node to broadcast via sendrawtransaction
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={nodeEnabled}
+                onChange={(e) => setNodeEnabled(e.target.checked)}
+                className="w-4 h-4 rounded accent-bitcoin"
+              />
+              Use node
+            </label>
+          </div>
+          <input
+            value={nodeRpcUrl}
+            onChange={(e) => setNodeRpcUrl(e.target.value)}
+            placeholder="http://127.0.0.1:8332"
+            className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none border border-surface-200/10 focus:border-bitcoin/30 font-mono mb-2"
+          />
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <input
+              value={nodeRpcUser}
+              onChange={(e) => setNodeRpcUser(e.target.value)}
+              placeholder="RPC user"
+              className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none border border-surface-200/10 font-mono"
+            />
+            <input
+              type="password"
+              value={nodeRpcPassword}
+              onChange={(e) => setNodeRpcPassword(e.target.value)}
+              placeholder="RPC password"
+              className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none border border-surface-200/10 font-mono"
+            />
+          </div>
+          <p className="text-[10px] text-gray-600 mb-2">
+            Local nodes (127.0.0.1) connect directly from your browser. Remote nodes use our API proxy. Falls back to public mempool on failure.
+          </p>
+          {nodeStatus && (
+            <p className={`text-xs mb-2 ${nodeStatus.startsWith('Connected') || nodeStatus === 'Saved' ? 'text-green-400' : 'text-red-400'}`}>
+              {nodeStatus}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={handleNodeTest}
+              disabled={nodeTesting || !nodeRpcUrl.trim()}
+              className="flex-1 py-2 bg-surface-700 text-gray-300 rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-surface-600"
+            >
+              {nodeTesting ? 'Testing...' : 'Test Connection'}
+            </button>
+            <button
+              onClick={handleNodeSave}
+              disabled={nodeSaving}
+              className="flex-1 py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90"
+            >
+              {nodeSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
 

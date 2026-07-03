@@ -172,6 +172,24 @@ function uint8ToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * Sign a Taproot PSBT with the vault private key, finalize, and return raw tx.
+ */
+export function signAndFinalizePsbt(
+  psbtHex: string,
+  privateKeyHex: string
+): { txHex: string; txid: string } {
+  const tx = Transaction.fromPSBT(hex.decode(psbtHex));
+  const privKey = hex.decode(privateKeyHex);
+  tx.sign(privKey);
+  tx.finalize();
+  const txBytes = tx.extract();
+  return {
+    txHex: hex.encode(txBytes),
+    txid: tx.id,
+  };
+}
+
+/**
  * Download PSBT as a binary .psbt file (Sparrow compatible).
  */
 export function downloadPsbtFile(psbtBase64: string, filename?: string) {

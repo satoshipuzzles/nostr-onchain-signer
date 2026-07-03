@@ -1,16 +1,19 @@
 import { useState } from 'react';
-import { ChevronDown, Plus, Check, User } from 'lucide-react';
+import { ChevronDown, Plus, Check, User, Key, Plug } from 'lucide-react';
 import { type Account } from '@/lib/accounts';
+
+type AddMode = 'generated' | 'nip07' | 'nsec';
 
 interface Props {
   accounts: Account[];
   activeIndex: number;
   onSwitch: (index: number) => void;
-  onAddAccount: () => void;
+  onAddAccount: (mode: AddMode) => void;
 }
 
 export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount }: Props) {
   const [open, setOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const active = accounts[activeIndex];
 
   if (!active) return null;
@@ -36,7 +39,7 @@ export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount 
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setAddMenuOpen(false); }} />
           <div className="absolute bottom-full left-0 mb-1 w-56 bg-surface-800 border border-surface-200/20 rounded-xl shadow-xl z-50 max-h-[60vh] overflow-y-auto">
             {accounts.map((account, idx) => (
               <button
@@ -57,21 +60,60 @@ export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount 
                   <p className="text-sm truncate">{account.displayName || account.label}</p>
                   <p className="text-[10px] text-gray-500 font-mono truncate">
                     {account.npub.slice(0, 16)}...
+                    {account.externalSigner && (
+                      <span className="ml-1 text-amber-500">ext</span>
+                    )}
                   </p>
                 </div>
                 {idx === activeIndex && <Check className="w-4 h-4 text-bitcoin flex-shrink-0" />}
               </button>
             ))}
             <div className="border-t border-surface-200/10">
-              <button
-                onClick={() => { onAddAccount(); setOpen(false); }}
-                className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-700 text-gray-400"
-              >
-                <div className="w-8 h-8 rounded-full border border-dashed border-gray-600 flex items-center justify-center">
-                  <Plus className="w-3.5 h-3.5" />
+              {!addMenuOpen ? (
+                <button
+                  onClick={() => setAddMenuOpen(true)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-700 text-gray-400"
+                >
+                  <div className="w-8 h-8 rounded-full border border-dashed border-gray-600 flex items-center justify-center">
+                    <Plus className="w-3.5 h-3.5" />
+                  </div>
+                  <span className="text-sm">Add account</span>
+                </button>
+              ) : (
+                <div className="py-1">
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider px-3 py-1">Add via</p>
+                  <button
+                    onClick={() => { onAddAccount('nip07'); setOpen(false); setAddMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-surface-700 text-gray-300"
+                  >
+                    <Plug className="w-4 h-4 text-nostr" />
+                    <div>
+                      <p className="text-sm">Extension account</p>
+                      <p className="text-[10px] text-gray-500">Alby, nos2x, etc.</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => { onAddAccount('nsec'); setOpen(false); setAddMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-surface-700 text-gray-300"
+                  >
+                    <Key className="w-4 h-4 text-bitcoin" />
+                    <div>
+                      <p className="text-sm">Import nsec</p>
+                      <p className="text-[10px] text-gray-500">Full on-chain signing</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => { onAddAccount('generated'); setOpen(false); setAddMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-surface-700 text-gray-300"
+                  >
+                    <Plus className="w-4 h-4 text-gray-400" />
+                    <div>
+                      <p className="text-sm">Generate new key</p>
+                      <p className="text-[10px] text-gray-500">Stored in vault</p>
+                    </div>
+                  </button>
                 </div>
-                <span className="text-sm">Add account</span>
-              </button>
+              )}
             </div>
           </div>
         </>

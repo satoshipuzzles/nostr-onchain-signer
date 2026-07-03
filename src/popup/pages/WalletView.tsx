@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
-import { ArrowLeft, ExternalLink, RefreshCw, Loader2, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, ExternalLink, RefreshCw, Loader2, ArrowUpRight, ArrowDownLeft, Send } from 'lucide-react';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import {
   fetchBalance, fetchTransactions, getCachedBalance, getMempoolAddressUrl, getMempoolTxUrl,
@@ -12,12 +13,14 @@ interface Props {
 }
 
 export function WalletView({ publicKey, onBack }: Props) {
+  const navigate = useNavigate();
   const address = pubkeyToTaprootAddress(publicKey);
   const [balance, setBalance] = useState<{ confirmed: number; unconfirmed: number; total: number } | null>(null);
   const [txs, setTxs] = useState<Transaction[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const receiveRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Instant: show cached data
@@ -92,9 +95,25 @@ export function WalletView({ publicKey, onBack }: Props) {
           <p className="text-xs text-yellow-400">+{formatSats(balance.unconfirmed)} unconfirmed</p>
         )}
         {error && <p className="text-[10px] text-yellow-500 mt-1">API limited — showing cached data</p>}
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={() => navigate('/send')}
+            className="btn-primary flex-1 flex items-center justify-center gap-1.5 text-sm py-2"
+          >
+            <Send className="w-3.5 h-3.5" />
+            Send
+          </button>
+          <button
+            onClick={() => receiveRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+            className="btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm py-2"
+          >
+            <ArrowDownLeft className="w-3.5 h-3.5" />
+            Receive
+          </button>
+        </div>
       </div>
 
-      <div className="card flex flex-col items-center mb-4">
+      <div ref={receiveRef} className="card flex flex-col items-center mb-4">
         <div className="w-40 h-40 bg-white rounded-lg p-2 mb-3 flex items-center justify-center">
           <img
             src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=bitcoin:${address}&format=svg`}

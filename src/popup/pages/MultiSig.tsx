@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { fetchFollowingList, fetchProfiles, type ContactInfo, type ProfileMetadata } from '@/lib/nostr/social';
 import { createMultisigFromPubkeys, type MultisigWallet } from '@/lib/bitcoin/multisig';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
-import { saveMultisigWallet, createArchivedMultisig, type KeyHolder } from '@/lib/bitcoin/wallet-store';
+import { saveMultisigWallet, createArchivedMultisig, addressFingerprint, type KeyHolder } from '@/lib/bitcoin/wallet-store';
 import { fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
 import {
   ArrowLeft, Users, Check, Loader2, Search, Shield, Copy,
@@ -29,6 +29,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [result, setResult] = useState<{ address: string; threshold: number; total: number; wallet: MultisigWallet } | null>(null);
+  const [walletName, setWalletName] = useState('');
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -157,6 +158,12 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
   }
 
   async function handleCreate() {
+    const trimmedName = walletName.trim();
+    if (!trimmedName) {
+      alert('Please enter a name for this wallet');
+      return;
+    }
+
     const allKeys = includeOwn
       ? [publicKey, ...Array.from(selectedKeys)]
       : Array.from(selectedKeys);
@@ -182,15 +189,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
         isOwnKey: pk === publicKey,
       }));
 
-      // Create a readable name
-      const signerNames = keyHolders
-        .filter((h) => !h.isOwnKey)
-        .slice(0, 3)
-        .map((h) => h.profile?.displayName || h.profile?.name || h.pubkey.slice(0, 6))
-        .join(', ');
-      const walletName = `${threshold}-of-${allKeys.length} with ${signerNames}${keyHolders.length > 4 ? '...' : ''}`;
-
-      // Save to storage (convert Uint8Arrays to hex for JSON serialization)
+      // User-provided name (required)
       const serializableWallet = {
         ...wallet,
         script: undefined,
@@ -199,7 +198,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           ? Array.from(wallet.merkleRoot).map(b => b.toString(16).padStart(2, '0')).join('')
           : String(wallet.merkleRoot ?? ''),
       };
-      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, walletName, undefined, publicKey);
+      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, trimmedName, undefined, publicKey);
       await saveMultisigWallet(archived);
 
       setResult({ address: wallet.address, threshold, total: allKeys.length, wallet });
@@ -245,9 +244,14 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           </div>
 
           <p className="text-xl font-bold text-bitcoin mb-1">
-            {result.threshold}-of-{result.total}
+            {walletName.trim()}
           </p>
-          <p className="text-sm text-gray-400 mb-6">Social Multi-Sig Wallet</p>
+          <p className="text-sm text-gray-400 mb-1">
+            {result.threshold}-of-{result.total} Social Multi-Sig
+          </p>
+          <p className="text-[10px] text-gray-600 mb-6 font-mono">
+            ID {addressFingerprint(result.address)}
+          </p>
 
           <div className="card w-full">
             <p className="text-xs text-gray-400 mb-2">Taproot Address</p>
@@ -395,8 +399,22 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           </div>
         </label>
 
+        <div className="card mb-4">
+          <label className="text-xs text-gray-400 mb-1 block">Wallet Name (required)</label>
+          <input
+            value={walletName}
+            onChange={(e) => setWalletName(e.target.value)}
+            placeholder="e.g. Team Treasury, Family Fund..."
+            className="input-field text-sm"
+            maxLength={48}
+          />
+          <p className="text-[10px] text-gray-600 mt-1">
+            Multisig wallets use signer npubs — not a derived npub from the Bitcoin address
+          </p>
+        </div>
+
         <div className="mt-auto pb-24 md:pb-0">
-          <button onClick={handleCreate} disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">
+          <button onClick={handleCreate} disabled={saving || !walletName.trim()} className="btn-primary w-full flex items-center justify-center gap-2">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
             {saving ? 'Creating...' : `Create ${threshold}-of-${totalKeys} Multi-Sig`}
           </button>

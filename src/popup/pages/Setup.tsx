@@ -3,6 +3,7 @@ import { createMessageId } from '@/shared/messages';
 import { encryptVault, saveVault, clearVault, type VaultData } from '@/lib/crypto/vault';
 import { generateKeyPair, keyPairFromPrivateKey, nsecToPrivkey, isValidNsec, pubkeyToNpub } from '@/lib/nostr/keys';
 import { Shield, Key, Import, Upload, AlertTriangle, FileUp, Globe } from 'lucide-react';
+import { detectNostrSignerType, nip07SignerLabel } from '@/lib/bitcoin/psbt-external-sign';
 
 interface Props {
   onCreated: (publicKey: string, password: string) => void;
@@ -52,12 +53,14 @@ export function Setup({ onCreated }: Props) {
       if (!pubkey) throw new Error('No public key returned');
       setPublicKey(pubkey);
 
-      // For NIP-07 login, we create a read-only vault entry (no private key stored)
+      const signerType = detectNostrSignerType();
       setKeysToImport([{
-        privateKeyHex: '', // empty = read-only, signing delegated to external extension
+        privateKeyHex: '',
         publicKeyHex: pubkey,
         createdAt: Date.now(),
-        label: 'NIP-07 (External Signer)',
+        label: `${nip07SignerLabel(signerType)} (Extension)`,
+        externalSigner: true,
+        signerType,
       }]);
       setStep('password');
     } catch (err: unknown) {

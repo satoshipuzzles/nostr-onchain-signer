@@ -10,7 +10,8 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { encryptDM } from '@/lib/nostr/dm';
-import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
+import { loadSigningRounds, saveSigningRound, recordBroadcast, type SigningRound } from '@/lib/bitcoin/signing-round';
+import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { formatSats } from '@/lib/bitcoin/mempool';
 
@@ -361,6 +362,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   const [showInvoiceCreator, setShowInvoiceCreator] = useState(false);
   const [expandedOutbound, setExpandedOutbound] = useState<string | null>(null);
   const [nudging, setNudging] = useState<string | null>(null);
+  const [broadcastingRoundId, setBroadcastingRoundId] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const responseCleanupRef = useRef<(() => void) | null>(null);
   const invoiceCleanupRef = useRef<(() => void) | null>(null);
@@ -593,6 +595,30 @@ export function SigningInbox({ publicKey, onBack }: Props) {
     navigator.clipboard.writeText(text);
     setCopied(label);
     setTimeout(() => setCopied(''), 2000);
+  }
+
+  async function handleBroadcastRound(
+    round: SigningRound,
+    psbtHexList: string[],
+  ) {
+    if (broadcastingRoundId) return;
+    const psbts = psbtHexList.filter(Boolean);
+    if (psbts.length === 0) {
+      alert('No signed PSBTs collected yet.');
+      return;
+    }
+    setBroadcastingRoundId(round.id);
+    try {
+      const txid = await broadcastPsbts(psbts);
+      const updated = recordBroadcast(round, txid);
+      await saveSigningRound(updated);
+      setRounds((prev) => prev.map((r) => (r.id === round.id ? updated : r)));
+      alert(`Transaction broadcast!\n\nTxid: ${txid}`);
+    } catch (err) {
+      alert(`Broadcast failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setBroadcastingRoundId(null);
+    }
   }
 
   async function handleNudge(round: SigningRound, signerPubkey: string) {
@@ -1079,22 +1105,49 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                                   document.body.removeChild(a);
                                   URL.revokeObjectURL(url);
                                 }}
-                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors text-[11px] font-medium min-h-[36px]"
+                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-surface-700 text-gray-300 border border-surface-600 hover:bg-surface-600 transition-colors text-[11px] font-medium min-h-[36px]"
                               >
                                 <Download className="w-3.5 h-3.5" />
                                 Download
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const psbts = responses.filter((r) => r.psbtHex).map((r) => r.psbtHex!);
+                                  handleBroadcastRound(round, psbts.length > 0 ? psbts : [round.psbtHex]);
+                                }}
+                                disabled={broadcastingRoundId === round.id}
+                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-[11px] font-medium min-h-[36px] disabled:opacity-50"
+                              >
+                                {broadcastingRoundId === round.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Send className="w-3.5 h-3.5" />
+                                )}
+                                {broadcastingRoundId === round.id ? 'Broadcasting...' : 'Broadcast'}
                               </button>
                               <a
                                 href="https://mempool.space/tx/push"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}
-                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-[11px] font-medium min-h-[36px]"
+                                className="flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-surface-700 text-gray-400 border border-surface-600 hover:bg-surface-600 transition-colors text-[11px] font-medium min-h-[36px]"
+                                title="Manual broadcast on mempool.space"
                               >
                                 <ExternalLink className="w-3.5 h-3.5" />
-                                Broadcast
                               </a>
                             </div>
+                            {round.status === 'broadcast' && round.txid && (
+                              <a
+                                href={`https://mempool.space/tx/${round.txid}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="mt-2 text-[10px] text-green-400 hover:underline block truncate"
+                              >
+                                Broadcast: {round.txid.slice(0, 16)}...
+                              </a>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1296,6 +1349,8 @@ function RequestDetail({
   const [liveSignedCount, setLiveSignedCount] = useState(request.signed_count);
   const [responders, setResponders] = useState<{ pubkey: string; psbtHex?: string }[]>([]);
   const [copiedPsbt, setCopiedPsbt] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
+  const [broadcastTxid, setBroadcastTxid] = useState<string | null>(null);
   const liveCleanupRef = useRef<(() => void) | null>(null);
   const displayName = profile?.displayName || profile?.name || request.senderPubkey.slice(0, 12);
   const webSignUrl = signingUrl(request.round_id);
@@ -1490,6 +1545,26 @@ function RequestDetail({
     setTimeout(() => setCopied(''), 2000);
   }
 
+  async function handleBroadcast() {
+    const psbts = responders.filter((r) => r.psbtHex).map((r) => r.psbtHex!);
+    const list = psbts.length > 0 ? psbts : [request.psbt_hex];
+    setBroadcasting(true);
+    try {
+      const txid = await broadcastPsbts(list);
+      setBroadcastTxid(txid);
+      const allRounds = await loadSigningRounds();
+      const round = allRounds.find((r) => r.id === request.round_id);
+      if (round) {
+        await saveSigningRound(recordBroadcast(round, txid));
+      }
+      alert(`Transaction broadcast!\n\nTxid: ${txid}`);
+    } catch (err) {
+      alert(`Broadcast failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setBroadcasting(false);
+    }
+  }
+
   return (
     <div className="h-full flex flex-col">
       <div className="page-header px-4">
@@ -1536,30 +1611,48 @@ function RequestDetail({
             <div className="flex gap-2 mb-3">
               <button
                 onClick={handleDownloadFinalPsbt}
-                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors text-xs font-medium min-h-[44px]"
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-surface-700 text-gray-300 border border-surface-600 hover:bg-surface-600 transition-colors text-xs font-medium min-h-[44px]"
               >
                 <Download className="w-4 h-4" />
                 Download PSBT
+              </button>
+              <button
+                onClick={handleBroadcast}
+                disabled={broadcasting}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-xs font-medium min-h-[44px] disabled:opacity-50"
+              >
+                {broadcasting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                {broadcasting ? 'Broadcasting...' : 'Broadcast'}
               </button>
               <a
                 href="https://mempool.space/tx/push"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-xs font-medium min-h-[44px]"
+                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-surface-700 text-gray-400 border border-surface-600 hover:bg-surface-600 transition-colors text-xs font-medium min-h-[44px]"
+                title="Manual broadcast on mempool.space"
               >
                 <ExternalLink className="w-4 h-4" />
-                Broadcast
               </a>
             </div>
 
-            <a
-              href="https://mempool.space/api/tx"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[10px] text-bitcoin hover:underline block"
-            >
-              Or POST raw tx → mempool.space/api/tx
-            </a>
+            {broadcastTxid && (
+              <a
+                href={`https://mempool.space/tx/${broadcastTxid}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-green-400 hover:underline block mb-2 truncate"
+              >
+                View transaction: {broadcastTxid}
+              </a>
+            )}
+
+            <p className="text-[10px] text-gray-500">
+              Broadcast combines collected signatures and submits the transaction to the network.
+            </p>
           </div>
         )}
 

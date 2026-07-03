@@ -45,7 +45,7 @@ export default defineConfig(({ command, mode }) => {
         alias: { '@': resolve(__dirname, './src') },
       },
       build: {
-        outDir: 'dist',
+        outDir: 'dist-web',
         emptyOutDir: true,
       },
       define: { 'process.env': {} },

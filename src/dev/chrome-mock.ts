@@ -81,10 +81,27 @@ function sessionRemove(key: string) {
   sessionStorage.removeItem(STORAGE_PREFIX + key);
 }
 
+function getActiveIndex(): number {
+  const stored = storageGet('activeAccountIndex');
+  if (typeof stored === 'number' && stored >= 0) {
+    sessionSet('active_index', stored);
+    return stored;
+  }
+  const session = sessionGet('active_index');
+  if (typeof session === 'number' && session >= 0) return session;
+  return 0;
+}
+
 const mockChrome = {
   runtime: {
     id: 'pwa-mode',
     getURL: (path: string) => `/${path}`,
+    connect: () => ({
+      onMessage: { addListener: () => {}, removeListener: () => {} },
+      onDisconnect: { addListener: () => {} },
+      postMessage: () => {},
+      disconnect: () => {},
+    }),
     sendMessage: async (message: { type: string; payload?: unknown; id: string }) => {
       const { type, payload, id } = message;
 
@@ -92,7 +109,7 @@ const mockChrome = {
         case 'vault:status': {
           const vault = storageGet('vault');
           const session = sessionGet('session_keys') as Array<{privateKeyHex: string; publicKeyHex: string}> | undefined;
-          const activeIdx = (sessionGet('active_index') as number) ?? 0;
+          const activeIdx = getActiveIndex();
           return {
             id,
             result: {
@@ -111,7 +128,7 @@ const mockChrome = {
             const { decryptVault } = await import('@/lib/crypto/vault');
             const keys = await decryptVault(vault, password!);
             sessionSet('session_keys', keys);
-            const idx = (sessionGet('active_index') as number) ?? 0;
+            const idx = getActiveIndex();
             return { id, result: { publicKey: keys[Math.min(idx, keys.length - 1)]?.publicKeyHex } };
           } catch {
             return { id, error: 'Invalid password' };
@@ -127,7 +144,7 @@ const mockChrome = {
           const { index } = (payload || {}) as { index: number };
           const session = sessionGet('session_keys') as any[];
           if (!session || index < 0 || index >= session.length) return { id, error: 'Invalid index' };
-          // Update index synchronously before returning so subsequent signEvent calls use the new key
+          storageSet('activeAccountIndex', index);
           sessionSet('active_index', index);
           const newKey = session[index];
           return { id, result: { publicKey: newKey.publicKeyHex, index } };
@@ -136,14 +153,14 @@ const mockChrome = {
         case 'nip07:getPublicKey': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };
-          const idx = (sessionGet('active_index') as number) ?? 0;
+          const idx = getActiveIndex();
           return { id, result: session[idx].publicKeyHex };
         }
 
         case 'nip07:signEvent': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };
-          const idx = (sessionGet('active_index') as number) ?? 0;
+          const idx = getActiveIndex();
           const key = session[idx];
           const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
 
@@ -174,15 +191,48 @@ const mockChrome = {
         case 'btc:getAddress': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };
-          const idx = (sessionGet('active_index') as number) ?? 0;
+          const idx = getActiveIndex();
           const { pubkeyToTaprootAddress } = await import('@/lib/bitcoin/address');
           return { id, result: pubkeyToTaprootAddress(session[idx].publicKeyHex) };
+        }
+
+        case 'btc:signPsbt': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { psbtHex } = (payload || {}) as { psbtHex: string };
+          if (!psbtHex) return { id, error: 'Missing psbtHex' };
+          const pubkeyHex = key.publicKeyHex as string;
+
+          const hasValidKey = typeof key.privateKeyHex === 'string' && key.privateKeyHex.length === 64 && /^[0-9a-f]+$/i.test(key.privateKeyHex);
+          if (hasValidKey) {
+            try {
+              const { signAndFinalizePsbt } = await import('@/lib/bitcoin/psbt-builder');
+              const result = signAndFinalizePsbt(psbtHex, key.privateKeyHex);
+              return { id, result: { ...result, source: 'vault' } };
+            } catch (err: any) {
+              return { id, error: err?.message || 'Failed to sign PSBT' };
+            }
+          }
+
+          // NIP-07 path: delegate to browser extension (Alby WebBTC, etc.) — key stays in extension
+          try {
+            const { tryExternalPsbtSign, externalSignerHelpMessage } = await import('@/lib/bitcoin/psbt-external-sign');
+            const external = await tryExternalPsbtSign(psbtHex, pubkeyHex);
+            if (external) {
+              return { id, result: { txHex: external.txHex, txid: external.txid, source: external.source } };
+            }
+            return { id, error: externalSignerHelpMessage() || 'No Bitcoin signer available' };
+          } catch (err: any) {
+            return { id, error: err?.message || 'Extension signing failed' };
+          }
         }
 
         case 'dual:signAndBroadcast': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };
-          const idx = (sessionGet('active_index') as number) ?? 0;
+          const idx = getActiveIndex();
           const key = session[idx];
           const { noteContent, recipientAddress, amountSats } = (payload || {}) as any;
           const noteEvent: UnsignedEvent = {
