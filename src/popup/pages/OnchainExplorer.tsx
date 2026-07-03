@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   decodeNostrOpReturn,
   decodeInvoiceOpReturn,
@@ -9,7 +9,7 @@ import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/tick
 import { getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
-  Copy, Check, RefreshCw, Clock, ArrowRight,
+  Copy, Check, RefreshCw, Clock, ArrowRight, ArrowLeft,
   Layers, ArrowDownRight, ArrowUpRight,
   ChevronDown, ChevronUp,
 } from 'lucide-react';
@@ -122,6 +122,30 @@ type ProtocolMatch =
 type Tab = 'overview' | 'transaction' | 'address';
 
 const MEMPOOL_API = 'https://mempool.space/api';
+const CORS_PROXY = 'https://corsproxy.io/?';
+
+async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    return res;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
+async function fetchWithFallback(url: string, ms = 10_000): Promise<Response> {
+  try {
+    const res = await fetchWithTimeout(url, ms);
+    if (res.ok) return res;
+    throw new Error(`HTTP ${res.status}`);
+  } catch {
+    return fetchWithTimeout(`${CORS_PROXY}${encodeURIComponent(url)}`, ms);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -285,6 +309,7 @@ function StatsBar({
 // ---------------------------------------------------------------------------
 
 export function OnchainExplorer() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const initialTab = (searchParams.get('tab') as Tab) || 'overview';
@@ -301,6 +326,7 @@ export function OnchainExplorer() {
   // Blocks
   const [blocks, setBlocks] = useState<BlockSummary[]>([]);
   const [blocksLoading, setBlocksLoading] = useState(true);
+  const [blocksError, setBlocksError] = useState('');
   const [expandedBlock, setExpandedBlock] = useState<string | null>(null);
   const [blockTxs, setBlockTxs] = useState<Record<string, TxData[]>>({});
   const [blockTxsLoading, setBlockTxsLoading] = useState<string | null>(null);
@@ -322,6 +348,7 @@ export function OnchainExplorer() {
   const [showUtxos, setShowUtxos] = useState(false);
 
   const refreshTimer = useRef<ReturnType<typeof setInterval>>();
+  const loadedRef = useRef(false);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -330,8 +357,8 @@ export function OnchainExplorer() {
   const loadStats = useCallback(async () => {
     const [s, diffRes, hrRes] = await Promise.allSettled([
       fetchBlockchainStatus(),
-      fetch(`${MEMPOOL_API}/v1/difficulty-adjustment`).then((r) => r.ok ? r.json() : null),
-      fetch(`${MEMPOOL_API}/v1/mining/hashrate/3d`).then((r) => r.ok ? r.json() : null),
+      fetchWithFallback(`${MEMPOOL_API}/v1/difficulty-adjustment`).then((r) => r.ok ? r.json() : null),
+      fetchWithFallback(`${MEMPOOL_API}/v1/mining/hashrate/3d`).then((r) => r.ok ? r.json() : null),
     ]);
     if (s.status === 'fulfilled') setStatus(s.value);
     if (diffRes.status === 'fulfilled' && diffRes.value) setDifficulty(diffRes.value);
@@ -339,18 +366,30 @@ export function OnchainExplorer() {
   }, []);
 
   const loadBlocks = useCallback(async () => {
+    setBlocksError('');
     try {
-      const res = await fetch(`${MEMPOOL_API}/v1/blocks`);
-      if (!res.ok) return;
+      const res = await fetchWithFallback(`${MEMPOOL_API}/v1/blocks`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: BlockSummary[] = await res.json();
       setBlocks(data.slice(0, 10));
-    } catch { /* ignore */ }
+      loadedRef.current = true;
+    } catch (err) {
+      if (!loadedRef.current) {
+        setBlocksError(err instanceof Error ? err.message : 'Failed to load blocks');
+      }
+    }
     setBlocksLoading(false);
   }, []);
 
   useEffect(() => {
-    loadStats();
-    loadBlocks();
+    if (loadedRef.current && blocks.length > 0) {
+      setBlocksLoading(false);
+      loadStats();
+      loadBlocks();
+    } else {
+      loadStats();
+      loadBlocks();
+    }
 
     refreshTimer.current = setInterval(() => {
       loadStats();
@@ -378,7 +417,7 @@ export function OnchainExplorer() {
     if (blockTxs[blockHash]) return;
     setBlockTxsLoading(blockHash);
     try {
-      const res = await fetch(`${MEMPOOL_API}/block/${blockHash}/txs`);
+      const res = await fetchWithFallback(`${MEMPOOL_API}/block/${blockHash}/txs`);
       if (res.ok) {
         const txs: TxData[] = await res.json();
         setBlockTxs((prev) => ({ ...prev, [blockHash]: txs.slice(0, 25) }));
@@ -399,7 +438,7 @@ export function OnchainExplorer() {
     setTxResult(null);
 
     try {
-      const res = await fetch(`${MEMPOOL_API}/tx/${id}`);
+      const res = await fetchWithFallback(`${MEMPOOL_API}/tx/${id}`);
       if (!res.ok) throw new Error('Transaction not found');
       const tx: TxData = await res.json();
       setTxResult(tx);
@@ -407,7 +446,7 @@ export function OnchainExplorer() {
       if (status?.blockHeight) setTxCurrentHeight(status.blockHeight);
       else {
         try {
-          const hRes = await fetch(`${MEMPOOL_API}/blocks/tip/height`);
+          const hRes = await fetchWithFallback(`${MEMPOOL_API}/blocks/tip/height`);
           if (hRes.ok) setTxCurrentHeight(parseInt(await hRes.text(), 10));
         } catch { /* ignore */ }
       }
@@ -432,9 +471,9 @@ export function OnchainExplorer() {
 
     try {
       const [infoRes, txsRes, utxoRes] = await Promise.all([
-        fetch(`${MEMPOOL_API}/address/${address}`),
-        fetch(`${MEMPOOL_API}/address/${address}/txs`),
-        fetch(`${MEMPOOL_API}/address/${address}/utxo`),
+        fetchWithFallback(`${MEMPOOL_API}/address/${address}`),
+        fetchWithFallback(`${MEMPOOL_API}/address/${address}/txs`),
+        fetchWithFallback(`${MEMPOOL_API}/address/${address}/utxo`),
       ]);
       if (!infoRes.ok) throw new Error('Address not found');
 
@@ -494,6 +533,14 @@ export function OnchainExplorer() {
 
   return (
     <div className="h-full flex flex-col">
+      {/* Header with back button */}
+      <div className="page-header px-4">
+        <button onClick={() => navigate('/')} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h1 className="text-lg font-bold">Block Explorer</h1>
+      </div>
+
       {/* Stats bar */}
       <StatsBar status={status} difficulty={difficulty} hashrate={hashrate} latestBlockTime={latestBlockTime} />
 
@@ -520,11 +567,12 @@ export function OnchainExplorer() {
           <OverviewTab
             blocks={blocks}
             blocksLoading={blocksLoading}
+            blocksError={blocksError}
             expandedBlock={expandedBlock}
             blockTxs={blockTxs}
             blockTxsLoading={blockTxsLoading}
             onToggleBlock={toggleBlockExpand}
-            onRefresh={() => { setBlocksLoading(true); loadBlocks(); loadStats(); }}
+            onRefresh={() => { setBlocksLoading(true); setBlocksError(''); loadBlocks(); loadStats(); }}
             onViewTx={navigateToTx}
           />
         )}
@@ -568,6 +616,7 @@ export function OnchainExplorer() {
 function OverviewTab({
   blocks,
   blocksLoading,
+  blocksError,
   expandedBlock,
   blockTxs,
   blockTxsLoading,
@@ -577,6 +626,7 @@ function OverviewTab({
 }: {
   blocks: BlockSummary[];
   blocksLoading: boolean;
+  blocksError: string;
   expandedBlock: string | null;
   blockTxs: Record<string, TxData[]>;
   blockTxsLoading: string | null;
@@ -601,7 +651,20 @@ function OverviewTab({
         </button>
       </div>
 
-      {blocksLoading && blocks.length === 0 ? (
+      {blocksError && blocks.length === 0 ? (
+        <div className="flex flex-col items-center py-12">
+          <AlertCircle className="w-8 h-8 text-red-400 mb-3" />
+          <p className="text-sm text-red-300 mb-1">Failed to load blocks</p>
+          <p className="text-xs text-gray-500 mb-4">{blocksError}</p>
+          <button
+            onClick={onRefresh}
+            className="btn-primary flex items-center gap-2 text-sm px-4 py-2"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Retry
+          </button>
+        </div>
+      ) : blocksLoading && blocks.length === 0 ? (
         <div className="flex flex-col items-center py-12">
           <Loader2 className="w-8 h-8 text-bitcoin animate-spin mb-3" />
           <p className="text-sm text-gray-400">Loading blocks...</p>

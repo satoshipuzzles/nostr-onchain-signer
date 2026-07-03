@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Lock, Unlock, Users, ExternalLink, Check } from 'lucide-react';
+import { Lock, Unlock, Users, ExternalLink, Check, LogIn } from 'lucide-react';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import {
   decryptContent,
@@ -10,6 +10,9 @@ import {
   type SocialUnlockContent,
 } from '@/lib/nostr/social-unlock';
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
+import { getCachedProfile } from '@/lib/nostr/cache';
+import { safeImageUrl } from '@/lib/utils';
+import type { ProfileMetadata } from '@/lib/nostr/social';
 
 interface Signature {
   pubkey: string;
@@ -21,6 +24,28 @@ interface RevealData {
   revealed_at: number;
 }
 
+function PageSignerBadge({ pubkey }: { pubkey: string }) {
+  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
+  useEffect(() => {
+    getCachedProfile(pubkey).then((p) => setProfile(p));
+  }, [pubkey]);
+
+  const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
+  return (
+    <div className="flex items-center gap-2">
+      {profile?.picture ? (
+        <img src={safeImageUrl(profile.picture)} alt="" className="w-6 h-6 rounded-full object-cover flex-shrink-0" />
+      ) : (
+        <div className="w-6 h-6 rounded-full bg-surface-600 flex items-center justify-center text-[10px] font-medium flex-shrink-0">
+          {name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <span className="text-xs text-gray-300 truncate">{name}</span>
+      {profile?.nip05 && <span className="text-[9px] text-nostr/70 truncate">{profile.nip05}</span>}
+    </div>
+  );
+}
+
 export function SocialUnlockPage() {
   const { eventId } = useParams<{ eventId: string }>();
   const [loading, setLoading] = useState(true);
@@ -30,6 +55,7 @@ export function SocialUnlockPage() {
   const [signatures, setSignatures] = useState<Signature[]>([]);
   const [reveal, setReveal] = useState<RevealData | null>(null);
   const [revealedContent, setRevealedContent] = useState<string | null>(null);
+  const [connectedPubkey, setConnectedPubkey] = useState<string | null>(null);
 
   useEffect(() => {
     if (eventId) fetchUnlockEvent(eventId);
@@ -69,6 +95,19 @@ export function SocialUnlockPage() {
       setError('Failed to fetch event');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleConnect() {
+    try {
+      if ((window as any).nostr?.getPublicKey) {
+        const pk = await (window as any).nostr.getPublicKey();
+        setConnectedPubkey(pk);
+      } else {
+        window.location.href = '/';
+      }
+    } catch (err) {
+      console.error('NIP-07 connect failed:', err);
     }
   }
 
@@ -140,20 +179,26 @@ export function SocialUnlockPage() {
           </div>
         </div>
 
+        {/* Creator */}
+        {creatorPubkey && (
+          <div className="card mb-4">
+            <p className="text-xs text-gray-400 mb-2">Creator</p>
+            <PageSignerBadge pubkey={creatorPubkey} />
+          </div>
+        )}
+
         {/* Signers */}
         {signatures.length > 0 && (
           <div className="card mb-4">
             <p className="text-xs text-gray-400 mb-2">Signers ({signatures.length})</p>
-            <div className="space-y-1.5 max-h-40 overflow-y-auto">
+            <div className="space-y-2 max-h-40 overflow-y-auto">
               {signatures.map((sig, i) => (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
-                    <Check className="w-3 h-3 text-green-400" />
+                <div key={i} className="flex items-center gap-2">
+                  <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <PageSignerBadge pubkey={sig.pubkey} />
                   </div>
-                  <code className="text-gray-300 font-mono text-[10px]">
-                    {sig.pubkey.slice(0, 8)}...{sig.pubkey.slice(-4)}
-                  </code>
-                  {sig.message && <span className="text-gray-500 truncate">&mdash; {sig.message}</span>}
+                  {sig.message && <span className="text-[10px] text-gray-500 truncate">&mdash; {sig.message}</span>}
                 </div>
               ))}
             </div>
@@ -197,12 +242,26 @@ export function SocialUnlockPage() {
           </div>
         )}
 
-        {/* Creator info */}
-        <div className="mt-4 text-center">
-          <p className="text-[10px] text-gray-600">
-            Created by <code className="font-mono">{creatorPubkey.slice(0, 8)}...{creatorPubkey.slice(-4)}</code>
-          </p>
-        </div>
+        {/* Login to sign */}
+        {!isUnlocked && !connectedPubkey && (
+          <div className="card mt-4 text-center">
+            <p className="text-sm text-gray-400 mb-3">Want to help unlock this content?</p>
+            <button
+              onClick={handleConnect}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              <LogIn className="w-4 h-4" />
+              Connect with NIP-07 to Sign
+            </button>
+          </div>
+        )}
+
+        {connectedPubkey && !isUnlocked && (
+          <div className="card mt-4 text-center">
+            <p className="text-xs text-green-400 mb-1">Connected</p>
+            <code className="text-[10px] text-gray-400 font-mono">{connectedPubkey.slice(0, 12)}...{connectedPubkey.slice(-6)}</code>
+          </div>
+        )}
       </div>
     </div>
   );

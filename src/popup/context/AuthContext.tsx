@@ -39,6 +39,7 @@ interface AuthActions {
   setSelectedMultisigWallet: (w: ArchivedMultisig | null) => void;
   setViewingUser: (u: DiscoveredUser | null) => void;
   setMyProfile: (p: ProfileMetadata | null) => void;
+  setVaultPassword: (pw: string) => void;
 }
 
 type AuthContextType = AuthState & AuthActions;
@@ -237,9 +238,22 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }
 
   async function handleAddAccount() {
-    if (!vaultPassword) return;
+    let pw = vaultPassword;
+    if (!pw) {
+      const entered = prompt('Enter your vault password to add an account');
+      if (!entered) return;
+      try {
+        const vault = await loadVault();
+        if (vault) await decryptVault(vault, entered);
+        pw = entered;
+        setVaultPassword(entered);
+      } catch {
+        alert('Incorrect password');
+        return;
+      }
+    }
     try {
-      const { accounts: newAccounts, newIndex } = await addAccountToVault(vaultPassword);
+      const { accounts: newAccounts, newIndex } = await addAccountToVault(pw);
       setAccounts(newAccounts);
       await chrome.storage.local.set({ cached_accounts: newAccounts });
       handleSwitchAccount(newIndex);
@@ -332,6 +346,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       setSelectedMultisigWallet,
       setViewingUser,
       setMyProfile,
+      setVaultPassword,
     }}>
       {children}
     </AuthContext.Provider>

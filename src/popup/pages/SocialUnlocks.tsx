@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Lock, Unlock, Plus, Copy, Check, ArrowLeft, Users, ExternalLink,
   Search, X, Loader2, ImageIcon, Share2,
@@ -22,6 +23,8 @@ import { createMessageId } from '@/shared/messages';
 import { npubToPubkey, pubkeyToNpub, isValidHexPubkey } from '@/lib/nostr/keys';
 import { resolveNip05 } from '@/lib/nostr/nip05';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
+import { getCachedProfile } from '@/lib/nostr/cache';
+import { safeImageUrl } from '@/lib/utils';
 import type { SignedEvent } from '@/lib/nostr/events';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
@@ -67,6 +70,7 @@ async function saveCachedUnlocks(pubkey: string, items: UnlockItem[]) {
 // ─── Component ──────────────────────────────────────────────────
 
 export function SocialUnlocks() {
+  const navigate = useNavigate();
   const { publicKey, confirmAndSign } = useAuth();
   const [view, setView] = useState<View>('list');
   const [unlocks, setUnlocks] = useState<UnlockItem[]>([]);
@@ -163,9 +167,14 @@ export function SocialUnlocks() {
   return (
     <div className="h-full flex flex-col p-4 md:p-6 pb-24">
       <div className="flex items-center justify-between mb-5">
-        <div>
-          <h1 className="text-lg font-bold">Social Unlocks</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Lock content behind collective signatures</p>
+        <div className="flex items-center gap-3">
+          <button onClick={() => navigate('/')} className="btn-back">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <h1 className="text-lg font-bold">Social Unlocks</h1>
+            <p className="text-xs text-gray-500 mt-0.5">Lock content behind collective signatures</p>
+          </div>
         </div>
         <button
           onClick={() => setView('create')}
@@ -921,8 +930,6 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
   const [copiedLink, setCopiedLink] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shared, setShared] = useState(false);
-  const [signerProfiles, setSignerProfiles] = useState<Record<string, ProfileMetadata | null>>({});
-
   const isOwner = item.pubkey === publicKey;
   const hasSigned = item.signatures.some((s) => s.pubkey === publicKey);
   const isUnlocked = item.signatures.length >= item.content.threshold;
@@ -941,22 +948,6 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
         .catch(() => setRevealedContent('[Failed to decrypt]'));
     }
   }, [item, storedKey]);
-
-  // Load signer profiles
-  useEffect(() => {
-    async function loadProfiles() {
-      const pks = item.signatures.map((s) => s.pubkey);
-      const keys = pks.map((pk) => `profile_${pk}`);
-      if (keys.length === 0) return;
-      const cached = await chrome.storage.local.get(keys);
-      const profiles: Record<string, ProfileMetadata | null> = {};
-      for (const pk of pks) {
-        profiles[pk] = (cached[`profile_${pk}`] as ProfileMetadata | undefined) ?? null;
-      }
-      setSignerProfiles(profiles);
-    }
-    loadProfiles();
-  }, [item.signatures]);
 
   async function handleSign() {
     setSigning(true);
@@ -1138,38 +1129,26 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
         </div>
       )}
 
+      {/* Creator */}
+      <div className="card mb-4">
+        <p className="text-xs text-gray-400 mb-2">Creator</p>
+        <SignerBadge pubkey={item.pubkey} />
+      </div>
+
       {/* Signers list with profile pics */}
       {item.signatures.length > 0 && (
         <div className="card mb-4">
-          <p className="text-xs text-gray-400 mb-2">Signers</p>
-          <div className="space-y-1.5">
-            {item.signatures.map((sig, i) => {
-              const profile = signerProfiles[sig.pubkey];
-              return (
-                <div key={i} className="flex items-center gap-2 text-xs">
-                  {profile?.picture ? (
-                    <img
-                      src={profile.picture}
-                      alt=""
-                      className="w-5 h-5 rounded-full object-cover flex-shrink-0"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                    />
-                  ) : (
-                    <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3 h-3 text-green-400" />
-                    </div>
-                  )}
-                  <span className="text-gray-300 truncate">
-                    {profile?.displayName || profile?.name || (
-                      <code className="font-mono text-[10px]">
-                        {sig.pubkey.slice(0, 8)}...{sig.pubkey.slice(-4)}
-                      </code>
-                    )}
-                  </span>
-                  {sig.message && <span className="text-gray-500 truncate">&mdash; {sig.message}</span>}
+          <p className="text-xs text-gray-400 mb-2">Signers ({item.signatures.length})</p>
+          <div className="space-y-2">
+            {item.signatures.map((sig, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <SignerBadge pubkey={sig.pubkey} />
                 </div>
-              );
-            })}
+                {sig.message && <span className="text-[10px] text-gray-500 truncate">&mdash; {sig.message}</span>}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1248,6 +1227,30 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Signer Badge ───────────────────────────────────────────────
+
+function SignerBadge({ pubkey }: { pubkey: string }) {
+  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
+  useEffect(() => {
+    getCachedProfile(pubkey).then((p) => setProfile(p));
+  }, [pubkey]);
+
+  const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
+  return (
+    <div className="flex items-center gap-2">
+      {profile?.picture ? (
+        <img src={safeImageUrl(profile.picture)} alt="" className="w-6 h-6 rounded-full object-cover flex-shrink-0" />
+      ) : (
+        <div className="w-6 h-6 rounded-full bg-surface-600 flex items-center justify-center text-[10px] font-medium flex-shrink-0">
+          {name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <span className="text-xs text-gray-300 truncate">{name}</span>
+      {profile?.nip05 && <span className="text-[9px] text-nostr/70 truncate">{profile.nip05}</span>}
     </div>
   );
 }

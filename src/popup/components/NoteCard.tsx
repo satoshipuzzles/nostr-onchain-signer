@@ -17,11 +17,22 @@ import { bech32 } from '@scure/base';
 import { hexToBytes } from '@noble/hashes/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
 
+export interface NoteEngagement {
+  replies: number;
+  reposts: number;
+  reactions: number;
+  zapSats: number;
+}
+
 interface Props {
   note: FeedNote;
   profile?: ProfileMetadata | null;
+  engagement?: NoteEngagement;
   onNotePublished?: () => void;
+  onSelectNote?: (note: FeedNote) => void;
   onViewProfile?: (pubkey: string) => void;
+  highlighted?: boolean;
+  compact?: boolean;
 }
 
 const IMAGE_REGEX = /https?:\/\/\S+\.(jpg|jpeg|png|gif|webp)(\?\S*)?/gi;
@@ -114,7 +125,7 @@ interface ReactionGroup {
   pubkeys: string[];
 }
 
-export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Props) {
+export function NoteCard({ note, profile, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
   const { publicKey } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [imageError, setImageError] = useState<Set<string>>(new Set());
@@ -453,7 +464,7 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
   const noteRef = `nostr:${encodeNoteId(note.id)}`;
 
   return (
-    <div className="card mb-3 relative">
+    <div className={`card mb-3 relative ${highlighted ? 'ring-1 ring-nostr/40 bg-nostr/5' : ''} ${compact ? 'py-2' : ''}`}>
       {/* Three-dot menu */}
       <div className="absolute top-2 right-2 z-10" ref={moreMenuRef}>
         <button
@@ -544,9 +555,13 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
 
       {/* Content */}
       <div
-        className={isLong && !expanded ? 'cursor-pointer' : ''}
+        className={`${isLong && !expanded ? 'cursor-pointer' : ''} ${onSelectNote ? 'cursor-pointer' : ''}`}
         onClick={() => {
-          if (isLong && !expanded) setExpanded(true);
+          if (isLong && !expanded) {
+            setExpanded(true);
+          } else if (onSelectNote) {
+            onSelectNote(note);
+          }
         }}
       >
         {textParts.length > 0 && (
@@ -569,7 +584,7 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
 
       {/* Inline Images */}
       {images.length > 0 && (
-        <div className="mt-2 space-y-2">
+        <div className={`mt-2 ${images.filter((url) => !imageError.has(url)).length > 1 ? 'grid grid-cols-2 gap-2' : 'space-y-2'}`}>
           {images
             .filter((url) => !imageError.has(url))
             .map((url) => (
@@ -577,7 +592,7 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
                 key={url}
                 src={url}
                 alt=""
-                className="w-full rounded-xl object-cover max-h-64 bg-surface-700"
+                className="w-full h-auto rounded-xl mt-2 max-h-[400px] object-contain bg-surface-700"
                 loading="lazy"
                 onError={() =>
                   setImageError((prev) => new Set(prev).add(url))
@@ -630,6 +645,9 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
           }`}
         >
           <MessageCircle className="w-4 h-4" />
+          {(engagement?.replies ?? 0) > 0 && (
+            <span className="text-[11px]">{engagement!.replies}</span>
+          )}
         </button>
 
         {/* Boost / Repost */}
@@ -647,6 +665,9 @@ export function NoteCard({ note, profile, onNotePublished, onViewProfile }: Prop
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <Repeat2 className="w-4 h-4" />
+            )}
+            {(engagement?.reposts ?? 0) > 0 && (
+              <span className="text-[11px]">{engagement!.reposts}</span>
             )}
           </button>
 

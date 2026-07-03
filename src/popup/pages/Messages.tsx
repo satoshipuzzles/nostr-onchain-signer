@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { ArrowLeft, Send, User, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Send, MessageCircle } from 'lucide-react';
 import { safeImageUrl } from '@/lib/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { encryptDM, decryptDM } from '@/lib/nostr/dm';
@@ -33,6 +34,7 @@ function openRelay(url: string): Promise<WebSocket> {
 }
 
 export function Messages() {
+  const navigate = useNavigate();
   const { publicKey } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedPubkey, setSelectedPubkey] = useState<string | null>(null);
@@ -103,12 +105,13 @@ export function Messages() {
       const sorted = Array.from(convMap.values()).sort((a, b) => b.lastTimestamp - a.lastTimestamp);
       setConversations(sorted);
 
-      const profileMap: Record<string, any> = {};
+      // Progressively load profiles so they render as they arrive
       for (const conv of sorted.slice(0, 20)) {
         const p = await getCachedProfile(conv.pubkey);
-        if (p) profileMap[conv.pubkey] = p;
+        if (p) {
+          setProfiles((prev) => ({ ...prev, [conv.pubkey]: p }));
+        }
       }
-      setProfiles(profileMap);
     } catch (err) {
       console.error('Failed to load conversations:', err);
     } finally {
@@ -228,8 +231,10 @@ export function Messages() {
           {profile?.picture ? (
             <img src={safeImageUrl(profile.picture)} alt="" className="w-8 h-8 rounded-full object-cover" />
           ) : (
-            <div className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center">
-              <User className="w-4 h-4 text-gray-400" />
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center">
+              <span className="text-xs font-bold text-white/80">
+                {(profile?.displayName || profile?.name || selectedPubkey.slice(0, 1) || '?').charAt(0).toUpperCase()}
+              </span>
             </div>
           )}
           <p className="font-medium text-sm truncate">{displayName}</p>
@@ -279,9 +284,14 @@ export function Messages() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-4 py-4 border-b border-white/10">
-        <h1 className="text-lg font-bold">Messages</h1>
-        <p className="text-xs text-gray-500">Encrypted DMs (NIP-44 / NIP-04)</p>
+      <div className="px-4 py-4 border-b border-white/10 flex items-center gap-3">
+        <button onClick={() => navigate('/')} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <div>
+          <h1 className="text-lg font-bold">Messages</h1>
+          <p className="text-xs text-gray-500">Encrypted DMs (NIP-44 / NIP-04)</p>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -311,8 +321,10 @@ export function Messages() {
               {profile?.picture ? (
                 <img src={safeImageUrl(profile.picture)} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
               ) : (
-                <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center flex-shrink-0">
-                  <User className="w-5 h-5 text-gray-400" />
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
+                  <span className="text-sm font-bold text-white/80">
+                    {(profile?.displayName || profile?.name || conv.pubkey.slice(0, 1) || '?').charAt(0).toUpperCase()}
+                  </span>
                 </div>
               )}
               <div className="flex-1 min-w-0">

@@ -100,7 +100,7 @@ export function LightOps() {
     <div className="h-full flex flex-col pb-24">
       {/* Header */}
       <div className="page-header">
-        <button onClick={() => navigate(-1)} className="btn-back">
+        <button onClick={() => navigate('/')} className="btn-back">
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1 className="text-lg font-bold">Light OPs</h1>

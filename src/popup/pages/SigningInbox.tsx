@@ -1291,6 +1291,7 @@ function RequestDetail({
   onSigned: () => void;
 }) {
   const [signing, setSigning] = useState(false);
+  const [alreadySigned, setAlreadySigned] = useState(false);
   const [copied, setCopied] = useState('');
   const [liveSignedCount, setLiveSignedCount] = useState(request.signed_count);
   const [responders, setResponders] = useState<{ pubkey: string; psbtHex?: string }[]>([]);
@@ -1300,6 +1301,17 @@ function RequestDetail({
   const webSignUrl = signingUrl(request.round_id);
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(webSignUrl)}`;
   const isReady = liveSignedCount >= request.threshold;
+
+  useEffect(() => {
+    (async () => {
+      const key = `signed_rounds_${publicKey}`;
+      const result = await chrome.storage.local.get(key);
+      const signedIds: string[] = result[key] ?? [];
+      if (signedIds.includes(request.round_id)) {
+        setAlreadySigned(true);
+      }
+    })();
+  }, [publicKey, request.round_id]);
 
   useEffect(() => {
     let mounted = true;
@@ -1453,6 +1465,16 @@ function RequestDetail({
       }
 
       await markRequestStatus(request.eventId, 'signed');
+
+      const storageKey = `signed_rounds_${publicKey}`;
+      const stored = await chrome.storage.local.get(storageKey);
+      const signedIds: string[] = stored[storageKey] ?? [];
+      if (!signedIds.includes(request.round_id)) {
+        signedIds.push(request.round_id);
+        await chrome.storage.local.set({ [storageKey]: signedIds });
+      }
+      setAlreadySigned(true);
+
       onSigned();
     } catch (err) {
       console.error('Sign failed:', err);
@@ -1711,7 +1733,12 @@ function RequestDetail({
         </div>
 
         {/* Action */}
-        {request.status === 'pending' && (
+        {alreadySigned ? (
+          <div className="w-full flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl text-sm font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+            <CheckCircle2 className="w-4 h-4" />
+            You&apos;ve already signed this transaction
+          </div>
+        ) : request.status === 'pending' && (
           <button
             onClick={handleSign}
             disabled={signing}

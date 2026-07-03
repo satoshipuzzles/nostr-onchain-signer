@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks } from 'lucide-react';
+import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
@@ -16,17 +16,19 @@ export function Home() {
   const [pendingSignatures, setPendingSignatures] = useState(0);
   const [multisigCount, setMultisigCount] = useState(0);
   const [copied, setCopied] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const npub = pubkeyToNpub(publicKey);
   const btcAddress = pubkeyToTaprootAddress(publicKey);
   const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
 
-  useEffect(() => {
-    loadDashboardData();
-  }, [publicKey]);
-
-  async function loadDashboardData() {
+  const loadDashboardData = useCallback(async () => {
     try {
+      const signedRoundsResult = await chrome.storage.local.get(`signed_rounds_${publicKey}`);
+      const signedRoundIds: string[] = signedRoundsResult[`signed_rounds_${publicKey}`] ?? [];
+      const signedSet = new Set(signedRoundIds);
+
       const [bal, wallets, rounds] = await Promise.allSettled([
         fetchBalance(btcAddress),
         loadMultisigWallets(),
@@ -35,10 +37,26 @@ export function Home() {
       if (bal.status === 'fulfilled') setBalance(bal.value.total);
       if (wallets.status === 'fulfilled') setMultisigCount(wallets.value.length);
       if (rounds.status === 'fulfilled') {
-        const pending = rounds.value.filter((r: SigningRound) => r.status === 'collecting');
+        const pending = rounds.value.filter(
+          (r: SigningRound) => r.status === 'collecting' && !signedSet.has(r.id)
+        );
         setPendingSignatures(pending.length);
       }
     } catch {}
+  }, [publicKey, btcAddress]);
+
+  useEffect(() => {
+    loadDashboardData();
+    intervalRef.current = setInterval(loadDashboardData, 30_000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [loadDashboardData]);
+
+  async function handleManualRefresh() {
+    setRefreshing(true);
+    await loadDashboardData();
+    setTimeout(() => setRefreshing(false), 600);
   }
 
   async function copyToClipboard(text: string, label: string) {
@@ -93,13 +111,20 @@ export function Home() {
         {/* Pending signatures card */}
         <button
           onClick={() => navigate('/signing')}
-          className="card hover:border-nostr/30 transition-colors text-left"
+          className="card hover:border-nostr/30 transition-colors text-left relative"
         >
           <div className="flex items-center gap-2 mb-2">
             <div className="w-8 h-8 rounded-lg bg-nostr/15 flex items-center justify-center">
               <Inbox className="w-4 h-4 text-nostr" />
             </div>
             <span className="text-xs text-gray-500">Pending</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleManualRefresh(); }}
+              className="ml-auto p-1 hover:bg-surface-700 rounded-lg"
+              title="Refresh"
+            >
+              <RefreshCw className={`w-3 h-3 text-gray-500 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
           </div>
           <p className="text-xl font-bold text-white">
             {pendingSignatures}

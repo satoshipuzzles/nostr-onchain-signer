@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trophy, Search, Loader2, RefreshCw, ExternalLink, Users, Globe } from 'lucide-react';
+import { ArrowLeft, Trophy, Search, Loader2, RefreshCw, ExternalLink, Users, Globe } from 'lucide-react';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
@@ -239,6 +239,9 @@ export function Leaderboard() {
     <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
+          <button onClick={() => navigate('/')} className="btn-back">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
           <Trophy className="w-5 h-5 text-bitcoin" />
           <h1 className="text-lg font-bold">Leaderboard</h1>
         </div>

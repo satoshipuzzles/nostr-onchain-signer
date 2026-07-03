@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { subscribeFeed, type FeedNote, type FeedMode, type FeedFilter } from '@/lib/nostr/feed';
+import { subscribeFeed, subscribeEvents, type FeedNote, type NostrEvent, type FeedMode, type FeedFilter } from '@/lib/nostr/feed';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
+import { NoteThread } from '@/popup/components/NoteThread';
 import { ArrowLeft, Globe, Users, Image, Bitcoin, Hash, Layers, Loader2, Inbox } from 'lucide-react';
 
 interface Props {
@@ -22,6 +23,13 @@ const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
   { mode: 'kind', label: 'Kind', icon: Layers },
 ];
 
+export interface Engagement {
+  replies: number;
+  reposts: number;
+  reactions: number;
+  zapSats: number;
+}
+
 export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Props) {
   const [activeMode, setActiveMode] = useState<FeedMode>('global');
   const [notes, setNotes] = useState<FeedNote[]>([]);
@@ -32,7 +40,10 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
   const [kindInput, setKindInput] = useState('');
   const [hashtagSubmitted, setHashtagSubmitted] = useState('');
   const [kindSubmitted, setKindSubmitted] = useState<number | null>(null);
+  const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
+  const [engagement, setEngagement] = useState<Map<string, Engagement>>(new Map());
   const cleanupRef = useRef<(() => void) | null>(null);
+  const engagementCleanupRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const loadFeed = useCallback(async (mode: FeedMode, append = false) => {
@@ -117,13 +128,35 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
     }, 15000);
   }, [followingPubkeys, hashtagSubmitted, kindSubmitted, notes]);
 
+  const profileFetchingRef = useRef<Set<string>>(new Set());
+
   const resolveProfile = useCallback(async (pubkey: string) => {
-    if (profiles.has(pubkey)) return;
+    if (profiles.has(pubkey) || profileFetchingRef.current.has(pubkey)) return;
+    profileFetchingRef.current.add(pubkey);
+
     const cached = await getCachedProfile(pubkey);
     if (cached) {
       setProfiles((prev) => {
         const next = new Map(prev);
         next.set(pubkey, cached);
+        return next;
+      });
+      return;
+    }
+
+    // Fetch from relays if not in cache
+    const relayList = await loadRelayList();
+    const relays = getReadRelays(relayList);
+    const relayUrls = relays.length > 0
+      ? relays.slice(0, 3)
+      : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://purplepag.es'];
+
+    const resolved = await resolveProfiles([pubkey], relayUrls);
+    const profile = resolved.get(pubkey);
+    if (profile) {
+      setProfiles((prev) => {
+        const next = new Map(prev);
+        next.set(pubkey, profile);
         return next;
       });
     }
@@ -137,6 +170,86 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
       }
     };
   }, [activeMode, hashtagSubmitted, kindSubmitted]);
+
+  // Batch fetch engagement (replies, reposts, reactions, zaps) for visible notes
+  useEffect(() => {
+    if (notes.length === 0) return;
+
+    if (engagementCleanupRef.current) {
+      engagementCleanupRef.current();
+      engagementCleanupRef.current = null;
+    }
+
+    const noteIds = notes.map((n) => n.id);
+    const engMap = new Map<string, Engagement>();
+    for (const id of noteIds) {
+      engMap.set(id, { replies: 0, reposts: 0, reactions: 0, zapSats: 0 });
+    }
+
+    async function fetchEngagement() {
+      const relayList = await loadRelayList();
+      const relays = getReadRelays(relayList);
+      const relayUrls = relays.length > 0
+        ? relays.slice(0, 3)
+        : ['wss://relay.damus.io', 'wss://nos.lol'];
+
+      const cleanup = subscribeEvents(
+        relayUrls,
+        { kinds: [1, 6, 7, 9735], '#e': noteIds, limit: 500 },
+        (event: NostrEvent) => {
+          const eTag = event.tags.find((t) => t[0] === 'e');
+          if (!eTag) return;
+          const targetId = eTag[1];
+          const entry = engMap.get(targetId);
+          if (!entry) return;
+
+          if (event.kind === 1) entry.replies++;
+          else if (event.kind === 6) entry.reposts++;
+          else if (event.kind === 7) entry.reactions++;
+          else if (event.kind === 9735) {
+            let amount = 0;
+            const descTag = event.tags.find((t) => t[0] === 'description');
+            if (descTag && descTag[1]) {
+              try {
+                const zapReq = JSON.parse(descTag[1]);
+                const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
+                if (amountTag) amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
+              } catch { /* ignore */ }
+            }
+            if (amount === 0) {
+              const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
+              if (bolt11Tag && bolt11Tag[1]) {
+                const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
+                if (match) {
+                  const value = parseInt(match[1], 10);
+                  const unit = match[2];
+                  if (unit === 'm') amount = value * 100_000;
+                  else if (unit === 'u') amount = value * 100;
+                  else if (unit === 'n') amount = Math.floor(value / 10);
+                  else if (unit === 'p') amount = Math.floor(value / 10_000);
+                  else amount = value * 100_000_000;
+                }
+              }
+            }
+            entry.zapSats += amount;
+          }
+
+          setEngagement(new Map(engMap));
+        },
+      );
+
+      engagementCleanupRef.current = cleanup;
+    }
+
+    fetchEngagement();
+
+    return () => {
+      if (engagementCleanupRef.current) {
+        engagementCleanupRef.current();
+        engagementCleanupRef.current = null;
+      }
+    };
+  }, [notes.length > 0 ? notes.map(n => n.id).join(',') : '']);
 
   function handleTabChange(mode: FeedMode) {
     setActiveMode(mode);
@@ -280,6 +393,8 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
             key={note.id}
             note={note}
             profile={profiles.get(note.pubkey)}
+            engagement={engagement.get(note.id)}
+            onSelectNote={setSelectedNote}
             onViewProfile={onViewProfile}
           />
         ))}
@@ -302,6 +417,16 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
           </button>
         )}
       </div>
+
+      {/* Thread Modal */}
+      {selectedNote && (
+        <NoteThread
+          note={selectedNote}
+          profiles={profiles}
+          onClose={() => setSelectedNote(null)}
+          onViewProfile={onViewProfile}
+        />
+      )}
     </div>
   );
 }
