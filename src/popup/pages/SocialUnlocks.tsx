@@ -924,7 +924,6 @@ interface DetailViewProps {
 }
 
 function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyStored }: DetailViewProps) {
-  const [signing, setSigning] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [revealedContent, setRevealedContent] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -949,24 +948,6 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
         .catch(() => setRevealedContent('[Failed to decrypt]'));
     }
   }, [item, storedKey]);
-
-  async function handleSign() {
-    setSigning(true);
-    try {
-      const event = createUnlockSignEvent({
-        unlock_event_id: item.eventId,
-        creator_pubkey: item.pubkey,
-        myPubkey: publicKey,
-      });
-      const signed = await confirmAndSign(event);
-      await publishEvent(signed);
-      item.signatures.push({ pubkey: publicKey });
-    } catch (err) {
-      console.error('Failed to sign:', err);
-    } finally {
-      setSigning(false);
-    }
-  }
 
   async function handleReveal() {
     if (!storedKey) return;
@@ -1196,20 +1177,15 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
           </button>
         )}
         {canSign && (
-          <button
-            onClick={handleSign}
-            disabled={signing}
+          <a
+            href={`/unlock/${item.eventId}`}
+            target="_blank"
+            rel="noopener noreferrer"
             className="btn-primary w-full flex items-center justify-center gap-2"
           >
-            {signing ? (
-              <span className="animate-pulse">Signing...</span>
-            ) : (
-              <>
-                <Lock className="w-4 h-4" />
-                Sign to Unlock
-              </>
-            )}
-          </button>
+            <ExternalLink className="w-4 h-4" />
+            Open Unlock Page
+          </a>
         )}
         {canReveal && (
           <button

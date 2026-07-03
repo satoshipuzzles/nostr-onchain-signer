@@ -41,9 +41,12 @@ export function Wallets() {
       setWallets(multisigs.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
       log.info('Wallets', 'Loaded', multisigs.length, 'wallets from storage');
 
-      // Show cached personal balance if available
       const cachedBal = getCachedBalance(address);
-      if (cachedBal) setBalance(cachedBal.total);
+      if (cachedBal) {
+        setBalance(cachedBal.total);
+      } else {
+        setBalance(0);
+      }
     } catch (err) {
       log.error('Wallets', 'Storage load failed:', err);
     } finally {
@@ -154,7 +157,7 @@ export function Wallets() {
                 </p>
               </div>
               <div className="text-right flex-shrink-0">
-                <p className={`text-sm font-bold ${balance && balance > 0 ? 'text-bitcoin' : 'text-gray-500'}`}>
+                <p className={`text-sm font-bold ${balance !== null && balance > 0 ? 'text-bitcoin' : 'text-gray-400'}`}>
                   {balance !== null ? formatSats(balance) : '—'}
                 </p>
               </div>

@@ -165,9 +165,7 @@ export function Setup({ onCreated }: Props) {
       <div className="h-full overflow-y-auto">
         {/* Hero Section */}
         <div className="flex flex-col items-center justify-center p-6 pt-12 pb-8">
-          <div className="w-16 h-16 rounded-2xl bg-white text-black flex items-center justify-center mb-5 shadow-lg">
-            <Shield className="w-9 h-9" />
-          </div>
+          <img src="/logo.svg" alt="Nostr Onchain" className="w-16 h-16 mb-5" />
 
           <h1 className="text-2xl font-bold mb-2 text-center">Nostr Onchain</h1>
           <p className="text-gray-400 text-sm mb-1 text-center">

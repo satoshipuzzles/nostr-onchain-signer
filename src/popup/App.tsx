@@ -154,6 +154,7 @@ export function App() {
           <Route path="settings/events" element={<SignedEventsLog />} />
           <Route path="settings/events/:eventId" element={<SignedEventDetail />} />
           <Route path="unlocks" element={<SocialUnlocks />} />
+          <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
           <Route path="invoice/:eventId" element={<InvoicePage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -6,7 +6,7 @@ import {
   decodeLightOp,
 } from '@/lib/bitcoin/opreturn';
 import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/ticker';
-import { fetchMempoolApi, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { fetchMempoolApi, getCachedBlocks, setCachedBlocks, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
   Copy, Check, RefreshCw, Clock, ArrowRight, ArrowLeft,
@@ -341,12 +341,22 @@ export function OnchainExplorer() {
 
   const loadBlocks = useCallback(async () => {
     setBlocksError('');
+    // Show cached blocks instantly
+    const cached = getCachedBlocks<BlockSummary>();
+    if (cached && cached.length > 0) {
+      setBlocks(cached);
+      setBlocksLoading(false);
+      loadedRef.current = true;
+    }
     try {
       const res = await fetchMempoolApi('/v1/blocks');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: BlockSummary[] = await res.json();
-      setBlocks(data.slice(0, 10));
+      const slice = data.slice(0, 10);
+      setBlocks(slice);
+      setCachedBlocks(slice);
       loadedRef.current = true;
+      setBlocksError('');
     } catch (err) {
       if (!loadedRef.current) {
         setBlocksError(err instanceof Error ? err.message : 'Failed to load blocks');

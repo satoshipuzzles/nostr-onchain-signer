@@ -4,7 +4,7 @@ import { ArrowLeft, Trophy, Search, Loader2, RefreshCw, ExternalLink, Users, Glo
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { getCachedProfile, getAllCachedProfiles } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { useAuth } from '../context/AuthContext';
@@ -22,7 +22,7 @@ interface LeaderboardEntry {
 const CACHE_KEY = 'leaderboard_cache';
 const CACHE_KEY_GLOBAL = 'leaderboard_cache_global';
 const CACHE_TTL = 5 * 60_000; // 5 minutes
-const MAX_PUBKEYS_TO_CHECK = 80;
+const MAX_PUBKEYS_TO_CHECK = 40;
 const BALANCE_CONCURRENCY = 5;
 
 type ViewTab = 'following' | 'global';
@@ -124,16 +124,21 @@ export function Leaderboard() {
         followingPubkeys = Array.from(following);
       }
 
-      setProcessing('Discovering users from relays...');
-      const discoveredPubkeys = await discoverUsers(signal);
-      if (signal.aborted) return;
+      // Use cached profiles + following — skip slow relay discovery
+      setProcessing('Loading known users...');
+      const cachedProfiles = await getAllCachedProfiles();
+      const cachedPubkeys = cachedProfiles.map((p) => p.profile.pubkey);
 
-      const allPubkeys = new Set([...followingPubkeys, ...discoveredPubkeys]);
+      const allPubkeys = new Set([...followingPubkeys, ...cachedPubkeys]);
       allPubkeys.delete(publicKey);
       const toCheck = Array.from(allPubkeys).slice(0, MAX_PUBKEYS_TO_CHECK);
 
+      if (toCheck.length === 0) {
+        throw new Error('No users in cache yet. Visit Discover or Follow users first.');
+      }
+
       setProcessing(`Checking ${toCheck.length} users...`);
-      log.info('Leaderboard', `Checking balances for ${toCheck.length} of ${allPubkeys.size} users`);
+      log.info('Leaderboard', `Checking ${toCheck.length} cached/following users`);
       await batchCheckBalances(toCheck, signal, CACHE_KEY_GLOBAL);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -152,8 +157,8 @@ export function Leaderboard() {
     signal: AbortSignal,
     cacheKey: string,
   ) {
-    const results: LeaderboardEntry[] = [...entries];
-    const seen = new Set(results.map((e) => e.pubkey));
+    const results: LeaderboardEntry[] = [];
+    const seen = new Set<string>();
     let checked = 0;
 
     // Process with limited concurrency
@@ -172,7 +177,7 @@ export function Leaderboard() {
           if (bal.error) {
             log.warn('Leaderboard', `Balance error for ${pubkey.slice(0, 8)}:`, bal.error);
           }
-          if (bal.total === 0) return;
+          if (bal.total === 0 && !bal.cached) return;
 
           const profile = await getCachedProfile(pubkey);
           const entry: LeaderboardEntry = {

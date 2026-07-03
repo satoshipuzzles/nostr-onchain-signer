@@ -1,21 +1,23 @@
 /**
- * Mempool / Esplora API integration for balance and transaction data.
- * Rate-limited, cached, multi-provider fallback.
+ * Esplora API integration — rate-limited, cached, multi-provider.
  */
 
 import { log } from '@/lib/utils/logger';
 
-// Esplora-compatible providers (same API shape)
 const PROVIDERS = [
-  'https://mempool.space/api',
   'https://blockstream.info/api',
   'https://mempool.emzy.de/api',
+  'https://mempool.space/api',
 ] as const;
 
 const BALANCE_CACHE_KEY = 'balance_cache_v1';
-const BALANCE_CACHE_TTL = 5 * 60_000;      // 5 min — fresh
-const BALANCE_CACHE_STALE = 60 * 60_000;   // 1 hr — usable on API failure
-const MIN_REQUEST_INTERVAL = 900;          // ms between outbound requests
+const TX_CACHE_KEY = 'tx_cache_v1';
+const BLOCKS_CACHE_KEY = 'blocks_cache_v1';
+const BALANCE_CACHE_TTL = 3 * 60_000;
+const BALANCE_CACHE_STALE = 24 * 60 * 60_000;
+const TX_CACHE_TTL = 3 * 60_000;
+const BLOCKS_CACHE_TTL = 2 * 60_000;
+const MIN_REQUEST_INTERVAL = 300;
 
 export interface AddressInfo {
   address: string;
@@ -89,9 +91,15 @@ interface BalanceCacheEntry {
   updatedAt: number;
 }
 
-// ─── Rate limiter ────────────────────────────────────────────────
+interface TxCacheEntry {
+  txs: Transaction[];
+  updatedAt: number;
+}
+
+// ─── Rate limiter + provider rotation ────────────────────────────
 
 let lastRequestAt = 0;
+let providerCursor = 0;
 let requestQueue: Promise<void> = Promise.resolve();
 
 function scheduleRequest<T>(fn: () => Promise<T>): Promise<T> {
@@ -111,40 +119,67 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ─── In-flight dedup ─────────────────────────────────────────────
+function nextProvider(): string {
+  const p = PROVIDERS[providerCursor % PROVIDERS.length];
+  providerCursor++;
+  return p;
+}
 
-const inflight = new Map<string, Promise<BalanceResult>>();
-
-// ─── Balance cache (localStorage) ────────────────────────────────
+// ─── Caches ──────────────────────────────────────────────────────
 
 function loadBalanceCache(): Record<string, BalanceCacheEntry> {
   try {
     const raw = localStorage.getItem(BALANCE_CACHE_KEY);
     return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  } catch { return {}; }
 }
 
 export function getCachedBalance(address: string): BalanceCacheEntry | null {
-  return getCachedBalanceEntry(address);
-}
-
-function getCachedBalanceEntry(address: string): BalanceCacheEntry | null {
-  const all = loadBalanceCache();
-  return all[address] ?? null;
+  return loadBalanceCache()[address] ?? null;
 }
 
 function setCachedBalance(address: string, entry: Omit<BalanceCacheEntry, 'updatedAt'>) {
   try {
     const all = loadBalanceCache();
     all[address] = { ...entry, updatedAt: Date.now() };
-    // Prune entries older than 24h
-    const cutoff = Date.now() - 24 * 60 * 60_000;
-    for (const [addr, e] of Object.entries(all)) {
-      if (e.updatedAt < cutoff) delete all[addr];
-    }
     localStorage.setItem(BALANCE_CACHE_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+function getCachedTransactions(address: string): Transaction[] | null {
+  try {
+    const raw = localStorage.getItem(TX_CACHE_KEY);
+    if (!raw) return null;
+    const all: Record<string, TxCacheEntry> = JSON.parse(raw);
+    const entry = all[address];
+    if (!entry) return null;
+    if (Date.now() - entry.updatedAt > TX_CACHE_TTL * 4) return null;
+    return entry.txs;
+  } catch { return null; }
+}
+
+function setCachedTransactions(address: string, txs: Transaction[]) {
+  try {
+    const raw = localStorage.getItem(TX_CACHE_KEY);
+    const all: Record<string, TxCacheEntry> = raw ? JSON.parse(raw) : {};
+    all[address] = { txs, updatedAt: Date.now() };
+    localStorage.setItem(TX_CACHE_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+export function getCachedBlocks<T>(): T[] | null {
+  try {
+    const raw = localStorage.getItem(BLOCKS_CACHE_KEY);
+    if (!raw) return null;
+    const { data, updatedAt } = JSON.parse(raw);
+    if (Date.now() - updatedAt > BLOCKS_CACHE_TTL * 10) return data;
+    return data;
+  } catch { return null; }
+}
+
+export function setCachedBlocks<T>(data: T[]) {
+  try {
+    localStorage.setItem(BLOCKS_CACHE_KEY, JSON.stringify({ data, updatedAt: Date.now() }));
   } catch {}
 }
 
@@ -154,11 +189,11 @@ function balanceFromCache(entry: BalanceCacheEntry, stale = false): BalanceResul
     unconfirmed: entry.unconfirmed,
     total: entry.total,
     cached: true,
-    error: stale ? 'Using cached balance (API rate limited)' : undefined,
+    error: stale ? 'Using cached balance' : undefined,
   };
 }
 
-// ─── Multi-provider fetch ────────────────────────────────────────
+// ─── Fetch ───────────────────────────────────────────────────────
 
 async function fetchWithTimeout(url: string, ms = 12_000): Promise<Response> {
   const controller = new AbortController();
@@ -172,151 +207,121 @@ async function fetchWithTimeout(url: string, ms = 12_000): Promise<Response> {
 
 async function fetchEsplora(path: string, ms = 12_000): Promise<Response> {
   let lastError = 'All providers failed';
+  const startIdx = providerCursor;
 
-  for (const base of PROVIDERS) {
+  for (let attempt = 0; attempt < PROVIDERS.length; attempt++) {
+    const base = PROVIDERS[(startIdx + attempt) % PROVIDERS.length];
     try {
       const res = await scheduleRequest(() => fetchWithTimeout(`${base}${path}`, ms));
-      if (res.ok) return res;
-      if (res.status === 429 || res.status === 403) {
-        log.warn('Mempool', `${base} returned ${res.status} for ${path}, trying next provider`);
+      if (res.ok) {
+        providerCursor = (startIdx + attempt + 1) % PROVIDERS.length;
+        return res;
+      }
+      if (res.status === 403 || res.status === 429) {
+        log.warn('Mempool', `${base} ${res.status} on ${path}`);
         lastError = `HTTP ${res.status}`;
-        await sleep(500);
         continue;
       }
       lastError = `HTTP ${res.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'Network error';
-      log.warn('Mempool', `${base} failed for ${path}:`, lastError);
+      log.warn('Mempool', `${base} error:`, lastError);
     }
   }
-
   throw new Error(lastError);
 }
 
-// ─── Public API ──────────────────────────────────────────────────
+const inflightBalances = new Map<string, Promise<BalanceResult>>();
 
-/**
- * Fetch address balance (confirmed + unconfirmed).
- * Returns cached value immediately when fresh; rate-limits network calls.
- */
 export async function fetchBalance(address: string, opts?: { force?: boolean }): Promise<BalanceResult> {
-  const cached = getCachedBalanceEntry(address);
+  const cached = getCachedBalance(address);
   const age = cached ? Date.now() - cached.updatedAt : Infinity;
 
-  // Return fresh cache without hitting network
   if (!opts?.force && cached && age < BALANCE_CACHE_TTL) {
     return balanceFromCache(cached);
   }
 
-  // Dedupe concurrent fetches for same address
-  const inflightKey = address;
-  if (inflight.has(inflightKey)) {
-    return inflight.get(inflightKey)!;
+  if (inflightBalances.has(address)) {
+    return inflightBalances.get(address)!;
   }
 
-  const promise = fetchBalanceNetwork(address, cached, age);
-  inflight.set(inflightKey, promise);
+  const promise = (async (): Promise<BalanceResult> => {
+    try {
+      const res = await fetchEsplora(`/address/${address}`);
+      const data: AddressInfo = await res.json();
+      const confirmed = data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum;
+      const unconfirmed = data.mempool_stats.funded_txo_sum - data.mempool_stats.spent_txo_sum;
+      const result = { confirmed, unconfirmed, total: confirmed + unconfirmed };
+      setCachedBalance(address, result);
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      log.error('Mempool', `fetchBalance ${address.slice(0, 12)}...:`, msg);
+      if (cached && age < BALANCE_CACHE_STALE) {
+        return balanceFromCache(cached, true);
+      }
+      return { confirmed: 0, unconfirmed: 0, total: 0, error: msg };
+    }
+  })();
+
+  inflightBalances.set(address, promise);
   try {
     return await promise;
   } finally {
-    inflight.delete(inflightKey);
+    inflightBalances.delete(address);
   }
 }
 
-async function fetchBalanceNetwork(
-  address: string,
-  cached: BalanceCacheEntry | null,
-  age: number,
-): Promise<BalanceResult> {
-  try {
-    const res = await fetchEsplora(`/address/${address}`);
-    const data: AddressInfo = await res.json();
-
-    const confirmed = data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum;
-    const unconfirmed = data.mempool_stats.funded_txo_sum - data.mempool_stats.spent_txo_sum;
-    const result = { confirmed, unconfirmed, total: confirmed + unconfirmed };
-
-    setCachedBalance(address, result);
-    log.debug('Mempool', `Balance for ${address.slice(0, 12)}...: ${result.total} sats`);
-    return result;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Network error';
-    log.error('Mempool', `fetchBalance failed for ${address.slice(0, 12)}...:`, msg);
-
-    // Return stale cache rather than zero on rate limit
-    if (cached && age < BALANCE_CACHE_STALE) {
-      log.info('Mempool', `Returning stale cache for ${address.slice(0, 12)}...`);
-      return balanceFromCache(cached, true);
-    }
-
-    return { confirmed: 0, unconfirmed: 0, total: 0, error: msg };
+export async function fetchTransactions(address: string, limit = 10, opts?: { force?: boolean }): Promise<Transaction[]> {
+  if (!opts?.force) {
+    const cached = getCachedTransactions(address);
+    if (cached) return cached.slice(0, limit);
   }
-}
 
-/**
- * Fetch recent transactions for an address.
- */
-export async function fetchTransactions(address: string, limit = 10): Promise<Transaction[]> {
   try {
     const res = await fetchEsplora(`/address/${address}/txs`);
-    if (!res.ok) return [];
+    if (!res.ok) {
+      const cached = getCachedTransactions(address);
+      return cached?.slice(0, limit) ?? [];
+    }
     const txs: Transaction[] = await res.json();
+    setCachedTransactions(address, txs);
     return txs.slice(0, limit);
   } catch (err) {
     log.error('Mempool', 'fetchTransactions error:', err);
-    return [];
+    return getCachedTransactions(address)?.slice(0, limit) ?? [];
   }
 }
 
-/**
- * Fetch all transactions for an address (no limit).
- */
 export async function fetchAddressTransactions(address: string): Promise<Transaction[]> {
-  try {
-    const res = await fetchEsplora(`/address/${address}/txs`, 15_000);
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (err) {
-    log.error('Mempool', 'fetchAddressTransactions error:', err);
-    return [];
-  }
+  return fetchTransactions(address, 1000, { force: true });
 }
 
-/**
- * Fetch UTXOs for an address.
- */
 export async function fetchUTXOs(address: string): Promise<UTXO[]> {
   try {
     const res = await fetchEsplora(`/address/${address}/utxo`);
     if (!res.ok) return [];
     return await res.json();
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
-/**
- * Get the current recommended fee rates.
- */
 export async function fetchFeeEstimates(): Promise<{
-  fastest: number;
-  halfHour: number;
-  hour: number;
-  economy: number;
+  fastest: number; halfHour: number; hour: number; economy: number;
 }> {
   try {
     const res = await fetchEsplora('/v1/fees/recommended');
     if (!res.ok) return { fastest: 10, halfHour: 5, hour: 3, economy: 1 };
     const data = await res.json();
-    return {
-      fastest: data.fastestFee,
-      halfHour: data.halfHourFee,
-      hour: data.hourFee,
-      economy: data.economyFee,
-    };
+    return { fastest: data.fastestFee, halfHour: data.halfHourFee, hour: data.hourFee, economy: data.economyFee };
   } catch {
     return { fastest: 10, halfHour: 5, hour: 3, economy: 1 };
   }
+}
+
+export const MEMPOOL_API = PROVIDERS[0];
+
+export async function fetchMempoolApi(path: string, ms = 12_000): Promise<Response> {
+  return fetchEsplora(path, ms);
 }
 
 export function getMempoolAddressUrl(address: string): string {
@@ -328,21 +333,8 @@ export function getMempoolTxUrl(txid: string): string {
 }
 
 export function formatSats(sats: number): string {
-  if (sats >= 100_000_000) {
-    return `${(sats / 100_000_000).toFixed(8)} BTC`;
-  }
-  if (sats >= 1_000_000) {
-    return `${(sats / 1_000_000).toFixed(2)}M sats`;
-  }
-  if (sats >= 1_000) {
-    return `${(sats / 1_000).toFixed(1)}k sats`;
-  }
-  return `${sats} sats`;
-}
-
-// Re-export for OnchainExplorer compatibility
-export const MEMPOOL_API = PROVIDERS[0];
-
-export async function fetchMempoolApi(path: string, ms = 12_000): Promise<Response> {
-  return fetchEsplora(path, ms);
+  if (sats >= 100_000_000) return `${(sats / 100_000_000).toFixed(8)} BTC`;
+  if (sats >= 1_000_000) return `${(sats / 1_000_000).toFixed(2)}M sats`;
+  if (sats >= 1_000) return `${(sats / 1_000).toFixed(1)}k sats`;
+  return `${sats.toLocaleString()} sats`;
 }
