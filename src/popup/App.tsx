@@ -24,6 +24,9 @@ import { ConnectedApps } from './pages/ConnectedApps';
 import { SignedEventsLog } from './pages/SignedEventsLog';
 import { InvoicePage } from './pages/InvoicePage';
 import { SignPage } from './pages/SignPage';
+import { SocialUnlocks } from './pages/SocialUnlocks';
+import { SocialUnlockPage } from './pages/SocialUnlockPage';
+import { LightOps } from './pages/LightOps';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
@@ -85,7 +88,7 @@ export function App() {
   }
 
   // Public routes — accessible without authentication
-  const publicRoutes = ['/sign/', '/invoice/'];
+  const publicRoutes = ['/sign/', '/invoice/', '/unlock/'];
   const isPublicRoute = publicRoutes.some((r) => location.pathname.startsWith(r));
 
   if (isPublicRoute) {
@@ -93,6 +96,7 @@ export function App() {
       <Routes>
         <Route path="sign/:roundId" element={<SignPage />} />
         <Route path="invoice/:eventId" element={<InvoicePage />} />
+        <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
       </Routes>
     );
   }
@@ -135,11 +139,13 @@ export function App() {
           <Route path="discover" element={<DiscoverWrapper />} />
           <Route path="discover/:pubkey" element={<ProfileViewWrapper />} />
           <Route path="send" element={<SendTxWrapper />} />
+          <Route path="lightops" element={<LightOps />} />
           <Route path="settings" element={<Settings />} />
           <Route path="settings/relays" element={<RelaySettingsWrapper />} />
           <Route path="settings/profile" element={<EditProfileWrapper />} />
           <Route path="settings/apps" element={<ConnectedApps />} />
           <Route path="settings/events" element={<SignedEventsLog />} />
+          <Route path="unlocks" element={<SocialUnlocks />} />
           <Route path="invoice/:eventId" element={<InvoicePage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

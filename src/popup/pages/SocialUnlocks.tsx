@@ -1,0 +1,802 @@
+import { useState, useEffect, useCallback } from 'react';
+import { Lock, Unlock, Plus, Copy, Check, ArrowLeft, Users, ExternalLink } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
+import { publishEvent } from '@/lib/nostr/discovery';
+import {
+  createSocialUnlockEvent,
+  createUnlockSignEvent,
+  createRevealEvent,
+  decryptContent,
+  parseSocialUnlockContent,
+  parseSocialUnlockSignContent,
+  parseSocialUnlockRevealContent,
+  type SocialUnlockContent,
+  type ContentType,
+} from '@/lib/nostr/social-unlock';
+import { CUSTOM_KIND } from '@/lib/nostr/kinds';
+import { createMessageId } from '@/shared/messages';
+import type { SignedEvent } from '@/lib/nostr/events';
+
+// ─── Types ──────────────────────────────────────────────────────
+
+interface UnlockItem {
+  eventId: string;
+  pubkey: string;
+  content: SocialUnlockContent;
+  signatures: { pubkey: string; message?: string }[];
+  revealed?: { decryption_key: string; revealed_at: number };
+  createdAt: number;
+}
+
+type View = 'list' | 'create' | 'detail';
+
+// ─── Component ──────────────────────────────────────────────────
+
+export function SocialUnlocks() {
+  const { publicKey, confirmAndSign } = useAuth();
+  const [view, setView] = useState<View>('list');
+  const [unlocks, setUnlocks] = useState<UnlockItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedUnlock, setSelectedUnlock] = useState<UnlockItem | null>(null);
+
+  // Stored decryption keys for unlocks we created
+  const [storedKeys, setStoredKeys] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    loadStoredKeys();
+    fetchUnlocks();
+  }, [publicKey]);
+
+  async function loadStoredKeys() {
+    const result = await chrome.storage.local.get('social_unlock_keys');
+    setStoredKeys(result.social_unlock_keys ?? {});
+  }
+
+  async function saveKey(eventId: string, key: string) {
+    const updated = { ...storedKeys, [eventId]: key };
+    setStoredKeys(updated);
+    await chrome.storage.local.set({ social_unlock_keys: updated });
+  }
+
+  async function fetchUnlocks() {
+    setLoading(true);
+    try {
+      const relayList = await loadRelayList();
+      const readRelays = getReadRelays(relayList);
+      const items = await fetchSocialUnlocks(readRelays, publicKey);
+      setUnlocks(items);
+    } catch (err) {
+      console.error('Failed to fetch social unlocks:', err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSelectUnlock(item: UnlockItem) {
+    setSelectedUnlock(item);
+    setView('detail');
+  }
+
+  if (view === 'create') {
+    return (
+      <CreateUnlockView
+        publicKey={publicKey}
+        confirmAndSign={confirmAndSign}
+        onCreated={(eventId, key) => {
+          saveKey(eventId, key);
+          fetchUnlocks();
+          setView('list');
+        }}
+        onBack={() => setView('list')}
+      />
+    );
+  }
+
+  if (view === 'detail' && selectedUnlock) {
+    return (
+      <DetailView
+        item={selectedUnlock}
+        publicKey={publicKey}
+        confirmAndSign={confirmAndSign}
+        storedKey={storedKeys[selectedUnlock.eventId]}
+        onBack={() => {
+          setView('list');
+          fetchUnlocks();
+        }}
+        onKeyStored={(eventId, key) => saveKey(eventId, key)}
+      />
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col p-4 md:p-6 pb-24">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-lg font-bold">Social Unlocks</h1>
+          <p className="text-xs text-gray-500 mt-0.5">Lock content behind collective signatures</p>
+        </div>
+        <button
+          onClick={() => setView('create')}
+          className="btn-primary flex items-center gap-1.5 text-sm px-3 py-2"
+        >
+          <Plus className="w-4 h-4" />
+          Create
+        </button>
+      </div>
+
+      {/* Unlock list */}
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="animate-pulse text-gray-500">Loading unlocks...</div>
+        </div>
+      ) : unlocks.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+          <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+            <Lock className="w-8 h-8 text-gray-600" />
+          </div>
+          <p className="text-sm text-gray-400 mb-1">No social unlocks yet</p>
+          <p className="text-xs text-gray-600">Create one to lock content behind signatures</p>
+        </div>
+      ) : (
+        <div className="space-y-3 overflow-y-auto flex-1">
+          {unlocks.map((item) => (
+            <UnlockCard
+              key={item.eventId}
+              item={item}
+              isOwner={item.pubkey === publicKey}
+              onClick={() => handleSelectUnlock(item)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Unlock Card ────────────────────────────────────────────────
+
+function UnlockCard({ item, isOwner, onClick }: { item: UnlockItem; isOwner: boolean; onClick: () => void }) {
+  const progress = item.signatures.length / item.content.threshold;
+  const isUnlocked = item.signatures.length >= item.content.threshold;
+
+  return (
+    <button onClick={onClick} className="card w-full text-left hover:border-white/20 transition-all">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className="text-sm font-semibold truncate">{item.content.title}</h3>
+            <StatusBadge isUnlocked={isUnlocked} progress={progress} />
+          </div>
+          {item.content.description && (
+            <p className="text-xs text-gray-500 line-clamp-2 mb-2">{item.content.description}</p>
+          )}
+          <div className="flex items-center gap-3 text-[10px] text-gray-500">
+            <span className="flex items-center gap-1">
+              <Users className="w-3 h-3" />
+              {item.signatures.length}/{item.content.threshold} signatures
+            </span>
+            {isOwner && <span className="text-nostr">Created by you</span>}
+          </div>
+        </div>
+        <div className="flex-shrink-0">
+          {isUnlocked ? (
+            <Unlock className="w-5 h-5 text-green-400" />
+          ) : (
+            <Lock className="w-5 h-5 text-gray-600" />
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="mt-3 h-1.5 bg-white/5 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{
+            width: `${Math.min(progress * 100, 100)}%`,
+            background: isUnlocked
+              ? 'linear-gradient(90deg, #22c55e, #4ade80)'
+              : `linear-gradient(90deg, #6b7280, ${progress > 0.5 ? '#eab308' : '#9ca3af'})`,
+          }}
+        />
+      </div>
+    </button>
+  );
+}
+
+// ─── Status Badge ───────────────────────────────────────────────
+
+function StatusBadge({ isUnlocked, progress }: { isUnlocked: boolean; progress: number }) {
+  if (isUnlocked) {
+    return (
+      <span className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-green-500/20 text-green-400">
+        UNLOCKED
+      </span>
+    );
+  }
+  if (progress > 0) {
+    return (
+      <span className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-yellow-500/20 text-yellow-400">
+        UNLOCKING
+      </span>
+    );
+  }
+  return (
+    <span className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-white/10 text-gray-400">
+      LOCKED
+    </span>
+  );
+}
+
+// ─── Create Unlock View ─────────────────────────────────────────
+
+interface CreateUnlockViewProps {
+  publicKey: string;
+  confirmAndSign: (event: { kind: number; content: string; tags: string[][]; created_at: number }) => Promise<SignedEvent>;
+  onCreated: (eventId: string, key: string) => void;
+  onBack: () => void;
+}
+
+function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: CreateUnlockViewProps) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [secretContent, setSecretContent] = useState('');
+  const [contentType, setContentType] = useState<ContentType>('text');
+  const [threshold, setThreshold] = useState(3);
+  const [totalSlots, setTotalSlots] = useState(10);
+  const [publishing, setPublishing] = useState(false);
+  const [createdEventId, setCreatedEventId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function handleCreate() {
+    if (!title.trim() || !secretContent.trim() || threshold < 1 || totalSlots < threshold) return;
+    setPublishing(true);
+
+    try {
+      const { event, decryptionKey } = await createSocialUnlockEvent({
+        title: title.trim(),
+        description: description.trim() || undefined,
+        plaintext: secretContent,
+        content_type: contentType,
+        threshold,
+        total_slots: totalSlots,
+        myPubkey: publicKey,
+      });
+
+      const signed = await confirmAndSign(event);
+      await publishEvent(signed);
+
+      setCreatedEventId(signed.id);
+      onCreated(signed.id, decryptionKey);
+    } catch (err) {
+      console.error('Failed to create social unlock:', err);
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function copyEventId() {
+    if (!createdEventId) return;
+    await navigator.clipboard.writeText(createdEventId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  if (createdEventId) {
+    return (
+      <div className="h-full flex flex-col p-4 md:p-6 pb-24">
+        <button onClick={onBack} className="btn-back mb-4">
+          <ArrowLeft className="w-4 h-4" />
+          Back to Unlocks
+        </button>
+
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-4">
+          <div className="w-16 h-16 rounded-2xl bg-green-500/15 flex items-center justify-center mb-4 animate-[scale-in_0.3s_ease-out]">
+            <Check className="w-8 h-8 text-green-400" />
+          </div>
+          <h2 className="text-lg font-bold mb-2">Social Unlock Created!</h2>
+          <p className="text-xs text-gray-500 mb-4">Share the event ID so others can sign</p>
+
+          <div className="card w-full max-w-sm">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Event ID</p>
+            <div className="flex items-center gap-2">
+              <code className="text-xs text-gray-300 truncate flex-1 font-mono">
+                {createdEventId}
+              </code>
+              <button onClick={copyEventId} className="p-1.5 hover:bg-surface-700 rounded-lg">
+                {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col p-4 md:p-6 pb-24">
+      <button onClick={onBack} className="btn-back mb-4">
+        <ArrowLeft className="w-4 h-4" />
+        Back to Unlocks
+      </button>
+
+      <h2 className="text-lg font-bold mb-4">Create Social Unlock</h2>
+
+      <div className="space-y-4 flex-1 overflow-y-auto">
+        {/* Title */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Title</label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What's behind the lock?"
+            className="input-field"
+          />
+        </div>
+
+        {/* Description */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Description (public teaser)</label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Optional teaser text..."
+            className="input-field"
+          />
+        </div>
+
+        {/* Content type selector */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Content Type</label>
+          <div className="grid grid-cols-3 gap-2">
+            {(['text', 'image', 'link'] as ContentType[]).map((type) => (
+              <button
+                key={type}
+                onClick={() => setContentType(type)}
+                className={`px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
+                  contentType === type
+                    ? 'bg-white/10 text-white border border-white/20'
+                    : 'bg-white/5 text-gray-400 border border-transparent hover:border-white/10'
+                }`}
+              >
+                {type.charAt(0).toUpperCase() + type.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Secret content */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">
+            Secret Content ({contentType === 'image' ? 'Image URL' : contentType === 'link' ? 'URL' : 'Text'})
+          </label>
+          {contentType === 'text' ? (
+            <textarea
+              value={secretContent}
+              onChange={(e) => setSecretContent(e.target.value)}
+              placeholder="The content to reveal once threshold is met..."
+              className="input-field min-h-[100px] resize-y"
+              rows={4}
+            />
+          ) : (
+            <input
+              type="url"
+              value={secretContent}
+              onChange={(e) => setSecretContent(e.target.value)}
+              placeholder={contentType === 'image' ? 'https://example.com/image.png' : 'https://example.com'}
+              className="input-field"
+            />
+          )}
+        </div>
+
+        {/* Threshold & Slots */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">
+              Threshold ({threshold})
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={totalSlots}
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              className="w-full accent-white"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">Total Slots</label>
+            <input
+              type="number"
+              min={threshold}
+              max={100}
+              value={totalSlots}
+              onChange={(e) => setTotalSlots(Math.max(threshold, Number(e.target.value)))}
+              className="input-field"
+            />
+          </div>
+        </div>
+
+        <p className="text-[10px] text-gray-600">
+          {threshold} of {totalSlots} signatures required to unlock
+        </p>
+      </div>
+
+      {/* Create button */}
+      <button
+        onClick={handleCreate}
+        disabled={!title.trim() || !secretContent.trim() || publishing}
+        className="btn-primary w-full flex items-center justify-center gap-2 mt-4"
+      >
+        {publishing ? (
+          <span className="animate-pulse">Publishing...</span>
+        ) : (
+          <>
+            <Lock className="w-4 h-4" />
+            Create Social Unlock
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ─── Detail View ────────────────────────────────────────────────
+
+interface DetailViewProps {
+  item: UnlockItem;
+  publicKey: string;
+  confirmAndSign: (event: { kind: number; content: string; tags: string[][]; created_at: number }) => Promise<SignedEvent>;
+  storedKey?: string;
+  onBack: () => void;
+  onKeyStored: (eventId: string, key: string) => void;
+}
+
+function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyStored }: DetailViewProps) {
+  const [signing, setSigning] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [revealedContent, setRevealedContent] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const isOwner = item.pubkey === publicKey;
+  const hasSigned = item.signatures.some((s) => s.pubkey === publicKey);
+  const isUnlocked = item.signatures.length >= item.content.threshold;
+  const canSign = !isOwner && !hasSigned && (!item.content.allowed_pubkeys || item.content.allowed_pubkeys.includes(publicKey));
+  const canReveal = isOwner && isUnlocked && !item.revealed && storedKey;
+
+  useEffect(() => {
+    if (item.revealed) {
+      decryptContent(item.content.encrypted_content, item.revealed.decryption_key)
+        .then(setRevealedContent)
+        .catch(() => setRevealedContent('[Failed to decrypt]'));
+    } else if (isOwner && storedKey && isUnlocked) {
+      decryptContent(item.content.encrypted_content, storedKey)
+        .then(setRevealedContent)
+        .catch(() => setRevealedContent('[Failed to decrypt]'));
+    }
+  }, [item, storedKey]);
+
+  async function handleSign() {
+    setSigning(true);
+    try {
+      const event = createUnlockSignEvent({
+        unlock_event_id: item.eventId,
+        creator_pubkey: item.pubkey,
+        myPubkey: publicKey,
+      });
+      const signed = await confirmAndSign(event);
+      await publishEvent(signed);
+      item.signatures.push({ pubkey: publicKey });
+    } catch (err) {
+      console.error('Failed to sign:', err);
+    } finally {
+      setSigning(false);
+    }
+  }
+
+  async function handleReveal() {
+    if (!storedKey) return;
+    setRevealing(true);
+    try {
+      const event = createRevealEvent({
+        unlock_event_id: item.eventId,
+        decryption_key: storedKey,
+        myPubkey: publicKey,
+      });
+      const signed = await confirmAndSign(event);
+      await publishEvent(signed);
+      item.revealed = { decryption_key: storedKey, revealed_at: Math.floor(Date.now() / 1000) };
+    } catch (err) {
+      console.error('Failed to reveal:', err);
+    } finally {
+      setRevealing(false);
+    }
+  }
+
+  async function copyEventId() {
+    await navigator.clipboard.writeText(item.eventId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  const progress = item.signatures.length / item.content.threshold;
+
+  return (
+    <div className="h-full flex flex-col p-4 md:p-6 pb-24">
+      <button onClick={onBack} className="btn-back mb-4">
+        <ArrowLeft className="w-4 h-4" />
+        Back to Unlocks
+      </button>
+
+      {/* Header */}
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-1">
+          <h2 className="text-lg font-bold">{item.content.title}</h2>
+          <StatusBadge isUnlocked={isUnlocked} progress={progress} />
+        </div>
+        {item.content.description && (
+          <p className="text-xs text-gray-400">{item.content.description}</p>
+        )}
+      </div>
+
+      {/* Progress */}
+      <div className="card mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs text-gray-400">Progress</span>
+          <span className="text-xs font-medium">
+            {item.signatures.length} / {item.content.threshold} signatures
+          </span>
+        </div>
+        <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all duration-700"
+            style={{
+              width: `${Math.min(progress * 100, 100)}%`,
+              background: isUnlocked
+                ? 'linear-gradient(90deg, #22c55e, #4ade80)'
+                : `linear-gradient(90deg, #6b7280, ${progress > 0.5 ? '#eab308' : '#9ca3af'})`,
+            }}
+          />
+        </div>
+        <p className="text-[10px] text-gray-600 mt-1">
+          {item.content.total_slots} total slots &bull; {item.content.content_type} content
+        </p>
+      </div>
+
+      {/* Signers list */}
+      {item.signatures.length > 0 && (
+        <div className="card mb-4">
+          <p className="text-xs text-gray-400 mb-2">Signers</p>
+          <div className="space-y-1.5">
+            {item.signatures.map((sig, i) => (
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center">
+                  <Check className="w-3 h-3 text-green-400" />
+                </div>
+                <code className="text-gray-300 font-mono text-[10px]">
+                  {sig.pubkey.slice(0, 8)}...{sig.pubkey.slice(-4)}
+                </code>
+                {sig.message && <span className="text-gray-500 truncate">&mdash; {sig.message}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Revealed content */}
+      {revealedContent && (
+        <div className="card mb-4 border-green-500/20 animate-[scale-in_0.3s_ease-out]">
+          <div className="flex items-center gap-2 mb-2">
+            <Unlock className="w-4 h-4 text-green-400" />
+            <span className="text-xs font-medium text-green-400">Content Revealed</span>
+          </div>
+          {item.content.content_type === 'image' ? (
+            <img src={revealedContent} alt="Revealed" className="w-full rounded-lg max-h-60 object-contain bg-black" />
+          ) : item.content.content_type === 'link' ? (
+            <a
+              href={revealedContent}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {revealedContent}
+            </a>
+          ) : (
+            <p className="text-sm text-gray-200 whitespace-pre-wrap">{revealedContent}</p>
+          )}
+        </div>
+      )}
+
+      {/* Share link */}
+      <div className="card mb-4">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Event ID</p>
+        <div className="flex items-center gap-2">
+          <code className="text-[10px] text-gray-300 truncate flex-1 font-mono">
+            {item.eventId}
+          </code>
+          <button onClick={copyEventId} className="p-1.5 hover:bg-surface-700 rounded-lg">
+            {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-gray-500" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="mt-auto space-y-2">
+        {canSign && (
+          <button
+            onClick={handleSign}
+            disabled={signing}
+            className="btn-primary w-full flex items-center justify-center gap-2"
+          >
+            {signing ? (
+              <span className="animate-pulse">Signing...</span>
+            ) : (
+              <>
+                <Lock className="w-4 h-4" />
+                Sign to Unlock
+              </>
+            )}
+          </button>
+        )}
+        {canReveal && (
+          <button
+            onClick={handleReveal}
+            disabled={revealing}
+            className="btn-primary w-full flex items-center justify-center gap-2"
+          >
+            {revealing ? (
+              <span className="animate-pulse">Publishing reveal...</span>
+            ) : (
+              <>
+                <Unlock className="w-4 h-4" />
+                Publish Reveal
+              </>
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Relay Fetching ─────────────────────────────────────────────
+
+async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Promise<UnlockItem[]> {
+  return new Promise((resolve) => {
+    const unlockMap = new Map<string, UnlockItem>();
+    const sigMap = new Map<string, { pubkey: string; message?: string }[]>();
+    const revealMap = new Map<string, { decryption_key: string; revealed_at: number }>();
+    let eoseCount = 0;
+    const connections: WebSocket[] = [];
+    let resolved = false;
+
+    function finalize() {
+      if (resolved) return;
+      resolved = true;
+
+      for (const ws of connections) {
+        try { ws.close(); } catch {}
+      }
+
+      // Merge signatures and reveals into unlock items
+      for (const [eventId, item] of unlockMap) {
+        item.signatures = sigMap.get(eventId) ?? [];
+        const reveal = revealMap.get(eventId);
+        if (reveal) item.revealed = reveal;
+      }
+
+      const items = Array.from(unlockMap.values()).sort((a, b) => b.createdAt - a.createdAt);
+      resolve(items);
+    }
+
+    const timeout = setTimeout(finalize, 15000);
+
+    for (const url of relayUrls.slice(0, 4)) {
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url);
+      } catch {
+        eoseCount++;
+        continue;
+      }
+      connections.push(ws);
+
+      const subId = `sunlock_${Math.random().toString(36).slice(2, 8)}`;
+
+      ws.onopen = () => {
+        // Fetch kind 9810 by this user OR tagged to this user, plus related 9811/9812
+        ws.send(JSON.stringify(['REQ', subId, {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK],
+          authors: [userPubkey],
+          limit: 50,
+        }]));
+
+        ws.send(JSON.stringify(['REQ', `${subId}_signs`, {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_SIGN],
+          '#p': [userPubkey],
+          limit: 200,
+        }]));
+
+        ws.send(JSON.stringify(['REQ', `${subId}_reveals`, {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL],
+          authors: [userPubkey],
+          limit: 50,
+        }]));
+
+        // Also fetch unlocks where we can sign (tagged #p to us)
+        ws.send(JSON.stringify(['REQ', `${subId}_tagged`, {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK],
+          '#t': ['social-unlock'],
+          limit: 100,
+        }]));
+      };
+
+      ws.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+          if (data[0] === 'EVENT') {
+            const event = data[2];
+
+            if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK) {
+              const content = parseSocialUnlockContent(event.content);
+              if (content && !unlockMap.has(event.id)) {
+                // Only show if we created it or we're in allowed_pubkeys (or open to all)
+                const isOwner = event.pubkey === userPubkey;
+                const isAllowed = !content.allowed_pubkeys || content.allowed_pubkeys.includes(userPubkey);
+                if (isOwner || isAllowed) {
+                  unlockMap.set(event.id, {
+                    eventId: event.id,
+                    pubkey: event.pubkey,
+                    content,
+                    signatures: [],
+                    createdAt: event.created_at,
+                  });
+                }
+              }
+            } else if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK_SIGN) {
+              const signContent = parseSocialUnlockSignContent(event.content);
+              if (signContent) {
+                const existing = sigMap.get(signContent.unlock_event_id) ?? [];
+                if (!existing.some((s) => s.pubkey === event.pubkey)) {
+                  existing.push({ pubkey: event.pubkey, message: signContent.message });
+                  sigMap.set(signContent.unlock_event_id, existing);
+                }
+              }
+            } else if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL) {
+              const revealContent = parseSocialUnlockRevealContent(event.content);
+              if (revealContent) {
+                revealMap.set(revealContent.unlock_event_id, {
+                  decryption_key: revealContent.decryption_key,
+                  revealed_at: revealContent.revealed_at,
+                });
+              }
+            }
+          } else if (data[0] === 'EOSE') {
+            eoseCount++;
+            if (eoseCount >= relayUrls.slice(0, 4).length * 4) {
+              clearTimeout(timeout);
+              finalize();
+            }
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        eoseCount += 4;
+        if (eoseCount >= relayUrls.slice(0, 4).length * 4) {
+          clearTimeout(timeout);
+          finalize();
+        }
+      };
+    }
+
+    if (relayUrls.length === 0) {
+      clearTimeout(timeout);
+      resolve([]);
+    }
+  });
+}

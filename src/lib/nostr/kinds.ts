@@ -91,6 +91,9 @@ export const CUSTOM_KIND = {
   SIGNING_REQUEST: 9800,
   SIGNING_RESPONSE: 9801,
   SIGNING_ROUND_CHAT: 9802,
+  SOCIAL_UNLOCK: 9810,
+  SOCIAL_UNLOCK_SIGN: 9811,
+  SOCIAL_UNLOCK_REVEAL: 9812,
 } as const;
 
 // ─── Onchain Invoice ────────────────────────────────────────────

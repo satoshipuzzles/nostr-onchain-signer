@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox } from 'lucide-react';
+import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
@@ -177,6 +177,22 @@ export function Home() {
           >
             <Shield className="w-3.5 h-3.5" />
             Create Multi-Sig
+          </button>
+          <button
+            onClick={() => navigate('/lightops')}
+            className="btn-secondary flex items-center justify-center gap-1.5 text-sm"
+          >
+            <Fingerprint className="w-3.5 h-3.5" />
+            Light OPs
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => navigate('/unlocks')}
+            className="btn-secondary flex items-center justify-center gap-1.5 text-sm"
+          >
+            <Unlock className="w-3.5 h-3.5" />
+            Social Unlocks
           </button>
           <button
             onClick={() => navigate('/discover')}

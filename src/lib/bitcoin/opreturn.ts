@@ -175,6 +175,78 @@ export function remainingOpReturnBytes(includeContentHash: boolean): number {
   return MAX_OP_RETURN - baseSize - contentHashSize;
 }
 
+// "LOPS" protocol identifier for Light OPs
+const LOPS_PROTOCOL_ID = new Uint8Array([0x4c, 0x4f, 0x50, 0x53]);
+
+export interface LightOpOutput {
+  script: Uint8Array;
+  scriptHex: string;
+  size: number;
+  eventId: string;
+  hash: string;
+}
+
+/**
+ * Encode a Nostr event ID into a Light OP OP_RETURN script.
+ * Creates proof-of-existence on Bitcoin for any Nostr event.
+ *
+ * Layout: [OP_RETURN(1)] [PUSH(1)] [LOPS(4)] [version(1)] [SHA256(event_id)(32)] = 39 bytes
+ */
+export function encodeLightOp(eventId: string): LightOpOutput {
+  const eventIdBytes = new TextEncoder().encode(eventId);
+  const hash = sha256(eventIdBytes);
+
+  const payload = concatBytes(
+    LOPS_PROTOCOL_ID,
+    new Uint8Array([PROTOCOL_VERSION]),
+    hash
+  );
+
+  const script = concatBytes(
+    new Uint8Array([0x6a]),
+    new Uint8Array([payload.length]),
+    payload
+  );
+
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    eventId,
+    hash: bytesToHex(hash),
+  };
+}
+
+/**
+ * Decode a Light OP OP_RETURN script.
+ * Returns the stored hash (cannot recover the original event ID).
+ */
+export function decodeLightOp(scriptHex: string): { hash: string } | null {
+  const script = hexToBytes(scriptHex);
+  if (script.length < 39) return null;
+  if (script[0] !== 0x6a) return null;
+
+  const payload = script.slice(2);
+  if (
+    payload[0] !== 0x4c || payload[1] !== 0x4f ||
+    payload[2] !== 0x50 || payload[3] !== 0x53
+  ) return null;
+
+  if (payload[4] !== PROTOCOL_VERSION) return null;
+
+  return { hash: bytesToHex(payload.slice(5, 37)) };
+}
+
+/**
+ * Verify that an event ID matches a Light OP hash.
+ */
+export function verifyLightOp(scriptHex: string, eventId: string): boolean {
+  const decoded = decodeLightOp(scriptHex);
+  if (!decoded) return false;
+  const computedHash = bytesToHex(sha256(new TextEncoder().encode(eventId)));
+  return decoded.hash === computedHash;
+}
+
 // "NINV" protocol identifier for invoice OP_RETURN
 const INVOICE_PROTOCOL_ID = new Uint8Array([0x4e, 0x49, 0x4e, 0x56]);
 

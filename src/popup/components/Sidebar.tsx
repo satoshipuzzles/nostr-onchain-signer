@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, BookOpen, Edit3, Download, Lock,
-  Rss, Trophy, MessageCircle,
+  Rss, Trophy, MessageCircle, Fingerprint, Unlock,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
@@ -16,6 +16,8 @@ const mainNav = [
   { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
   { to: '/signing', icon: Inbox, label: 'Signing' },
+  { to: '/lightops', icon: Fingerprint, label: 'Light OPs' },
+  { to: '/unlocks', icon: Unlock, label: 'Social Unlocks' },
   { to: '/discover', icon: Compass, label: 'Discover' },
 ];
 
