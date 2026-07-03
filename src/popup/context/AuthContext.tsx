@@ -154,7 +154,17 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
           setAccounts(accts);
           await chrome.storage.local.set({ cached_accounts: accts });
           const idx = await loadActiveAccountIndex();
-          setActiveAccountIndex(Math.min(idx, accts.length - 1));
+          const safeIdx = Math.min(idx, accts.length - 1);
+          setActiveAccountIndex(safeIdx);
+          // Sync publicKey to match active account index
+          if (accts[safeIdx] && accts[safeIdx].publicKeyHex !== initialPublicKey) {
+            setPublicKey(accts[safeIdx].publicKeyHex);
+            await chrome.runtime.sendMessage({
+              type: 'vault:switchAccount',
+              payload: { index: safeIdx },
+              id: createMessageId(),
+            });
+          }
           return;
         }
       }
@@ -273,6 +283,15 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     setMyProfile(cachedProfile ?? null);
     setFollowing(Array.isArray(cachedFollowing) ? new Set(cachedFollowing) : new Set());
 
+    // Rotate wallet sync key for new account
+    if (vaultPassword) {
+      const syncKey = bytesToHex(
+        sha256(new TextEncoder().encode(`wallet-sync-${vaultPassword}-${acct.publicKeyHex}`)),
+      );
+      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
+      restoreWalletsFromRelay(acct.publicKeyHex, syncKey).catch(() => {});
+    }
+
     // Then refresh from relays in the background
     loadProfileAndFollows(acct.publicKeyHex);
   }
@@ -296,7 +315,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       const { accounts: newAccounts, newIndex } = await addAccountToVault(pw);
       setAccounts(newAccounts);
       await chrome.storage.local.set({ cached_accounts: newAccounts });
-      handleSwitchAccount(newIndex);
+      await handleSwitchAccount(newIndex);
     } catch (err) {
       console.error('Failed to add account:', err);
     }

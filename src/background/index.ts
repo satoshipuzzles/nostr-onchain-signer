@@ -87,9 +87,13 @@ async function handleMessage(
       try {
         const keys = await decryptVault(vault, password);
         await setSession(keys);
-        // Restore previous active index
-        const idx = await getActiveIndex();
-        const activeKey = keys[Math.min(idx, keys.length - 1)];
+        // Restore active index from local storage (popup persists this)
+        const localStored = await chrome.storage.local.get('activeAccountIndex');
+        const idx = typeof localStored.activeAccountIndex === 'number'
+          ? Math.min(localStored.activeAccountIndex, keys.length - 1)
+          : 0;
+        await setActiveIndex(idx);
+        const activeKey = keys[idx];
         return {
           id,
           result: { publicKey: activeKey?.publicKeyHex },
@@ -131,6 +135,26 @@ async function handleMessage(
       };
 
       const signed = signEvent(unsigned, key.privateKeyHex);
+
+      // Log signed event for Signed Events page
+      try {
+        const stored = await chrome.storage.local.get('signed_events_log');
+        const log: Array<Record<string, unknown>> = stored.signed_events_log || [];
+        log.unshift({
+          id: signed.id,
+          kind: signed.kind,
+          content: signed.content,
+          created_at: signed.created_at,
+          pubkey: signed.pubkey,
+          sig: signed.sig,
+          tags: signed.tags,
+          origin: 'extension',
+        });
+        await chrome.storage.local.set({ signed_events_log: log.slice(0, 500) });
+      } catch (err) {
+        console.error('[Background] Failed to log signed event:', err);
+      }
+
       return { id, result: signed };
     }
 

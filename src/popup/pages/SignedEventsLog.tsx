@@ -161,7 +161,11 @@ export function SignedEventsLog() {
           {filtered.map(event => {
             const badge = getKindBadge(event.kind);
             return (
-              <div key={event.id} className="card">
+              <button
+                key={event.id}
+                onClick={() => navigate(`/settings/events/${event.id}`)}
+                className="card w-full text-left hover:border-bitcoin/30 transition-colors"
+              >
                 <div className="flex items-start gap-3">
                   <span className={`flex-shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium ${badge.color}`}>
                     {badge.label}
@@ -183,7 +187,7 @@ export function SignedEventsLog() {
                     {relativeTime(event.created_at)}
                   </span>
                 </div>
-              </div>
+              </button>
             );
           })}
           <p className="text-center text-[10px] text-gray-600 pt-2">

@@ -6,8 +6,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
+import { ClickableAvatar } from './ClickableAvatar';
 import { createMessageId } from '@/shared/messages';
-import { safeImageUrl } from '@/lib/utils';
 
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
@@ -41,9 +41,7 @@ export function Sidebar() {
     <div className="h-full w-60 bg-black border-r border-white/10 flex flex-col">
       {/* Logo + App name */}
       <div className="p-4 flex items-center gap-3 border-b border-white/10">
-        <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center flex-shrink-0">
-          <Shield className="w-5 h-5" />
-        </div>
+        <img src="/logo.svg" alt="Nostr Onchain" className="w-9 h-9 rounded-xl flex-shrink-0" />
         <div className="min-w-0">
           <p className="text-sm font-bold truncate">Nostr Onchain</p>
           <p className="text-[10px] text-gray-500">Signer</p>
@@ -53,15 +51,12 @@ export function Sidebar() {
       {/* User profile section */}
       <div className="px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-2.5">
-          {myProfile?.picture ? (
-            <img src={safeImageUrl(myProfile.picture)} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
-          ) : (
-            <div className="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center flex-shrink-0">
-              <span className="text-sm font-bold text-white/80">
-                {displayName.charAt(0).toUpperCase()}
-              </span>
-            </div>
-          )}
+          <ClickableAvatar
+            pubkey={publicKey}
+            picture={myProfile?.picture}
+            name={displayName}
+            size="md"
+          />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">{displayName}</p>
             <p className="text-[10px] text-gray-500 truncate">

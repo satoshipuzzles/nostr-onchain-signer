@@ -1,9 +1,43 @@
 /**
  * Mempool API integration for balance and transaction data.
- * Uses mempool.space public API.
+ * Uses mempool.space public API with CORS proxy fallback.
  */
 
+import { log } from '@/lib/utils/logger';
+
 const MEMPOOL_API = 'https://mempool.space/api';
+const CORS_PROXY = 'https://corsproxy.io/?';
+
+async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchMempool(path: string, ms = 10_000): Promise<Response> {
+  const url = `${MEMPOOL_API}${path}`;
+  try {
+    const res = await fetchWithTimeout(url, ms);
+    if (res.ok) return res;
+    log.warn('Mempool', `Direct fetch ${res.status} for ${path}, trying proxy`);
+    throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    try {
+      const proxyRes = await fetchWithTimeout(`${CORS_PROXY}${encodeURIComponent(url)}`, ms);
+      if (!proxyRes.ok) {
+        log.error('Mempool', `Proxy fetch failed ${proxyRes.status} for ${path}`);
+      }
+      return proxyRes;
+    } catch (proxyErr) {
+      log.error('Mempool', `All fetch attempts failed for ${path}`, err, proxyErr);
+      throw proxyErr;
+    }
+  }
+}
 
 export interface AddressInfo {
   address: string;
@@ -69,13 +103,15 @@ export async function fetchBalance(address: string): Promise<{
   confirmed: number;
   unconfirmed: number;
   total: number;
+  error?: string;
 }> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`${MEMPOOL_API}/address/${address}`, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return { confirmed: 0, unconfirmed: 0, total: 0 };
+    const res = await fetchMempool(`/address/${address}`);
+    if (!res.ok) {
+      const err = `HTTP ${res.status}`;
+      log.error('Mempool', `fetchBalance failed for ${address.slice(0, 12)}...: ${err}`);
+      return { confirmed: 0, unconfirmed: 0, total: 0, error: err };
+    }
     const data: AddressInfo = await res.json();
 
     const confirmed = data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum;
@@ -86,8 +122,10 @@ export async function fetchBalance(address: string): Promise<{
       unconfirmed,
       total: confirmed + unconfirmed,
     };
-  } catch {
-    return { confirmed: 0, unconfirmed: 0, total: 0 };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Network error';
+    log.error('Mempool', `fetchBalance error for ${address.slice(0, 12)}...:`, msg);
+    return { confirmed: 0, unconfirmed: 0, total: 0, error: msg };
   }
 }
 
@@ -96,11 +134,12 @@ export async function fetchBalance(address: string): Promise<{
  */
 export async function fetchTransactions(address: string, limit = 10): Promise<Transaction[]> {
   try {
-    const res = await fetch(`${MEMPOOL_API}/address/${address}/txs`);
+    const res = await fetchMempool(`/address/${address}/txs`);
     if (!res.ok) return [];
     const txs: Transaction[] = await res.json();
     return txs.slice(0, limit);
-  } catch {
+  } catch (err) {
+    log.error('Mempool', 'fetchTransactions error:', err);
     return [];
   }
 }
@@ -111,13 +150,11 @@ export async function fetchTransactions(address: string, limit = 10): Promise<Tr
  */
 export async function fetchAddressTransactions(address: string): Promise<Transaction[]> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(`${MEMPOOL_API}/address/${address}/txs`, { signal: controller.signal });
-    clearTimeout(timeout);
+    const res = await fetchMempool(`/address/${address}/txs`, 15_000);
     if (!res.ok) return [];
     return await res.json();
-  } catch {
+  } catch (err) {
+    log.error('Mempool', 'fetchAddressTransactions error:', err);
     return [];
   }
 }

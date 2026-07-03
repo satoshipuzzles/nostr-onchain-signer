@@ -31,6 +31,7 @@ export function Settings() {
   const [riskAcknowledged, setRiskAcknowledged] = useState(false);
   const [revealedNsec, setRevealedNsec] = useState('');
   const [nsecCopied, setNsecCopied] = useState(false);
+  const [revealError, setRevealError] = useState('');
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -57,19 +58,37 @@ export function Settings() {
   }
 
   async function handleRevealNsec() {
-    if (!vaultPassword) return;
+    setRevealError('');
+    let pw = vaultPassword;
+    if (!pw) {
+      const entered = prompt('Enter your vault password to reveal your secret key');
+      if (!entered) {
+        setRevealError('Password required to reveal secret key');
+        return;
+      }
+      try {
+        const vault = await loadVault();
+        if (!vault) { setRevealError('No vault found'); return; }
+        await decryptVault(vault, entered);
+        pw = entered;
+      } catch {
+        setRevealError('Incorrect password');
+        return;
+      }
+    }
     try {
       const vault = await loadVault();
-      if (!vault) return;
-      const vaultData = await decryptVault(vault, vaultPassword);
+      if (!vault) { setRevealError('No vault found'); return; }
+      const vaultData = await decryptVault(vault, pw);
       const activeKey = vaultData[activeAccountIndex];
-      if (!activeKey) return;
+      if (!activeKey) { setRevealError('No key found for active account'); return; }
       const nsec = privkeyToNsec(activeKey.privateKeyHex);
       setRevealedNsec(nsec);
       setRevealState('revealed');
       autoHideTimer.current = setTimeout(hideNsec, 30_000);
-    } catch {
-      setRevealState('idle');
+    } catch (err) {
+      console.error('[Settings] Reveal nsec failed:', err);
+      setRevealError('Failed to decrypt vault. Try locking and unlocking again.');
     }
   }
 
@@ -333,10 +352,13 @@ export function Settings() {
                 type="checkbox"
                 checked={riskAcknowledged}
                 onChange={(e) => setRiskAcknowledged(e.target.checked)}
-                className="rounded border-red-500/50 bg-surface-700 text-red-500 focus:ring-red-500/30"
+                className="w-4 h-4 rounded accent-red-500 border-red-500/50 bg-surface-700"
               />
               <span className="text-xs text-gray-300">I understand the risks</span>
             </label>
+            {revealError && (
+              <p className="text-xs text-red-400 mb-2">{revealError}</p>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={handleRevealNsec}

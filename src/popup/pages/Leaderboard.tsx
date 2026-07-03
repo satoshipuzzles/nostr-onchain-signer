@@ -9,6 +9,7 @@ import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { useAuth } from '../context/AuthContext';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { log } from '@/lib/utils/logger';
 
 interface LeaderboardEntry {
   pubkey: string;
@@ -21,6 +22,8 @@ interface LeaderboardEntry {
 const CACHE_KEY = 'leaderboard_cache';
 const CACHE_KEY_GLOBAL = 'leaderboard_cache_global';
 const CACHE_TTL = 5 * 60_000; // 5 minutes
+const MAX_PUBKEYS_TO_CHECK = 80;
+const BALANCE_CONCURRENCY = 5;
 
 type ViewTab = 'following' | 'global';
 
@@ -34,7 +37,8 @@ export function Leaderboard() {
   const navigate = useNavigate();
   const { publicKey, following } = useAuth();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [processing, setProcessing] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
@@ -58,10 +62,17 @@ export function Leaderboard() {
   }
 
   async function loadFromFollowing(signal: AbortSignal) {
-    setLoading(true);
     setError('');
-    setEntries([]);
-    setProcessing('Loading from your following list...');
+    setSyncing(true);
+
+    // Show cache immediately
+    const cached = getCachedLeaderboard(CACHE_KEY);
+    if (cached && cached.length > 0) {
+      setEntries(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
 
     try {
       let followingPubkeys: string[] = [];
@@ -79,65 +90,60 @@ export function Leaderboard() {
         throw new Error('No following list found. Follow some users first, or switch to Global.');
       }
 
-      const cached = getCachedLeaderboard(CACHE_KEY);
-      if (cached) {
-        setEntries(cached);
-        setLoading(false);
-        setProcessing('');
-        return;
-      }
-
-      await batchCheckBalances(followingPubkeys, signal, CACHE_KEY);
+      setProcessing('Checking balances...');
+      await batchCheckBalances(followingPubkeys.slice(0, MAX_PUBKEYS_TO_CHECK), signal, CACHE_KEY);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
+        log.error('Leaderboard', 'Following load failed:', err.message);
         setError(err.message || 'Failed to load from following list');
       }
     } finally {
-      if (!signal.aborted) {
-        setLoading(false);
-        setProcessing('');
-      }
+      setLoading(false);
+      setSyncing(false);
+      setProcessing('');
     }
   }
 
   async function loadGlobal(signal: AbortSignal) {
-    setLoading(true);
     setError('');
-    setEntries([]);
 
+    // Always show stale cache first for instant UX
     const cached = getCachedLeaderboard(CACHE_KEY_GLOBAL);
-    if (cached) {
+    if (cached && cached.length > 0) {
       setEntries(cached);
       setLoading(false);
-      return;
+      log.info('Leaderboard', 'Showing cached global data:', cached.length, 'entries');
+    } else {
+      setLoading(true);
     }
-
-    setProcessing('Discovering users from relays...');
+    setSyncing(true);
 
     try {
-      // Gather pubkeys from following list + relay discovery in parallel
       let followingPubkeys: string[] = [];
       if (following instanceof Set && following.size > 0) {
         followingPubkeys = Array.from(following);
       }
 
+      setProcessing('Discovering users from relays...');
       const discoveredPubkeys = await discoverUsers(signal);
       if (signal.aborted) return;
 
       const allPubkeys = new Set([...followingPubkeys, ...discoveredPubkeys]);
       allPubkeys.delete(publicKey);
+      const toCheck = Array.from(allPubkeys).slice(0, MAX_PUBKEYS_TO_CHECK);
 
-      setProcessing(`Found ${allPubkeys.size} users. Checking balances...`);
-      await batchCheckBalances(Array.from(allPubkeys), signal, CACHE_KEY_GLOBAL);
+      setProcessing(`Checking ${toCheck.length} users...`);
+      log.info('Leaderboard', `Checking balances for ${toCheck.length} of ${allPubkeys.size} users`);
+      await batchCheckBalances(toCheck, signal, CACHE_KEY_GLOBAL);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
+        log.error('Leaderboard', 'Global load failed:', err.message);
         setError(err.message || 'Failed to load global leaderboard');
       }
     } finally {
-      if (!signal.aborted) {
-        setLoading(false);
-        setProcessing('');
-      }
+      setLoading(false);
+      setSyncing(false);
+      setProcessing('');
     }
   }
 
@@ -146,21 +152,26 @@ export function Leaderboard() {
     signal: AbortSignal,
     cacheKey: string,
   ) {
-    const results: LeaderboardEntry[] = [];
-    const batchSize = 10;
-    const total = pubkeys.length;
+    const results: LeaderboardEntry[] = [...entries];
+    const seen = new Set(results.map((e) => e.pubkey));
+    let checked = 0;
 
-    for (let i = 0; i < total; i += batchSize) {
+    // Process with limited concurrency
+    for (let i = 0; i < pubkeys.length; i += BALANCE_CONCURRENCY) {
       if (signal.aborted) return;
 
-      const batch = pubkeys.slice(i, i + batchSize);
-      setProcessing(`Checking ${i + 1}–${Math.min(i + batchSize, total)} of ${total} users...`);
+      const batch = pubkeys.slice(i, i + BALANCE_CONCURRENCY);
+      setProcessing(`Checking ${checked + 1}–${Math.min(checked + batch.length, pubkeys.length)} of ${pubkeys.length}...`);
 
       await Promise.allSettled(
         batch.map(async (pubkey) => {
           if (signal.aborted) return;
           const taprootAddress = pubkeyToTaprootAddress(pubkey);
           const bal = await fetchBalance(taprootAddress);
+          checked++;
+          if (bal.error) {
+            log.warn('Leaderboard', `Balance error for ${pubkey.slice(0, 8)}:`, bal.error);
+          }
           if (bal.total === 0) return;
 
           const profile = await getCachedProfile(pubkey);
@@ -172,7 +183,8 @@ export function Leaderboard() {
             balance: bal.total,
           };
 
-          if (!signal.aborted) {
+          if (!signal.aborted && !seen.has(pubkey)) {
+            seen.add(pubkey);
             results.push(entry);
             const sorted = [...results].sort((a, b) => b.balance - a.balance);
             setEntries(sorted);
@@ -185,6 +197,7 @@ export function Leaderboard() {
       const finalSorted = results.sort((a, b) => b.balance - a.balance);
       setEntries(finalSorted);
       cacheLeaderboard(cacheKey, finalSorted);
+      log.info('Leaderboard', 'Cached', finalSorted.length, 'entries');
     }
   }
 
@@ -248,20 +261,27 @@ export function Leaderboard() {
         </div>
         <button
           onClick={() => loadTab(activeTab)}
-          disabled={loading}
+          disabled={syncing}
           className="p-2 rounded-lg hover:bg-surface-700 text-gray-400 hover:text-white transition-colors"
           title="Refresh"
         >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
+      {/* Status bar */}
+      {(processing || syncing) && (
+        <div className="rounded-xl bg-nostr/10 border border-nostr/20 px-3 py-2 mb-3 flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin text-nostr flex-shrink-0" />
+          <p className="text-xs text-nostr">{processing || 'Syncing...'}</p>
+        </div>
+      )}
+
       {/* Live counter */}
-      {(nonZeroCount > 0 || loading) && (
+      {nonZeroCount > 0 && (
         <div className="rounded-xl bg-bitcoin/10 border border-bitcoin/20 px-3 py-2 mb-3 flex items-center gap-2">
-          {loading && <Loader2 className="w-3 h-3 animate-spin text-bitcoin flex-shrink-0" />}
           <p className="text-xs font-medium text-bitcoin">
-            Found {nonZeroCount} user{nonZeroCount !== 1 ? 's' : ''} with Bitcoin
+            {nonZeroCount} user{nonZeroCount !== 1 ? 's' : ''} with Bitcoin
           </p>
         </div>
       )}
@@ -408,12 +428,12 @@ function npubToHex(npub: string): string | null {
   }
 }
 
-function getCachedLeaderboard(key: string): LeaderboardEntry[] | null {
+function getCachedLeaderboard(key: string, allowStale = true): LeaderboardEntry[] | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (Date.now() - parsed.timestamp > CACHE_TTL) return null;
+    if (!allowStale && Date.now() - parsed.timestamp > CACHE_TTL) return null;
     return parsed.data;
   } catch {
     return null;

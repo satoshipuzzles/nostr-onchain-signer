@@ -7,6 +7,10 @@
     "storage",
     "activeTab"
   ],
+  "host_permissions": [
+    "https://mempool.space/*",
+    "https://corsproxy.io/*"
+  ],
   "background": {
     "service_worker": "src/background/index.ts",
     "type": "module"

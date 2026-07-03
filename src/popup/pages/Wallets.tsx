@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Wallet, Shield, Loader2, ExternalLink,
@@ -8,9 +8,11 @@ import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import {
-  loadMultisigWallets, loadMyMultisigWallets, updateMultisigBalance,
+  loadMyMultisigWallets, updateMultisigBalance,
   type ArchivedMultisig,
 } from '@/lib/bitcoin/wallet-store';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { log } from '@/lib/utils/logger';
 
 export function Wallets() {
   const navigate = useNavigate();
@@ -18,8 +20,10 @@ export function Wallets() {
   const [balance, setBalance] = useState<number | null>(null);
   const [wallets, setWallets] = useState<ArchivedMultisig[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
+  const fetchGenRef = useRef(0);
 
   const address = pubkeyToTaprootAddress(publicKey);
 
@@ -28,38 +32,60 @@ export function Wallets() {
   }, [publicKey]);
 
   async function loadData() {
+    const gen = ++fetchGenRef.current;
     setLoading(true);
+
     try {
-      const [bal, multisigs] = await Promise.allSettled([
-        fetchBalance(address),
-        loadMyMultisigWallets(publicKey),
-      ]);
-      if (bal.status === 'fulfilled') setBalance(bal.value.total);
-      if (multisigs.status === 'fulfilled') {
-        console.log('[Wallets] Found', multisigs.value.length, 'wallets for', publicKey.slice(0, 8));
-        setWallets(multisigs.value.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
-      } else {
-        console.error('[Wallets] Failed to load:', multisigs.reason);
-      }
-    } catch {} finally {
+      // Instant: load wallets from local storage first
+      const multisigs = await loadMyMultisigWallets(publicKey);
+      setWallets(multisigs.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
+      log.info('Wallets', 'Loaded', multisigs.length, 'wallets from storage');
+    } catch (err) {
+      log.error('Wallets', 'Storage load failed:', err);
+    } finally {
       setLoading(false);
     }
 
-    refreshMultisigBalances();
+    // Background: fetch live balances without blocking UI
+    if (gen === fetchGenRef.current) {
+      refreshBalancesInBackground(gen);
+    }
   }
 
-  async function refreshMultisigBalances() {
-    const all = await loadMyMultisigWallets(publicKey);
-    for (const wallet of all) {
-      try {
-        const bal = await fetchBalance(wallet.wallet.address);
-        if (bal.total !== wallet.currentBalance) {
-          await updateMultisigBalance(wallet.id, bal.total);
-          setWallets((prev) =>
-            prev.map((w) => w.id === wallet.id ? { ...w, currentBalance: bal.total } : w)
-          );
-        }
-      } catch {}
+  async function refreshBalancesInBackground(gen: number) {
+    setSyncing(true);
+    try {
+      const bal = await fetchBalance(address);
+      if (gen !== fetchGenRef.current) return;
+      if (bal.error) {
+        log.warn('Wallets', 'Personal balance fetch failed:', bal.error);
+      } else {
+        setBalance(bal.total);
+      }
+
+      const all = await loadMyMultisigWallets(publicKey);
+      const concurrency = 3;
+      for (let i = 0; i < all.length; i += concurrency) {
+        if (gen !== fetchGenRef.current) return;
+        const batch = all.slice(i, i + concurrency);
+        await Promise.allSettled(
+          batch.map(async (wallet) => {
+            try {
+              const wbal = await fetchBalance(wallet.wallet.address);
+              if (wbal.total !== wallet.currentBalance) {
+                await updateMultisigBalance(wallet.id, wbal.total);
+                setWallets((prev) =>
+                  prev.map((w) => w.id === wallet.id ? { ...w, currentBalance: wbal.total } : w)
+                );
+              }
+            } catch (err) {
+              log.warn('Wallets', `Balance refresh failed for ${wallet.name}:`, err);
+            }
+          })
+        );
+      }
+    } finally {
+      if (gen === fetchGenRef.current) setSyncing(false);
     }
   }
 
@@ -77,9 +103,13 @@ export function Wallets() {
 
   return (
     <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
-      {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <h1 className="text-lg font-bold flex-1">Wallets</h1>
+        {syncing && (
+          <span className="text-[10px] text-nostr flex items-center gap-1">
+            <Loader2 className="w-3 h-3 animate-spin" /> syncing
+          </span>
+        )}
         <button
           onClick={handleRefresh}
           disabled={refreshing}
@@ -97,13 +127,12 @@ export function Wallets() {
         </button>
       </div>
 
-      {loading ? (
+      {loading && wallets.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <Loader2 className="w-6 h-6 animate-spin text-bitcoin" />
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3">
-          {/* Personal Taproot wallet */}
           <button
             onClick={() => navigate('/wallets/personal')}
             className="card w-full text-left hover:border-bitcoin/30 transition-colors"
@@ -131,7 +160,6 @@ export function Wallets() {
             </div>
           </button>
 
-          {/* Multi-sig wallets */}
           {wallets.length > 0 && (
             <div className="pt-2">
               <p className="text-[10px] text-gray-500 uppercase tracking-wider px-1 mb-2">
@@ -145,23 +173,16 @@ export function Wallets() {
                     className="card w-full text-left hover:border-bitcoin/30 transition-colors"
                   >
                     <div className="flex items-center gap-3">
-                      {/* Key holder avatars */}
-                      <div className="flex -space-x-2 flex-shrink-0">
+                      <div className="flex -space-x-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                         {wallet.keyHolders.slice(0, 3).map((holder, i) => (
                           <div key={holder.pubkey} className="relative" style={{ zIndex: 3 - i }}>
-                            {holder.profile?.picture ? (
-                              <img
-                                src={holder.profile.picture}
-                                alt=""
-                                className="w-8 h-8 rounded-full object-cover border-2 border-surface-800 bg-surface-700"
-                              />
-                            ) : (
-                              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 border-2 border-surface-800 flex items-center justify-center">
-                                <span className="text-[10px] font-bold text-white/70">
-                                  {(holder.profile?.displayName || holder.profile?.name || '?').charAt(0)}
-                                </span>
-                              </div>
-                            )}
+                            <ClickableAvatar
+                              pubkey={holder.pubkey}
+                              picture={holder.profile?.picture}
+                              name={holder.profile?.displayName || holder.profile?.name}
+                              size="md"
+                              border="border-2 border-surface-800"
+                            />
                           </div>
                         ))}
                         {wallet.keyHolders.length > 3 && (
@@ -198,7 +219,6 @@ export function Wallets() {
             </div>
           )}
 
-          {/* Empty state for multisig */}
           {wallets.length === 0 && (
             <div className="flex flex-col items-center justify-center py-8">
               <Shield className="w-10 h-10 text-gray-700 mb-3" />

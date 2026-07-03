@@ -22,6 +22,7 @@ import { EditProfileWrapper } from './pages/EditProfileWrapper';
 import { Settings } from './pages/Settings';
 import { ConnectedApps } from './pages/ConnectedApps';
 import { SignedEventsLog } from './pages/SignedEventsLog';
+import { SignedEventDetail } from './pages/SignedEventDetail';
 import { InvoicePage } from './pages/InvoicePage';
 import { SignPage } from './pages/SignPage';
 import { SocialUnlocks } from './pages/SocialUnlocks';
@@ -151,6 +152,7 @@ export function App() {
           <Route path="settings/profile" element={<EditProfileWrapper />} />
           <Route path="settings/apps" element={<ConnectedApps />} />
           <Route path="settings/events" element={<SignedEventsLog />} />
+          <Route path="settings/events/:eventId" element={<SignedEventDetail />} />
           <Route path="unlocks" element={<SocialUnlocks />} />
           <Route path="invoice/:eventId" element={<InvoicePage />} />
         </Route>
