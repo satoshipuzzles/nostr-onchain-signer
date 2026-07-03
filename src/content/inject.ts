@@ -5,7 +5,8 @@
  * The content script acts as a bridge between the page context
  * (where window.nostr lives) and the extension background.
  *
- * We skip injection on our own PWA so Alby/nos2x remain reachable there.
+ * On our own PWA we inject a lightweight Bitcoin bridge that augments
+ * third-party NIP-07 signers with signSchnorr without replacing them.
  */
 
 const OWN_APP_HOSTS = [
@@ -23,17 +24,20 @@ function isOwnAppPage(): boolean {
   }
 }
 
-// Inject the provider script into the page
-function injectProvider() {
+// Inject provider scripts into the page
+function injectScript(filename: string) {
   const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('nostr-provider.js');
+  script.src = chrome.runtime.getURL(filename);
   script.type = 'text/javascript';
   (document.head || document.documentElement).appendChild(script);
   script.onload = () => script.remove();
 }
 
-if (!isOwnAppPage()) {
-  injectProvider();
+if (isOwnAppPage()) {
+  // Augment (not replace) third-party NIP-07 signers with Bitcoin signing
+  injectScript('nostr-provider-bitcoin.js');
+} else {
+  injectScript('nostr-provider.js');
 }
 
 // Bridge messages from page to background

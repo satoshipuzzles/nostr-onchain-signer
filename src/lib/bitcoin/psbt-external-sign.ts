@@ -60,14 +60,15 @@ export function detectBitcoinSigners(): BitcoinSignerInfo {
   const w = window as NostrWindow;
   const hasWebbtc = typeof w.webbtc?.signPsbt === 'function';
   const hasSchnorr = typeof w.nostr?.signSchnorr === 'function';
-  // Our injected window.bitcoin only works on third-party sites with unlocked vault — not on PWA
-  const hasBitcoinApi = typeof w.bitcoin?.signPsbt === 'function' && !isPwaMode();
+  const hasBitcoinApi = typeof w.bitcoin?.signPsbt === 'function';
   let label = 'None detected';
   if (hasWebbtc) label = 'Alby (WebBTC)';
+  else if (hasSchnorr && isPwaMode()) label = 'NIP-07 signSchnorr';
   else if (hasSchnorr) label = 'NIP-07 signSchnorr (Alby, etc.)';
+  else if (hasBitcoinApi && isPwaMode()) label = 'Nostr Onchain extension';
   else if (hasBitcoinApi) label = 'Nostr Onchain extension';
   else if (isPwaMode() && typeof w.nostr?.getPublicKey === 'function') {
-    label = 'NIP-07 connected (Nostr only — install Alby for Bitcoin)';
+    label = 'NIP-07 connected (Nostr only — install Alby or unlock our extension)';
   }
   return { webbtc: hasWebbtc, signSchnorr: hasSchnorr, bitcoinApi: hasBitcoinApi, label };
 }

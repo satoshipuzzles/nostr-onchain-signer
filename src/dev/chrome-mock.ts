@@ -188,6 +188,43 @@ const mockChrome = {
         case 'nip07:getRelays':
           return { id, result: {} };
 
+        case 'nip07:signSchnorr': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { hash } = (payload || {}) as { hash: string };
+          if (!hash) return { id, error: 'Missing hash' };
+
+          const hasValidKey =
+            typeof key.privateKeyHex === 'string' &&
+            key.privateKeyHex.length === 64 &&
+            /^[0-9a-f]+$/i.test(key.privateKeyHex);
+
+          if (hasValidKey) {
+            try {
+              const { schnorrSign } = await import('@/lib/bitcoin/psbt');
+              const { hexToBytes, bytesToHex } = await import('@noble/hashes/utils');
+              const sig = schnorrSign(hexToBytes(hash.replace(/^0x/, '')), key.privateKeyHex);
+              return { id, result: bytesToHex(sig) };
+            } catch (err: any) {
+              return { id, error: err?.message || 'Schnorr sign failed' };
+            }
+          }
+
+          // External NIP-07 signer (Alby, etc.)
+          const w = window as { nostr?: { signSchnorr?: (h: string) => Promise<string> } };
+          if (typeof w.nostr?.signSchnorr === 'function') {
+            try {
+              const sig = await w.nostr.signSchnorr(hash);
+              return { id, result: sig };
+            } catch (err: any) {
+              return { id, error: `NIP-07 signSchnorr failed: ${err?.message || err}` };
+            }
+          }
+          return { id, error: 'No private key and no NIP-07 signSchnorr available' };
+        }
+
         case 'btc:getAddress': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };

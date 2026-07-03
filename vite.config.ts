@@ -19,6 +19,11 @@ function copyExtensionFiles() {
         resolve(dist, 'nostr-provider.js')
       );
 
+      copyFileSync(
+        resolve(__dirname, 'src/content/nostr-provider-bitcoin.js'),
+        resolve(dist, 'nostr-provider-bitcoin.js')
+      );
+
       const iconsDir = resolve(dist, 'icons');
       if (!existsSync(iconsDir)) mkdirSync(iconsDir, { recursive: true });
       const srcIcons = resolve(__dirname, 'public/icons');

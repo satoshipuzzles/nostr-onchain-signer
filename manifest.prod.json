@@ -34,7 +34,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["nostr-provider.js"],
+      "resources": ["nostr-provider.js", "nostr-provider-bitcoin.js"],
       "matches": ["<all_urls>"]
     }
   ]

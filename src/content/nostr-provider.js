@@ -61,6 +61,10 @@
       return sendRequest('nip07:signEvent', { event });
     },
 
+    async signSchnorr(hash) {
+      return sendRequest('nip07:signSchnorr', { hash });
+    },
+
     async getRelays() {
       return sendRequest('nip07:getRelays');
     },

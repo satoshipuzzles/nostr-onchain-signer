@@ -9,6 +9,8 @@
 import { decryptVault, loadVault, VaultData } from '@/lib/crypto/vault';
 import { signEvent, computeEventId, type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
 import { keyPairFromPrivateKey } from '@/lib/nostr/keys';
+import { schnorrSign } from '@/lib/bitcoin/psbt';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import type { ExtensionMessage, ExtensionResponse } from '@/shared/messages';
 
 const SESSION_KEY = 'unlocked_session';
@@ -49,6 +51,14 @@ async function getActiveKey(): Promise<VaultData | null> {
   if (!session || session.length === 0) return null;
   const idx = await getActiveIndex();
   return session[Math.min(idx, session.length - 1)];
+}
+
+function hasVaultPrivateKey(key: VaultData): boolean {
+  return (
+    typeof key.privateKeyHex === 'string' &&
+    key.privateKeyHex.length === 64 &&
+    /^[0-9a-f]+$/i.test(key.privateKeyHex)
+  );
 }
 
 chrome.runtime.onMessage.addListener(
@@ -127,6 +137,9 @@ async function handleMessage(
     case 'nip07:signEvent': {
       const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
+      if (!hasVaultPrivateKey(key)) {
+        return { id, error: 'External signer account — no key in extension vault' };
+      }
 
       const { event } = payload as { event: Omit<UnsignedEvent, 'pubkey'> };
       const unsigned: UnsignedEvent = {
@@ -156,6 +169,31 @@ async function handleMessage(
       }
 
       return { id, result: signed };
+    }
+
+    case 'nip07:signSchnorr': {
+      const key = await getActiveKey();
+      if (!key) return { id, error: 'Vault is locked — open the extension and unlock first' };
+      if (!hasVaultPrivateKey(key)) {
+        return {
+          id,
+          error: 'No private key in extension vault. Import nsec or unlock with a full-key account.',
+        };
+      }
+
+      const { hash } = payload as { hash: string };
+      if (!hash || typeof hash !== 'string') {
+        return { id, error: 'Missing hash to sign' };
+      }
+
+      try {
+        const hashBytes = hexToBytes(hash.replace(/^0x/, ''));
+        const sig = schnorrSign(hashBytes, key.privateKeyHex);
+        return { id, result: bytesToHex(sig) };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to sign Schnorr';
+        return { id, error: msg };
+      }
     }
 
     case 'nip07:getRelays': {
@@ -193,10 +231,7 @@ async function handleMessage(
       if (!key) return { id, error: 'Vault is locked' };
       const { psbtHex } = payload as { psbtHex: string };
       if (!psbtHex) return { id, error: 'Missing psbtHex' };
-      const hasValidKey =
-        typeof key.privateKeyHex === 'string' &&
-        key.privateKeyHex.length === 64 &&
-        /^[0-9a-f]+$/i.test(key.privateKeyHex);
+      const hasValidKey = hasVaultPrivateKey(key);
       if (!hasValidKey) {
         return {
           id,

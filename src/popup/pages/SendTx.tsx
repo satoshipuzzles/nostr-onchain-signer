@@ -46,7 +46,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   const address = pubkeyToTaprootAddress(publicKey);
 
   async function signAndBroadcast(psbtHex: string): Promise<{ txid: string; via: 'node' | 'esplora' }> {
-    // Try browser extension signers first (Alby WebBTC, signSchnorr) — works in PWA tab
+    // NIP-07 / extension signers (signSchnorr, WebBTC, window.bitcoin) — works in PWA
     if (!canSignOnchain) {
       await promptExtensionAccess();
       const external = await tryExternalPsbtSign(psbtHex, publicKey);
@@ -61,10 +61,23 @@ export function SendTx({ publicKey, onBack }: Props) {
       }
       const info = detectBitcoinSigners();
       throw new Error(
-        info.webbtc || info.signSchnorr
-          ? 'Extension signing was cancelled or failed. Approve the PSBT in your extension popup.'
-          : 'No Bitcoin signer found. Install Alby, or import nsec into vault once.'
+        info.webbtc || info.signSchnorr || info.bitcoinApi
+          ? 'NIP-07 signing failed. Unlock the Nostr Onchain extension, or approve in Alby.'
+          : 'No Bitcoin signer found. Install Alby, unlock our extension, or import nsec.'
       );
+    }
+
+    // Vault key: try NIP-07 signSchnorr first (extension popup), then local vault
+    await promptExtensionAccess();
+    const nip07 = await tryExternalPsbtSign(psbtHex, publicKey);
+    if (nip07) {
+      setSignSource(nip07.source);
+      const nodeCfg = await loadBitcoinNodeConfig();
+      const txid = await broadcastTransaction(nip07.txHex);
+      return {
+        txid,
+        via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
+      };
     }
 
     const signResponse = await chrome.runtime.sendMessage({
@@ -428,8 +441,8 @@ export function SendTx({ publicKey, onBack }: Props) {
           </p>
           <p className="text-[10px] text-gray-500 mt-1">
             {signerInfo === 'None detected'
-              ? 'Install Alby for Bitcoin signing without pasting nsec, or import nsec once in Settings.'
-              : 'Send will open your extension to approve the PSBT. Switch accounts in your extension before sending.'}
+              ? 'Install Alby, unlock the Nostr Onchain extension, or import nsec once.'
+              : 'Send uses NIP-07 signSchnorr — your extension will prompt to approve. Unlock our extension if using it as signer.'}
           </p>
         </div>
       )}

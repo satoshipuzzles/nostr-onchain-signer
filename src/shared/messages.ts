@@ -7,6 +7,7 @@ export type MessageType =
   // NIP-07 messages
   | 'nip07:getPublicKey'
   | 'nip07:signEvent'
+  | 'nip07:signSchnorr'
   | 'nip07:getRelays'
   | 'nip07:nip04:encrypt'
   | 'nip07:nip04:decrypt'
