@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText } from 'lucide-react';
+import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
 import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
 import { loadVault, decryptVault } from '@/lib/crypto/vault';
 import { privkeyToNsec } from '@/lib/nostr/keys';
+import { loadMultisigWallets, walletToSyncConfig, syncConfigToWallet, saveMultisigWallet } from '@/lib/bitcoin/wallet-store';
+import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
 
 export function Settings() {
   const navigate = useNavigate();
@@ -108,6 +110,48 @@ export function Settings() {
   async function handleLock() {
     await chrome.runtime.sendMessage({ type: 'vault:lock', id: createMessageId() });
     window.location.reload();
+  }
+
+  async function handleExportWallets() {
+    const wallets = await loadMultisigWallets();
+    if (wallets.length === 0) {
+      alert('No wallets to export');
+      return;
+    }
+    const configs = wallets.map(walletToSyncConfig);
+    const json = JSON.stringify(configs, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nostr-onchain-wallets-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImportWallets(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const configs: SyncableWalletConfig[] = JSON.parse(text);
+      if (!Array.isArray(configs) || configs.length === 0) {
+        alert('No valid wallet configs found in file');
+        return;
+      }
+      let imported = 0;
+      for (const config of configs) {
+        const wallet = syncConfigToWallet(config, publicKey);
+        await saveMultisigWallet(wallet);
+        imported++;
+      }
+      alert(`Imported ${imported} wallet(s)`);
+    } catch {
+      alert('Invalid wallet backup file');
+    }
+    e.target.value = '';
   }
 
   return (
@@ -357,6 +401,31 @@ export function Settings() {
             <p className="text-xs text-gray-500">Download all keys as encrypted file</p>
           </div>
         </button>
+
+        <button
+          onClick={handleExportWallets}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+        >
+          <Download className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Export Wallets</p>
+            <p className="text-xs text-gray-500">Download multi-sig wallet configs as JSON</p>
+          </div>
+        </button>
+
+        <label className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors cursor-pointer">
+          <Upload className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Import Wallets</p>
+            <p className="text-xs text-gray-500">Restore wallets from a backup file</p>
+          </div>
+          <input
+            type="file"
+            accept=".json"
+            onChange={handleImportWallets}
+            className="hidden"
+          />
+        </label>
 
         <button
           onClick={handleLock}

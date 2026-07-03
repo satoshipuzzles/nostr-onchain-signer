@@ -4,8 +4,9 @@
  * key holder information, and signing history.
  */
 
-import { type MultisigWallet, type MultisigConfig } from './multisig';
+import { type MultisigWallet, type MultisigConfig, createMultisigFromPubkeys } from './multisig';
 import { type ProfileMetadata } from '@/lib/nostr/social';
+import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
 
 export interface KeyHolder {
   pubkey: string;
@@ -59,6 +60,7 @@ export async function saveMultisigWallet(wallet: ArchivedMultisig): Promise<void
     existing.push(wallet);
   }
   await chrome.storage.local.set({ [STORAGE_KEY_WALLETS]: existing });
+  syncWalletsToRelay().catch(() => {});
 }
 
 export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
@@ -111,6 +113,7 @@ export async function deleteMultisigWallet(id: string): Promise<void> {
   await chrome.storage.local.set({
     [STORAGE_KEY_WALLETS]: wallets.filter((w) => w.id !== id),
   });
+  syncWalletsToRelay().catch(() => {});
 }
 
 export async function updateMultisigBalance(id: string, balance: number): Promise<void> {
@@ -203,4 +206,52 @@ function generateId(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ─── Relay Sync ─────────────────────────────────────────────────
+
+export function walletToSyncConfig(wallet: ArchivedMultisig): SyncableWalletConfig {
+  return {
+    id: wallet.id,
+    name: wallet.name,
+    description: wallet.description,
+    threshold: wallet.wallet.config.threshold,
+    pubkeys: wallet.wallet.config.pubkeys,
+    createdAt: wallet.createdAt,
+  };
+}
+
+export function syncConfigToWallet(
+  config: SyncableWalletConfig,
+  ownerPubkey: string,
+): ArchivedMultisig {
+  const wallet = createMultisigFromPubkeys(config.pubkeys, config.threshold);
+
+  return {
+    id: config.id,
+    ownerPubkey,
+    wallet,
+    name: config.name,
+    description: config.description,
+    keyHolders: config.pubkeys.map((pk) => ({
+      pubkey: pk,
+      isOwnKey: pk === ownerPubkey,
+    })),
+    createdAt: config.createdAt,
+    lastActivityAt: config.createdAt,
+    totalReceived: 0,
+    totalSpent: 0,
+    currentBalance: 0,
+    balanceUpdatedAt: 0,
+    signingRoundIds: [],
+  };
+}
+
+async function syncWalletsToRelay(): Promise<void> {
+  const { publishWalletConfigs } = await import('@/lib/nostr/wallet-sync');
+  const all = await loadMultisigWallets();
+  const configs = all.map(walletToSyncConfig);
+  const syncKey = sessionStorage.getItem('nostr_onchain_wallet_sync_key');
+  if (!syncKey) return;
+  await publishWalletConfigs(configs, syncKey);
 }

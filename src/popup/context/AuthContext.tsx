@@ -10,6 +10,8 @@ import { decryptVault, loadVault } from '@/lib/crypto/vault';
 import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 import { createMessageId } from '@/shared/messages';
 import { type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
 
 interface AuthState {
   publicKey: string;
@@ -98,12 +100,43 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     loadAccountsOnMount(initialPassword);
     migrateUnownedWallets(initialPublicKey).catch(() => {});
     preloadAppData();
+
+    // Derive and store wallet sync key, then restore wallets from relays
+    if (initialPassword && initialPublicKey) {
+      const syncKey = bytesToHex(
+        sha256(new TextEncoder().encode(`wallet-sync-${initialPassword}-${initialPublicKey}`)),
+      );
+      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
+      restoreWalletsFromRelay(initialPublicKey, syncKey).catch(() => {});
+    }
   }, []);
 
   async function preloadAppData() {
     import('@/lib/nostr/cache').then(({ fullDiscoverySync }) => {
       fullDiscoverySync('7d', { maxUsers: 2000 }).catch(() => {});
     });
+  }
+
+  async function restoreWalletsFromRelay(pubkey: string, syncKey: string) {
+    try {
+      const { fetchWalletConfigs } = await import('@/lib/nostr/wallet-sync');
+      const configs = await fetchWalletConfigs(pubkey, syncKey);
+      if (configs.length === 0) return;
+
+      const { syncConfigToWallet, loadMultisigWallets, saveMultisigWallet } =
+        await import('@/lib/bitcoin/wallet-store');
+      const existing = await loadMultisigWallets();
+      const existingIds = new Set(existing.map((w) => w.id));
+
+      for (const config of configs) {
+        if (!existingIds.has(config.id)) {
+          const wallet = syncConfigToWallet(config, pubkey);
+          await saveMultisigWallet(wallet);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to restore wallets from relay:', err);
+    }
   }
 
   async function loadAccountsOnMount(password: string) {
