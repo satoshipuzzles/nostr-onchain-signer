@@ -17,6 +17,20 @@ import { npubToPubkey } from './keys';
 const CACHE_KEY = 'profile_cache_v2';
 const BATCH_DELAY_MS = 300;
 
+function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
+  return {
+    pubkey: pubkey || raw.pubkey || '',
+    name: typeof raw.name === 'string' ? raw.name : '',
+    displayName: typeof raw.display_name === 'string' ? raw.display_name : (typeof raw.displayName === 'string' ? raw.displayName : ''),
+    about: typeof raw.about === 'string' ? raw.about : '',
+    picture: typeof raw.picture === 'string' ? raw.picture : '',
+    banner: typeof raw.banner === 'string' ? raw.banner : '',
+    nip05: typeof raw.nip05 === 'string' ? raw.nip05 : '',
+    lud16: typeof raw.lud16 === 'string' ? raw.lud16 : '',
+    website: typeof raw.website === 'string' ? raw.website : '',
+  };
+}
+
 export type ActivityWindow = '24h' | '7d' | '30d' | 'all';
 
 export interface CachedProfile {
@@ -182,7 +196,7 @@ export async function discoverActiveUsers(
   options.onProgress?.('Finding active users...', 0);
 
   // Fetch kind 1 notes from multiple relays in parallel
-  const relaysToUse = relays.slice(0, 5);
+  const relaysToUse = relays.slice(0, 8);
   const batchPromises = relaysToUse.map((relay) =>
     fetchActiveAuthors(relay, since, Math.min(maxUsers, 500))
   );
@@ -370,17 +384,7 @@ function fetchProfileBatchByAuthors(
         if (data[0] === 'EVENT' && data[1] === subId) {
           try {
             const content = JSON.parse(data[2].content);
-            profiles.set(data[2].pubkey, {
-              pubkey: data[2].pubkey,
-              name: content.name,
-              displayName: content.display_name,
-              picture: content.picture,
-              banner: content.banner,
-              about: content.about,
-              nip05: content.nip05,
-              lud16: content.lud16,
-              website: content.website,
-            });
+            profiles.set(data[2].pubkey, sanitizeProfile(content, data[2].pubkey));
           } catch {}
         } else if (data[0] === 'EOSE') {
           clearTimeout(timer);
@@ -408,8 +412,15 @@ export async function fullDiscoverySync(
   const relays = getReadRelays(relayList);
   const allRelays = relays.length > 0 ? relays : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
 
+  const discoveryRelays = [...new Set([
+    ...allRelays,
+    'wss://relay.nostr.band',
+    'wss://nostr.wine',
+    'wss://relay.snort.social',
+  ])];
+
   // Phase 1: Find active users
-  const activeUsers = await discoverActiveUsers(allRelays, window, {
+  const activeUsers = await discoverActiveUsers(discoveryRelays, window, {
     maxUsers: options.maxUsers ?? 2000,
     onProgress: options.onProgress,
   });
@@ -418,7 +429,7 @@ export async function fullDiscoverySync(
 
   // Phase 2: Resolve profiles for active users
   const pubkeys = Array.from(activeUsers.keys());
-  await resolveProfiles(pubkeys, allRelays, {
+  await resolveProfiles(pubkeys, discoveryRelays, {
     onProgress: (done, total) => {
       options.onProgress?.(`Profiles: ${done}/${total}`, done);
     },
@@ -560,17 +571,7 @@ function searchOnRelay(relayUrl: string, query: string, limit: number): Promise<
         if (data[0] === 'EVENT' && data[1] === subId) {
           try {
             const content = JSON.parse(data[2].content);
-            profiles.push({
-              pubkey: data[2].pubkey,
-              name: content.name,
-              displayName: content.display_name,
-              picture: content.picture,
-              banner: content.banner,
-              about: content.about,
-              nip05: content.nip05,
-              lud16: content.lud16,
-              website: content.website,
-            });
+            profiles.push(sanitizeProfile(content, data[2].pubkey));
           } catch {}
         } else if (data[0] === 'EOSE') {
           clearTimeout(timer);

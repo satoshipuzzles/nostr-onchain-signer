@@ -169,7 +169,7 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
                      (activeMode === 'kind' && kindSubmitted === null);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col pb-20 md:pb-0">
       {/* Header */}
       <div className="page-header px-4">
         <button onClick={onBack} className="btn-back">

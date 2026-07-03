@@ -236,7 +236,7 @@ export function Leaderboard() {
   const nonZeroCount = entries.filter(e => e.balance > 0).length;
 
   return (
-    <div className="h-full flex flex-col p-4 md:p-6">
+    <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Trophy className="w-5 h-5 text-bitcoin" />

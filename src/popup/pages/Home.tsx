@@ -48,7 +48,7 @@ export function Home() {
   }
 
   return (
-    <div className="h-full flex flex-col p-4 md:p-6">
+    <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
       {/* Mobile profile header */}
       <div className="flex items-center gap-3 mb-5 md:mb-6">
         <button onClick={() => navigate('/settings/profile')} className="relative flex-shrink-0">

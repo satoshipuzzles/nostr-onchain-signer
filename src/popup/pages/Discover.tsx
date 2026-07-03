@@ -179,7 +179,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   }
 
   return (
-    <div className="h-full flex flex-col p-4">
+    <div className="h-full flex flex-col p-4 pb-20 md:pb-4">
       {/* Header */}
       <div className="page-header">
         <button onClick={onBack} className="btn-back">
@@ -288,7 +288,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
             </button>
           </div>
         ) : (
-          profiles.slice(0, 200).map((entry) => (
+          profiles.map((entry) => (
             <UserRow
               key={entry.profile.pubkey}
               profile={entry.profile}
@@ -303,11 +303,6 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
               })}
             />
           ))
-        )}
-        {profiles.length > 200 && (
-          <p className="text-center text-xs text-gray-500 py-2">
-            Showing 200 of {profiles.length.toLocaleString()} • Use search to find specific users
-          </p>
         )}
       </div>
     </div>
@@ -330,7 +325,9 @@ function UserRow({
   onViewProfile: () => void;
 }) {
   const [imgFailed, setImgFailed] = useState(false);
-  const displayName = profile.displayName || profile.name || profile.pubkey.slice(0, 12);
+  const displayName = (typeof profile.displayName === 'string' ? profile.displayName : '')
+    || (typeof profile.name === 'string' ? profile.name : '')
+    || profile.pubkey.slice(0, 12);
   const npub = pubkeyToNpub(profile.pubkey);
   const initial = displayName.charAt(0).toUpperCase();
 
@@ -358,15 +355,15 @@ function UserRow({
       <button onClick={onViewProfile} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">
           <p className="text-sm font-medium truncate">{displayName}</p>
-          {profile.nip05 && (
+          {typeof profile.nip05 === 'string' && profile.nip05 && (
             <span className="flex items-center gap-0.5 flex-shrink-0">
               <BadgeCheck className="w-3.5 h-3.5 text-nostr" />
             </span>
           )}
-          {profile.lud16 && <Zap className="w-3 h-3 text-yellow-500/60 flex-shrink-0" />}
+          {typeof profile.lud16 === 'string' && profile.lud16 && <Zap className="w-3 h-3 text-yellow-500/60 flex-shrink-0" />}
         </div>
         <div className="flex items-center gap-2">
-          {profile.nip05 ? (
+          {typeof profile.nip05 === 'string' && profile.nip05 ? (
             <p className="text-xs text-nostr/70 truncate flex-1">{profile.nip05}</p>
           ) : (
             <p className="text-xs text-gray-500 truncate flex-1">{npub.slice(0, 20)}...</p>

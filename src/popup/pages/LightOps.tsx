@@ -184,17 +184,21 @@ function CreateTab({ publicKey }: { publicKey: string }) {
     setPsbtError('');
     setPsbtLoading(true);
     try {
-      const result = await buildPsbt({
-        fromAddress: address,
-        toAddress: address,
-        amountSats: 546,
-        feeRate,
-        internalPubkeyHex: publicKey,
-        opReturnData: opResult.script.slice(2),
-      });
+      const result = await Promise.race([
+        buildPsbt({
+          fromAddress: address,
+          toAddress: address,
+          amountSats: 546,
+          feeRate,
+          internalPubkeyHex: publicKey,
+          opReturnData: opResult.script.slice(2),
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Timed out fetching UTXOs. Make sure your Taproot address is funded.')), 15000)
+        ),
+      ]) as PsbtResult;
       setPsbtResult(result);
 
-      // Save to history
       if (fetchedEvent) {
         saveLightOp(publicKey, {
           eventId: fetchedEvent.id,
@@ -203,8 +207,8 @@ function CreateTab({ publicKey }: { publicKey: string }) {
           createdAt: Date.now(),
         });
       }
-    } catch (err) {
-      setPsbtError(err instanceof Error ? err.message : 'PSBT generation failed');
+    } catch (err: any) {
+      setPsbtError(err.message || 'PSBT generation failed');
     } finally {
       setPsbtLoading(false);
     }
@@ -314,6 +318,11 @@ function CreateTab({ publicKey }: { publicKey: string }) {
               {psbtLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
               Generate PSBT
             </button>
+          </div>
+
+          <div className="mt-2 p-2 bg-surface-700/50 rounded-lg">
+            <span className="text-[10px] text-gray-500 block mb-0.5">Your Taproot Address (fund this first)</span>
+            <p className="text-[11px] font-mono text-gray-300 break-all">{address}</p>
           </div>
 
           <div className="flex items-center justify-between mt-2">

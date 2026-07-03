@@ -73,7 +73,7 @@ export function Wallets() {
   }
 
   return (
-    <div className="h-full flex flex-col p-4 md:p-6">
+    <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <h1 className="text-lg font-bold flex-1">Wallets</h1>

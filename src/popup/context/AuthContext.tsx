@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { fetchMyProfile, createFollowListEvent, publishEvent, type DiscoveredUser } from '@/lib/nostr/discovery';
 import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
-import { type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
+import { type ArchivedMultisig, migrateUnownedWallets } from '@/lib/bitcoin/wallet-store';
 import {
   type Account, getAccountsFromVault, loadActiveAccountIndex,
   saveActiveAccountIndex, loadAccountMeta, updateAccountMeta, addAccountToVault,
@@ -95,6 +95,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   useEffect(() => {
     loadProfileAndFollows(initialPublicKey);
     loadAccountsOnMount(initialPassword);
+    migrateUnownedWallets(initialPublicKey).catch(() => {});
   }, []);
 
   async function loadAccountsOnMount(password: string) {
@@ -203,8 +204,6 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     if (index < 0 || index >= accounts.length) return;
     const acct = accounts[index];
 
-    // Switch the vault's active key FIRST — this must complete before any
-    // subsequent signEvent calls to prevent signing with the wrong keypair.
     const response = await chrome.runtime.sendMessage({
       type: 'vault:switchAccount',
       payload: { index },
@@ -216,17 +215,25 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       return;
     }
 
-    // Only update local state AFTER the vault has confirmed the switch
     await saveActiveAccountIndex(index);
     setActiveAccountIndex(index);
     setPublicKey(acct.publicKeyHex);
 
-    // Clear previous account's cached data
-    setMyProfile(null);
-    setFollowing(new Set());
+    // Immediately load the new account's cached data instead of clearing to
+    // null — this prevents a flash of empty state and ensures data keyed by
+    // the old pubkey is never wiped.
+    const cached = await chrome.storage.local.get([
+      `profile_${acct.publicKeyHex}`,
+      `following_${acct.publicKeyHex}`,
+    ]);
+    const cachedProfile = cached[`profile_${acct.publicKeyHex}`];
+    const cachedFollowing = cached[`following_${acct.publicKeyHex}`];
 
-    // Load profile/following for the new account
-    await loadProfileAndFollows(acct.publicKeyHex);
+    setMyProfile(cachedProfile ?? null);
+    setFollowing(Array.isArray(cachedFollowing) ? new Set(cachedFollowing) : new Set());
+
+    // Then refresh from relays in the background
+    loadProfileAndFollows(acct.publicKeyHex);
   }
 
   async function handleAddAccount() {

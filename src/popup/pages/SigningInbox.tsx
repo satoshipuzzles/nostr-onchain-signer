@@ -9,8 +9,8 @@ import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
 import { encryptDM } from '@/lib/nostr/dm';
+import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { formatSats } from '@/lib/bitcoin/mempool';
 
@@ -20,13 +20,23 @@ import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
   Shield, AlertTriangle, Copy, Link, FileText,
   Send, QrCode, Download, ExternalLink, CheckCircle2,
-  Plus, ChevronDown, ChevronUp, RefreshCw, Image,
+  Plus, ChevronDown, ChevronUp, RefreshCw, Image, Bell,
 } from 'lucide-react';
 
 const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
 
 function signingUrl(roundId: string): string {
   return `${VERCEL_URL}/sign/${roundId}`;
+}
+
+function parseRoundMeta(psbtHex: string): { amount?: number; recipient?: string } {
+  try {
+    const parsed = JSON.parse(psbtHex);
+    if (parsed.intent === 'send') {
+      return { amount: parsed.amount, recipient: parsed.to };
+    }
+  } catch { /* not JSON, likely a real PSBT */ }
+  return {};
 }
 
 interface Props {
@@ -157,7 +167,7 @@ function InvoiceStatusBadge({ status }: { status?: InvoiceStatus }) {
 function subscribeSigningResponses(
   relayUrls: string[],
   userPubkey: string,
-  onResponse: (roundId: string, responderPubkey: string) => void
+  onResponse: (roundId: string, responderPubkey: string, psbtHex?: string) => void
 ): () => void {
   const connections: { ws: WebSocket; subId: string }[] = [];
   const seenIds = new Set<string>();
@@ -190,7 +200,7 @@ function subscribeSigningResponses(
           try {
             const content = JSON.parse(event.content);
             if (content.round_id && content.accepted) {
-              onResponse(content.round_id, event.pubkey);
+              onResponse(content.round_id, event.pubkey, content.psbt_hex);
             }
           } catch { /* ignore malformed */ }
         }
@@ -335,7 +345,8 @@ export function useSigningCount(publicKey: string): number {
 export function SigningInbox({ publicKey, onBack }: Props) {
   const navigate = useNavigate();
   const [requests, setRequests] = useState<SigningRequest[]>([]);
-  const [outbound, setOutbound] = useState<PendingSignatureRequest[]>([]);
+  const [rounds, setRounds] = useState<SigningRound[]>([]);
+  const [roundResponses, setRoundResponses] = useState<Map<string, { pubkey: string; psbtHex?: string }[]>>(new Map());
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -348,6 +359,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   const [copied, setCopied] = useState('');
   const [showInvoiceCreator, setShowInvoiceCreator] = useState(false);
   const [expandedOutbound, setExpandedOutbound] = useState<string | null>(null);
+  const [nudging, setNudging] = useState<string | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const responseCleanupRef = useRef<(() => void) | null>(null);
   const invoiceCleanupRef = useRef<(() => void) | null>(null);
@@ -367,8 +379,21 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
   async function loadOutbound() {
     try {
-      const pending = await loadPendingRequests();
-      setOutbound(pending.sort((a, b) => b.createdAt - a.createdAt));
+      const allRounds = await loadSigningRounds();
+      const sorted = allRounds.sort((a, b) => b.createdAt - a.createdAt);
+      setRounds(sorted);
+      for (const round of sorted) {
+        for (const signer of round.signers) {
+          const cached = await getCachedProfile(signer.pubkey);
+          if (cached) {
+            setProfiles((prev) => {
+              const next = new Map(prev);
+              next.set(signer.pubkey, cached);
+              return next;
+            });
+          }
+        }
+      }
     } catch {}
   }
 
@@ -399,7 +424,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
     responseCleanupRef.current = subscribeSigningResponses(
       relayUrls,
       publicKey,
-      (roundId, _responderPubkey) => {
+      (roundId, responderPubkey, psbtHex) => {
         setRequests((prev) =>
           prev.map((r) => {
             if (r.round_id === roundId) {
@@ -408,6 +433,14 @@ export function SigningInbox({ publicKey, onBack }: Props) {
             return r;
           })
         );
+        setRoundResponses((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(roundId) || [];
+          if (!existing.some((r) => r.pubkey === responderPubkey)) {
+            next.set(roundId, [...existing, { pubkey: responderPubkey, psbtHex }]);
+          }
+          return next;
+        });
       }
     );
 
@@ -561,6 +594,47 @@ export function SigningInbox({ publicKey, onBack }: Props) {
     setTimeout(() => setCopied(''), 2000);
   }
 
+  async function handleNudge(round: SigningRound, signerPubkey: string) {
+    setNudging(signerPubkey);
+    try {
+      const link = signingUrl(round.id);
+      const dmContent = `Reminder: You have a pending signing request. View and sign: ${link}`;
+
+      let content = dmContent;
+      let kind = 4;
+      try {
+        const result = await encryptDM(signerPubkey, dmContent);
+        content = result.content;
+        kind = result.kind;
+      } catch {
+        console.warn('DM encryption failed for nudge');
+      }
+
+      const dmEvent = {
+        kind,
+        content,
+        tags: [['p', signerPubkey]],
+        created_at: Math.floor(Date.now() / 1000),
+        pubkey: publicKey,
+      };
+
+      const response = await chrome.runtime.sendMessage({
+        type: 'nip07:signEvent',
+        payload: { event: dmEvent },
+        id: createMessageId(),
+      });
+
+      if (!response.error && response.result) {
+        const { publishEvent } = await import('@/lib/nostr/discovery');
+        await publishEvent(response.result);
+      }
+    } catch (err) {
+      console.error('Nudge failed:', err);
+    } finally {
+      setNudging(null);
+    }
+  }
+
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
 
   if (showInvoiceCreator) {
@@ -630,7 +704,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
           }`}
         >
           <Send className="w-3.5 h-3.5" />
-          Sent {outbound.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{outbound.length}</span>}
+          Sent {rounds.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{rounds.length}</span>}
         </button>
         <button
           onClick={() => setActiveTab('invoices')}
@@ -785,76 +859,244 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
         {activeTab === 'outbound' && (
           <>
-            {outbound.length === 0 ? (
+            {rounds.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Send className="w-12 h-12 text-gray-600 mb-3" />
-                <p className="text-sm text-gray-400">No outgoing requests</p>
+                <p className="text-sm text-gray-400">No outgoing signing rounds</p>
                 <p className="text-xs text-gray-600 mt-1">
                   When you request signatures from co-signers, they appear here
                 </p>
               </div>
             ) : (
-              outbound.map((req) => {
-                const isExpanded = expandedOutbound === req.id;
+              rounds.map((round) => {
+                const isExpanded = expandedOutbound === round.id;
+                const responses = roundResponses.get(round.id) || [];
+                const meta = parseRoundMeta(round.psbtHex);
+
+                const signerStatuses = round.signers.map((signer) => {
+                  const resp = responses.find((r) => r.pubkey === signer.pubkey);
+                  return {
+                    ...signer,
+                    status: resp ? ('signed' as const) : signer.status,
+                    psbtHex: resp?.psbtHex,
+                  };
+                });
+
+                const signedCount = signerStatuses.filter((s) => s.status === 'signed').length;
+                const isReady = signedCount >= round.threshold;
+
                 return (
-                  <div key={req.id} className="card mb-3">
+                  <div key={round.id} className="card mb-3">
                     <div
                       className="flex items-center gap-3 cursor-pointer"
-                      onClick={() => setExpandedOutbound(isExpanded ? null : req.id)}
+                      onClick={() => setExpandedOutbound(isExpanded ? null : round.id)}
                     >
-                      <div className="w-9 h-9 rounded-full bg-nostr/20 flex items-center justify-center flex-shrink-0">
-                        <Send className="w-4 h-4 text-nostr" />
+                      <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        isReady ? 'bg-green-500/20' : 'bg-nostr/20'
+                      }`}>
+                        {isReady ? <CheckCircle2 className="w-4 h-4 text-green-400" /> : <Send className="w-4 h-4 text-nostr" />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{req.memo || 'Signature request'}</p>
+                        <p className="text-sm font-medium truncate">{round.memo || 'Signature request'}</p>
                         <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                          <span>{req.amount ? `${req.amount.toLocaleString()} sats` : ''}</span>
-                          <span>{new Date(req.createdAt).toLocaleDateString()}</span>
+                          {meta.amount && <span className="text-bitcoin font-medium">{formatSats(meta.amount)}</span>}
+                          {meta.recipient && <span className="truncate max-w-[100px]">{meta.recipient.slice(0, 12)}...</span>}
+                          <span>{formatTimeAgo(round.createdAt)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className={`text-[10px] font-medium ${isReady ? 'text-green-400' : 'text-bitcoin'}`}>
+                          {signedCount}/{round.threshold}
+                        </span>
                         <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-                          req.status === 'pending' ? 'bg-bitcoin/15 text-bitcoin' :
-                          req.status === 'signed' ? 'bg-green-500/15 text-green-400' :
+                          isReady ? 'bg-green-500/15 text-green-400' :
+                          round.status === 'collecting' ? 'bg-bitcoin/15 text-bitcoin' :
+                          round.status === 'broadcast' ? 'bg-green-500/15 text-green-400' :
                           'bg-gray-500/15 text-gray-400'
                         }`}>
-                          {req.status}
+                          {isReady ? 'Ready' : round.status}
                         </span>
                         {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-500" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-500" />}
                       </div>
                     </div>
 
                     {isExpanded && (
-                      <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
-                        {req.recipientPubkey && (
-                          <div>
-                            <p className="text-[10px] text-gray-500 mb-0.5">Sent to</p>
-                            <code className="text-[11px] text-gray-300 font-mono break-all">{req.recipientPubkey}</code>
+                      <div className="mt-3 pt-3 border-t border-white/5 space-y-3">
+                        {/* Threshold progress bar */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Signatures</span>
+                            <span className={`text-xs font-bold ${isReady ? 'text-green-400' : 'text-bitcoin'}`}>
+                              {signedCount}/{round.threshold}
+                            </span>
                           </div>
-                        )}
+                          <div className="w-full h-1.5 bg-surface-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${isReady ? 'bg-green-400' : 'bg-bitcoin'}`}
+                              style={{ width: `${Math.min((signedCount / round.threshold) * 100, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Co-signer list */}
+                        <div>
+                          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Co-signers</p>
+                          <div className="space-y-1.5">
+                            {signerStatuses.map((signer) => {
+                              const profile = profiles.get(signer.pubkey);
+                              const signerName = profile?.displayName || profile?.name || signer.displayName || signer.pubkey.slice(0, 12);
+                              const isSigned = signer.status === 'signed';
+                              const isMe = signer.pubkey === publicKey;
+
+                              return (
+                                <div key={signer.pubkey} className="flex items-center gap-2 py-1">
+                                  {isSigned ? (
+                                    <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                                  ) : (
+                                    <Clock className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+                                  )}
+                                  <span className={`text-xs flex-1 truncate ${isSigned ? 'text-green-400' : 'text-gray-300'}`}>
+                                    {signerName}{isMe ? ' (you)' : ''}
+                                  </span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                                    isSigned ? 'bg-green-500/15 text-green-400' : 'bg-gray-500/15 text-gray-400'
+                                  }`}>
+                                    {isSigned ? 'Signed' : 'Pending'}
+                                  </span>
+                                  {!isSigned && !isMe && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleNudge(round, signer.pubkey); }}
+                                      disabled={nudging === signer.pubkey}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium bg-bitcoin/10 text-bitcoin hover:bg-bitcoin/20 transition-colors min-h-[24px]"
+                                      title="Send DM reminder"
+                                    >
+                                      {nudging === signer.pubkey ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <Bell className="w-3 h-3" />
+                                      )}
+                                      Nudge
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Round details */}
                         <div className="grid grid-cols-2 gap-2">
-                          {req.amount && (
+                          {meta.recipient && (
                             <div>
-                              <p className="text-[10px] text-gray-500 mb-0.5">Amount</p>
-                              <p className="text-xs text-white">{req.amount.toLocaleString()} sats</p>
+                              <p className="text-[10px] text-gray-500 mb-0.5">Recipient</p>
+                              <code className="text-[11px] text-gray-300 font-mono break-all">{meta.recipient}</code>
                             </div>
                           )}
                           <div>
                             <p className="text-[10px] text-gray-500 mb-0.5">Expires</p>
                             <p className="text-xs text-white">
-                              {req.expiresAt ? new Date(req.expiresAt).toLocaleDateString() : 'N/A'}
+                              {new Date(round.expiresAt * 1000).toLocaleDateString()}
                             </p>
                           </div>
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-0.5">Multisig</p>
+                            <code className="text-[11px] text-gray-300 font-mono truncate block">
+                              {round.multisigAddress.slice(0, 16)}...
+                            </code>
+                          </div>
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-0.5">Threshold</p>
+                            <p className="text-xs text-white">{round.threshold} of {round.totalSigners}</p>
+                          </div>
                         </div>
+
+                        {/* Actions */}
                         <div className="flex items-center gap-2 pt-1">
                           <button
-                            onClick={(e) => { e.stopPropagation(); copyToClipboard(signingUrl(req.roundId), req.id); }}
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(signingUrl(round.id), `link_${round.id}`); }}
                             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 transition-colors min-h-[28px]"
                           >
-                            {copied === req.id ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                            {copied === `link_${round.id}` ? <Check className="w-3 h-3 text-green-400" /> : <Link className="w-3 h-3" />}
                             Copy Signing Link
                           </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(round.psbtHex, `psbt_${round.id}`); }}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 transition-colors min-h-[28px]"
+                          >
+                            {copied === `psbt_${round.id}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                            Copy PSBT
+                          </button>
                         </div>
+
+                        {/* Combine & Broadcast section */}
+                        {isReady && (
+                          <div className="p-3 rounded-lg bg-green-500/5 border border-green-500/20">
+                            <div className="flex items-center gap-2 mb-2">
+                              <CheckCircle2 className="w-4 h-4 text-green-400" />
+                              <span className="text-xs font-semibold text-green-400">Ready to Broadcast</span>
+                            </div>
+                            <p className="text-[10px] text-gray-400 mb-3">
+                              Threshold reached. Combine signed PSBTs and broadcast.
+                            </p>
+
+                            {responses.filter((r) => r.psbtHex).length > 0 && (
+                              <div className="bg-surface-800 rounded-lg p-2 mb-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <p className="text-[9px] text-gray-500 uppercase tracking-wider">
+                                    Collected PSBTs ({responses.filter((r) => r.psbtHex).length})
+                                  </p>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const all = responses.filter((r) => r.psbtHex).map((r) => r.psbtHex!).join('\n---\n');
+                                      copyToClipboard(all || round.psbtHex, `allpsbt_${round.id}`);
+                                    }}
+                                    className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] bg-surface-700 hover:bg-surface-600 text-gray-300 transition-colors"
+                                  >
+                                    {copied === `allpsbt_${round.id}` ? <Check className="w-2.5 h-2.5 text-green-400" /> : <Copy className="w-2.5 h-2.5" />}
+                                    Copy All
+                                  </button>
+                                </div>
+                                <code className="text-[9px] text-gray-400 font-mono break-all block max-h-12 overflow-y-auto">
+                                  {responses.filter((r) => r.psbtHex).map((r) => r.psbtHex!.slice(0, 24)).join('... ')}...
+                                </code>
+                              </div>
+                            )}
+
+                            <div className="flex gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const psbts = responses.filter((r) => r.psbtHex).map((r) => r.psbtHex!);
+                                  const content = psbts.length > 0 ? psbts.join('\n') : round.psbtHex;
+                                  const blob = new Blob([content], { type: 'application/octet-stream' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url;
+                                  a.download = `round-${round.id.slice(0, 8)}.psbt`;
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                  URL.revokeObjectURL(url);
+                                }}
+                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-green-500/15 text-green-400 border border-green-500/25 hover:bg-green-500/25 transition-colors text-[11px] font-medium min-h-[36px]"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                Download
+                              </button>
+                              <a
+                                href="https://mempool.space/tx/push"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg bg-bitcoin/15 text-bitcoin border border-bitcoin/25 hover:bg-bitcoin/25 transition-colors text-[11px] font-medium min-h-[36px]"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                Broadcast
+                              </a>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

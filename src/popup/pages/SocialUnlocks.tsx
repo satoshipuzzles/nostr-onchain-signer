@@ -1,5 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Lock, Unlock, Plus, Copy, Check, ArrowLeft, Users, ExternalLink } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Lock, Unlock, Plus, Copy, Check, ArrowLeft, Users, ExternalLink,
+  Search, X, Loader2, ImageIcon, Share2,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
 import { publishEvent } from '@/lib/nostr/discovery';
@@ -16,7 +19,13 @@ import {
 } from '@/lib/nostr/social-unlock';
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
 import { createMessageId } from '@/shared/messages';
+import { npubToPubkey, pubkeyToNpub, isValidHexPubkey } from '@/lib/nostr/keys';
+import { resolveNip05 } from '@/lib/nostr/nip05';
+import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 import type { SignedEvent } from '@/lib/nostr/events';
+import type { ProfileMetadata } from '@/lib/nostr/social';
+
+const UNLOCK_BASE_URL = 'https://nostr-onchain-signer.vercel.app/unlock';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -31,6 +40,30 @@ interface UnlockItem {
 
 type View = 'list' | 'create' | 'detail';
 
+type SignerMode = 'anyone' | 'followers' | 'selected';
+
+interface SearchResult {
+  pubkey: string;
+  displayName?: string;
+  picture?: string;
+  nip05?: string;
+}
+
+// ─── Local persistence helpers ──────────────────────────────────
+
+function localCacheKey(pubkey: string) {
+  return `my_social_unlocks_${pubkey}`;
+}
+
+async function loadCachedUnlocks(pubkey: string): Promise<UnlockItem[]> {
+  const result = await chrome.storage.local.get(localCacheKey(pubkey));
+  return result[localCacheKey(pubkey)] ?? [];
+}
+
+async function saveCachedUnlocks(pubkey: string, items: UnlockItem[]) {
+  await chrome.storage.local.set({ [localCacheKey(pubkey)]: items });
+}
+
 // ─── Component ──────────────────────────────────────────────────
 
 export function SocialUnlocks() {
@@ -40,12 +73,11 @@ export function SocialUnlocks() {
   const [loading, setLoading] = useState(true);
   const [selectedUnlock, setSelectedUnlock] = useState<UnlockItem | null>(null);
 
-  // Stored decryption keys for unlocks we created
   const [storedKeys, setStoredKeys] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadStoredKeys();
-    fetchUnlocks();
+    loadCachedThenFetch();
   }, [publicKey]);
 
   async function loadStoredKeys() {
@@ -59,18 +91,38 @@ export function SocialUnlocks() {
     await chrome.storage.local.set({ social_unlock_keys: updated });
   }
 
-  async function fetchUnlocks() {
+  async function loadCachedThenFetch() {
     setLoading(true);
     try {
+      const cached = await loadCachedUnlocks(publicKey);
+      if (cached.length > 0) setUnlocks(cached);
+
       const relayList = await loadRelayList();
       const readRelays = getReadRelays(relayList);
       const items = await fetchSocialUnlocks(readRelays, publicKey);
-      setUnlocks(items);
+
+      // Merge: keep relay items as source of truth, but preserve any
+      // locally-created items that haven't propagated yet.
+      const relayIds = new Set(items.map((i) => i.eventId));
+      const localOnly = cached.filter((c) => !relayIds.has(c.eventId));
+      const merged = [...items, ...localOnly].sort((a, b) => b.createdAt - a.createdAt);
+
+      setUnlocks(merged);
+      await saveCachedUnlocks(publicKey, merged);
     } catch (err) {
       console.error('Failed to fetch social unlocks:', err);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleCreated(eventId: string, key: string, newItem: UnlockItem) {
+    await saveKey(eventId, key);
+    setUnlocks((prev) => {
+      const next = [newItem, ...prev];
+      saveCachedUnlocks(publicKey, next);
+      return next;
+    });
   }
 
   function handleSelectUnlock(item: UnlockItem) {
@@ -83,9 +135,8 @@ export function SocialUnlocks() {
       <CreateUnlockView
         publicKey={publicKey}
         confirmAndSign={confirmAndSign}
-        onCreated={(eventId, key) => {
-          saveKey(eventId, key);
-          fetchUnlocks();
+        onCreated={(eventId, key, newItem) => {
+          handleCreated(eventId, key, newItem);
           setView('list');
         }}
         onBack={() => setView('list')}
@@ -102,7 +153,7 @@ export function SocialUnlocks() {
         storedKey={storedKeys[selectedUnlock.eventId]}
         onBack={() => {
           setView('list');
-          fetchUnlocks();
+          loadCachedThenFetch();
         }}
         onKeyStored={(eventId, key) => saveKey(eventId, key)}
       />
@@ -111,7 +162,6 @@ export function SocialUnlocks() {
 
   return (
     <div className="h-full flex flex-col p-4 md:p-6 pb-24">
-      {/* Header */}
       <div className="flex items-center justify-between mb-5">
         <div>
           <h1 className="text-lg font-bold">Social Unlocks</h1>
@@ -126,8 +176,7 @@ export function SocialUnlocks() {
         </button>
       </div>
 
-      {/* Unlock list */}
-      {loading ? (
+      {loading && unlocks.length === 0 ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="animate-pulse text-gray-500">Loading unlocks...</div>
         </div>
@@ -189,7 +238,6 @@ function UnlockCard({ item, isOwner, onClick }: { item: UnlockItem; isOwner: boo
         </div>
       </div>
 
-      {/* Progress bar */}
       <div className="mt-3 h-1.5 bg-white/5 rounded-full overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
@@ -234,11 +282,12 @@ function StatusBadge({ isUnlocked, progress }: { isUnlocked: boolean; progress: 
 interface CreateUnlockViewProps {
   publicKey: string;
   confirmAndSign: (event: { kind: number; content: string; tags: string[][]; created_at: number }) => Promise<SignedEvent>;
-  onCreated: (eventId: string, key: string) => void;
+  onCreated: (eventId: string, key: string, item: UnlockItem) => void;
   onBack: () => void;
 }
 
 function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: CreateUnlockViewProps) {
+  const { following } = useAuth();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [secretContent, setSecretContent] = useState('');
@@ -247,33 +296,235 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
   const [totalSlots, setTotalSlots] = useState(10);
   const [publishing, setPublishing] = useState(false);
   const [createdEventId, setCreatedEventId] = useState<string | null>(null);
+  const [createdItem, setCreatedItem] = useState<UnlockItem | null>(null);
+  const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shared, setShared] = useState(false);
+
+  // Signer mode
+  const [signerMode, setSignerMode] = useState<SignerMode>('anyone');
+  const [selectedSigners, setSelectedSigners] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Image upload
+  const [uploadedImageUrl, setUploadedImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+        searchInputRef.current && !searchInputRef.current.contains(e.target as Node)
+      ) {
+        setShowDropdown(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const searchProfiles = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setShowDropdown(false);
+      return;
+    }
+    setSearchLoading(true);
+    const results: SearchResult[] = [];
+    const seen = new Set<string>();
+
+    try {
+      if (query.startsWith('npub1')) {
+        try {
+          const pk = npubToPubkey(query);
+          if (!seen.has(pk)) { seen.add(pk); results.push({ pubkey: pk }); }
+        } catch { /* invalid npub */ }
+      } else if (/^[0-9a-f]{64}$/i.test(query)) {
+        const pk = query.toLowerCase();
+        if (!seen.has(pk)) { seen.add(pk); results.push({ pubkey: pk }); }
+      }
+
+      if (query.includes('@') || (query.includes('.') && !query.startsWith('npub'))) {
+        const nip05Result = await resolveNip05(query.includes('@') ? query : `_@${query}`);
+        if (nip05Result && !seen.has(nip05Result.pubkey)) {
+          seen.add(nip05Result.pubkey);
+          results.push({ pubkey: nip05Result.pubkey, nip05: query });
+        }
+      }
+
+      const followingStored = await chrome.storage.local.get(`following_${publicKey}`);
+      const followingList: string[] = followingStored[`following_${publicKey}`] ?? [];
+      const profileKeys = followingList.map((pk) => `profile_${pk}`);
+      const batchSize = 50;
+      for (let i = 0; i < profileKeys.length; i += batchSize) {
+        const batch = profileKeys.slice(i, i + batchSize);
+        const cached = await chrome.storage.local.get(batch);
+        for (const key of batch) {
+          const profile = cached[key] as ProfileMetadata | undefined;
+          if (!profile) continue;
+          const pk = profile.pubkey;
+          if (seen.has(pk)) continue;
+          const lq = query.toLowerCase();
+          const matches =
+            profile.name?.toLowerCase().includes(lq) ||
+            profile.displayName?.toLowerCase().includes(lq) ||
+            profile.nip05?.toLowerCase().includes(lq) ||
+            pk.startsWith(lq);
+          if (matches) {
+            seen.add(pk);
+            results.push({
+              pubkey: pk,
+              displayName: profile.displayName || profile.name,
+              picture: profile.picture,
+              nip05: profile.nip05,
+            });
+          }
+        }
+      }
+
+      const cacheResult = await chrome.storage.local.get('profile_cache_v2');
+      const profileCache = cacheResult['profile_cache_v2'];
+      if (profileCache?.profiles) {
+        const lq = query.toLowerCase();
+        for (const [pk, entry] of Object.entries(profileCache.profiles) as [string, { profile: ProfileMetadata }][]) {
+          if (seen.has(pk)) continue;
+          const p = entry.profile;
+          if (
+            p.name?.toLowerCase().includes(lq) ||
+            p.displayName?.toLowerCase().includes(lq) ||
+            p.nip05?.toLowerCase().includes(lq)
+          ) {
+            seen.add(pk);
+            results.push({ pubkey: pk, displayName: p.displayName || p.name, picture: p.picture, nip05: p.nip05 });
+          }
+          if (results.length >= 8) break;
+        }
+      }
+    } catch { /* silent */ }
+
+    setSearchResults(results.slice(0, 8));
+    setShowDropdown(results.length > 0);
+    setSearchLoading(false);
+  }, [publicKey]);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!searchQuery.trim()) { setSearchResults([]); setShowDropdown(false); return; }
+    debounceRef.current = setTimeout(() => searchProfiles(searchQuery), 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [searchQuery, searchProfiles]);
+
+  function addSigner(pubkey: string) {
+    if (!selectedSigners.includes(pubkey)) setSelectedSigners([...selectedSigners, pubkey]);
+    setSearchQuery('');
+    setSearchResults([]);
+    setShowDropdown(false);
+  }
+
+  function removeSigner(pubkey: string) {
+    setSelectedSigners(selectedSigners.filter((pk) => pk !== pubkey));
+  }
+
+  function handleSearchKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const q = searchQuery.trim();
+      if (q.startsWith('npub1')) {
+        try { addSigner(npubToPubkey(q)); } catch { /* invalid */ }
+      } else if (isValidHexPubkey(q)) {
+        addSigner(q);
+      } else if (searchResults.length > 0) {
+        addSigner(searchResults[0].pubkey);
+      }
+    }
+  }
+
+  function truncateNpub(pubkey: string): string {
+    const npub = pubkeyToNpub(pubkey);
+    return `${npub.slice(0, 12)}...${npub.slice(-6)}`;
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await uploadImageToNostrBuild(file);
+      setUploadedImageUrl(url);
+      if (contentType === 'image') setSecretContent(url);
+    } catch (err) {
+      console.error('Image upload failed:', err);
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  }
+
+  function buildAllowedPubkeys(): string[] | undefined {
+    if (signerMode === 'anyone') return undefined;
+    if (signerMode === 'followers') return Array.from(following);
+    if (signerMode === 'selected' && selectedSigners.length > 0) return selectedSigners;
+    return undefined;
+  }
 
   async function handleCreate() {
     if (!title.trim() || !secretContent.trim() || threshold < 1 || totalSlots < threshold) return;
     setPublishing(true);
 
     try {
+      const finalContent =
+        uploadedImageUrl && contentType === 'text'
+          ? `${secretContent}\n\n${uploadedImageUrl}`
+          : secretContent;
+
+      const allowedPubkeys = buildAllowedPubkeys();
+
       const { event, decryptionKey } = await createSocialUnlockEvent({
         title: title.trim(),
         description: description.trim() || undefined,
-        plaintext: secretContent,
-        content_type: contentType,
+        plaintext: finalContent,
+        content_type: uploadedImageUrl && contentType === 'text' ? 'text' : contentType,
         threshold,
         total_slots: totalSlots,
+        allowed_pubkeys: allowedPubkeys,
         myPubkey: publicKey,
       });
 
       const signed = await confirmAndSign(event);
       await publishEvent(signed);
 
+      const newItem: UnlockItem = {
+        eventId: signed.id,
+        pubkey: publicKey,
+        content: JSON.parse(event.content),
+        signatures: [],
+        createdAt: event.created_at,
+      };
+
       setCreatedEventId(signed.id);
-      onCreated(signed.id, decryptionKey);
+      setCreatedItem(newItem);
+      setCreatedKey(decryptionKey);
     } catch (err) {
       console.error('Failed to create social unlock:', err);
     } finally {
       setPublishing(false);
     }
+  }
+
+  async function copyLink() {
+    if (!createdEventId) return;
+    await navigator.clipboard.writeText(`${UNLOCK_BASE_URL}/${createdEventId}`);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
   }
 
   async function copyEventId() {
@@ -283,10 +534,42 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
     setTimeout(() => setCopied(false), 2000);
   }
 
-  if (createdEventId) {
+  async function shareToNostr() {
+    if (!createdEventId || !createdItem) return;
+    setSharing(true);
+    try {
+      const noteContent = [
+        `\u{1F513} I've locked content behind ${threshold} signatures! Help unlock it:`,
+        `${UNLOCK_BASE_URL}/${createdEventId}`,
+        '',
+        `${title.trim()}${description.trim() ? ` - ${description.trim()}` : ''}`,
+      ].join('\n');
+
+      const noteEvent = {
+        kind: 1,
+        content: noteContent,
+        tags: [['t', 'social-unlock'], ['e', createdEventId]],
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      const signed = await confirmAndSign(noteEvent);
+      await publishEvent(signed);
+      setShared(true);
+    } catch (err) {
+      console.error('Failed to share:', err);
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  // ── Success view after creation ──
+  if (createdEventId && createdItem && createdKey) {
     return (
       <div className="h-full flex flex-col p-4 md:p-6 pb-24">
-        <button onClick={onBack} className="btn-back mb-4">
+        <button
+          onClick={() => onCreated(createdEventId, createdKey, createdItem)}
+          className="btn-back mb-4"
+        >
           <ArrowLeft className="w-4 h-4" />
           Back to Unlocks
         </button>
@@ -296,9 +579,50 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
             <Check className="w-8 h-8 text-green-400" />
           </div>
           <h2 className="text-lg font-bold mb-2">Social Unlock Created!</h2>
-          <p className="text-xs text-gray-500 mb-4">Share the event ID so others can sign</p>
+          <p className="text-xs text-gray-500 mb-4">Share the link so others can sign</p>
 
-          <div className="card w-full max-w-sm">
+          {/* Shareable link */}
+          <div className="card w-full max-w-sm mb-3">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Shareable Link</p>
+            <div className="flex items-center gap-2">
+              <code className="text-xs text-gray-300 truncate flex-1 font-mono">
+                {UNLOCK_BASE_URL}/{createdEventId}
+              </code>
+              <button onClick={copyLink} className="p-1.5 hover:bg-surface-700 rounded-lg">
+                {copiedLink ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Copy Link button */}
+          <button
+            onClick={copyLink}
+            className="btn-primary w-full max-w-sm flex items-center justify-center gap-2 mb-2"
+          >
+            {copiedLink ? (
+              <><Check className="w-4 h-4" /> Link Copied!</>
+            ) : (
+              <><Copy className="w-4 h-4" /> Copy Link</>
+            )}
+          </button>
+
+          {/* Share to Nostr button */}
+          <button
+            onClick={shareToNostr}
+            disabled={sharing || shared}
+            className="w-full max-w-sm flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border border-nostr/30 text-nostr hover:bg-nostr/10 transition-colors disabled:opacity-50"
+          >
+            {shared ? (
+              <><Check className="w-4 h-4" /> Shared to Nostr</>
+            ) : sharing ? (
+              <span className="animate-pulse">Sharing...</span>
+            ) : (
+              <><Share2 className="w-4 h-4" /> Share to Nostr</>
+            )}
+          </button>
+
+          {/* Event ID */}
+          <div className="card w-full max-w-sm mt-3">
             <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Event ID</p>
             <div className="flex items-center gap-2">
               <code className="text-xs text-gray-300 truncate flex-1 font-mono">
@@ -370,8 +694,17 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
 
         {/* Secret content */}
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">
-            Secret Content ({contentType === 'image' ? 'Image URL' : contentType === 'link' ? 'URL' : 'Text'})
+          <label className="text-xs text-gray-400 mb-1 flex items-center justify-between">
+            <span>Secret Content ({contentType === 'image' ? 'Image URL' : contentType === 'link' ? 'URL' : 'Text'})</span>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="text-[10px] text-nostr hover:underline flex items-center gap-1"
+            >
+              {uploading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <ImageIcon className="w-2.5 h-2.5" />}
+              Upload Image
+            </button>
           </label>
           {contentType === 'text' ? (
             <textarea
@@ -389,6 +722,22 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
               placeholder={contentType === 'image' ? 'https://example.com/image.png' : 'https://example.com'}
               className="input-field"
             />
+          )}
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+          {uploadedImageUrl && (
+            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-surface-700 mt-2">
+              <img src={uploadedImageUrl} alt="" className="w-full h-full object-cover" />
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadedImageUrl('');
+                  if (contentType === 'image') setSecretContent('');
+                }}
+                className="absolute top-0 right-0 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center"
+              >
+                <X className="w-2 h-2 text-white" />
+              </button>
+            </div>
           )}
         </div>
 
@@ -423,6 +772,115 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
         <p className="text-[10px] text-gray-600">
           {threshold} of {totalSlots} signatures required to unlock
         </p>
+
+        {/* Who can sign? */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Who can sign?</label>
+          <div className="grid grid-cols-3 gap-2 mb-2">
+            {([
+              { value: 'anyone' as SignerMode, label: 'Anyone' },
+              { value: 'followers' as SignerMode, label: 'My Followers' },
+              { value: 'selected' as SignerMode, label: 'Selected Users' },
+            ]).map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setSignerMode(value)}
+                className={`px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
+                  signerMode === value
+                    ? 'bg-white/10 text-white border border-white/20'
+                    : 'bg-white/5 text-gray-400 border border-transparent hover:border-white/10'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {signerMode === 'followers' && (
+            <p className="text-[10px] text-gray-600">
+              Only your {following.size} follower{following.size !== 1 ? 's' : ''} will be able to sign
+            </p>
+          )}
+
+          {signerMode === 'selected' && (
+            <div>
+              {/* Selected signer chips */}
+              {selectedSigners.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {selectedSigners.map((pk) => (
+                    <span
+                      key={pk}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-surface-600 rounded-full text-xs text-white"
+                    >
+                      <span className="font-mono text-[10px]">{truncateNpub(pk)}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeSigner(pk)}
+                        className="w-3.5 h-3.5 flex items-center justify-center hover:bg-surface-500 rounded-full"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="relative">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                  <input
+                    ref={searchInputRef}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => { if (searchResults.length > 0) setShowDropdown(true); }}
+                    onKeyDown={handleSearchKeyDown}
+                    placeholder="npub, hex, NIP-05, or name..."
+                    className="input-field text-sm pl-9 pr-8"
+                  />
+                  {searchLoading && (
+                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-gray-500" />
+                  )}
+                </div>
+
+                {showDropdown && searchResults.length > 0 && (
+                  <div
+                    ref={dropdownRef}
+                    className="absolute z-50 w-full mt-1 bg-surface-700 border border-surface-200/10 rounded-xl shadow-xl max-h-60 overflow-y-auto"
+                  >
+                    {searchResults.map((result) => (
+                      <button
+                        key={result.pubkey}
+                        type="button"
+                        onClick={() => addSigner(result.pubkey)}
+                        className="w-full px-3 py-2.5 flex items-center gap-3 hover:bg-surface-600 transition-colors text-left first:rounded-t-xl last:rounded-b-xl"
+                      >
+                        {result.picture ? (
+                          <img
+                            src={result.picture}
+                            alt=""
+                            className="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-surface-500 flex-shrink-0" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-white truncate">
+                            {result.displayName || truncateNpub(result.pubkey)}
+                          </div>
+                          <div className="text-[10px] text-gray-400 truncate">
+                            {result.nip05 || truncateNpub(result.pubkey)}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-600 mt-1">Search by npub, hex pubkey, NIP-05, or display name</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Create button */}
@@ -460,12 +918,17 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
   const [revealing, setRevealing] = useState(false);
   const [revealedContent, setRevealedContent] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shared, setShared] = useState(false);
+  const [signerProfiles, setSignerProfiles] = useState<Record<string, ProfileMetadata | null>>({});
 
   const isOwner = item.pubkey === publicKey;
   const hasSigned = item.signatures.some((s) => s.pubkey === publicKey);
   const isUnlocked = item.signatures.length >= item.content.threshold;
   const canSign = !isOwner && !hasSigned && (!item.content.allowed_pubkeys || item.content.allowed_pubkeys.includes(publicKey));
   const canReveal = isOwner && isUnlocked && !item.revealed && storedKey;
+  const unlockUrl = `${UNLOCK_BASE_URL}/${item.eventId}`;
 
   useEffect(() => {
     if (item.revealed) {
@@ -478,6 +941,22 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
         .catch(() => setRevealedContent('[Failed to decrypt]'));
     }
   }, [item, storedKey]);
+
+  // Load signer profiles
+  useEffect(() => {
+    async function loadProfiles() {
+      const pks = item.signatures.map((s) => s.pubkey);
+      const keys = pks.map((pk) => `profile_${pk}`);
+      if (keys.length === 0) return;
+      const cached = await chrome.storage.local.get(keys);
+      const profiles: Record<string, ProfileMetadata | null> = {};
+      for (const pk of pks) {
+        profiles[pk] = (cached[`profile_${pk}`] as ProfileMetadata | undefined) ?? null;
+      }
+      setSignerProfiles(profiles);
+    }
+    loadProfiles();
+  }, [item.signatures]);
 
   async function handleSign() {
     setSigning(true);
@@ -522,7 +1001,81 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
     setTimeout(() => setCopied(false), 2000);
   }
 
+  async function copyLink() {
+    await navigator.clipboard.writeText(unlockUrl);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  }
+
+  async function shareToNostr() {
+    setSharing(true);
+    try {
+      const noteContent = [
+        `\u{1F513} I've locked content behind ${item.content.threshold} signatures! Help unlock it:`,
+        unlockUrl,
+        '',
+        `${item.content.title}${item.content.description ? ` - ${item.content.description}` : ''}`,
+      ].join('\n');
+
+      const noteEvent = {
+        kind: 1,
+        content: noteContent,
+        tags: [['t', 'social-unlock'], ['e', item.eventId]],
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      const signed = await confirmAndSign(noteEvent);
+      await publishEvent(signed);
+      setShared(true);
+    } catch (err) {
+      console.error('Failed to share:', err);
+    } finally {
+      setSharing(false);
+    }
+  }
+
   const progress = item.signatures.length / item.content.threshold;
+
+  function renderRevealedContent() {
+    if (!revealedContent) return null;
+
+    const imageUrlMatch = revealedContent.match(/(https?:\/\/\S+\.(?:png|jpg|jpeg|gif|webp))/i);
+
+    return (
+      <div className="card mb-4 border-green-500/20 animate-[scale-in_0.3s_ease-out]">
+        <div className="flex items-center gap-2 mb-2">
+          <Unlock className="w-4 h-4 text-green-400" />
+          <span className="text-xs font-medium text-green-400">Content Revealed</span>
+        </div>
+        {item.content.content_type === 'image' || imageUrlMatch ? (
+          <>
+            <img
+              src={item.content.content_type === 'image' ? revealedContent : imageUrlMatch![1]}
+              alt="Revealed"
+              className="w-full rounded-lg max-h-60 object-contain bg-black mb-2"
+            />
+            {item.content.content_type !== 'image' && imageUrlMatch && (
+              <p className="text-sm text-gray-200 whitespace-pre-wrap">
+                {revealedContent.replace(imageUrlMatch[1], '').trim()}
+              </p>
+            )}
+          </>
+        ) : item.content.content_type === 'link' ? (
+          <a
+            href={revealedContent}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+          >
+            <ExternalLink className="w-4 h-4" />
+            {revealedContent}
+          </a>
+        ) : (
+          <p className="text-sm text-gray-200 whitespace-pre-wrap">{revealedContent}</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col p-4 md:p-6 pb-24">
@@ -566,56 +1119,77 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
         </p>
       </div>
 
-      {/* Signers list */}
+      {/* Eligible signers */}
+      {item.content.allowed_pubkeys && item.content.allowed_pubkeys.length > 0 && (
+        <div className="card mb-4">
+          <p className="text-xs text-gray-400 mb-2">Eligible Signers ({item.content.allowed_pubkeys.length})</p>
+          <div className="flex flex-wrap gap-1">
+            {item.content.allowed_pubkeys.slice(0, 10).map((pk) => (
+              <span key={pk} className="px-2 py-0.5 bg-white/5 rounded-full text-[10px] font-mono text-gray-400">
+                {pubkeyToNpub(pk).slice(0, 12)}...
+              </span>
+            ))}
+            {item.content.allowed_pubkeys.length > 10 && (
+              <span className="px-2 py-0.5 bg-white/5 rounded-full text-[10px] text-gray-500">
+                +{item.content.allowed_pubkeys.length - 10} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Signers list with profile pics */}
       {item.signatures.length > 0 && (
         <div className="card mb-4">
           <p className="text-xs text-gray-400 mb-2">Signers</p>
           <div className="space-y-1.5">
-            {item.signatures.map((sig, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs">
-                <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center">
-                  <Check className="w-3 h-3 text-green-400" />
+            {item.signatures.map((sig, i) => {
+              const profile = signerProfiles[sig.pubkey];
+              return (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  {profile?.picture ? (
+                    <img
+                      src={profile.picture}
+                      alt=""
+                      className="w-5 h-5 rounded-full object-cover flex-shrink-0"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div className="w-5 h-5 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3 h-3 text-green-400" />
+                    </div>
+                  )}
+                  <span className="text-gray-300 truncate">
+                    {profile?.displayName || profile?.name || (
+                      <code className="font-mono text-[10px]">
+                        {sig.pubkey.slice(0, 8)}...{sig.pubkey.slice(-4)}
+                      </code>
+                    )}
+                  </span>
+                  {sig.message && <span className="text-gray-500 truncate">&mdash; {sig.message}</span>}
                 </div>
-                <code className="text-gray-300 font-mono text-[10px]">
-                  {sig.pubkey.slice(0, 8)}...{sig.pubkey.slice(-4)}
-                </code>
-                {sig.message && <span className="text-gray-500 truncate">&mdash; {sig.message}</span>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
       {/* Revealed content */}
-      {revealedContent && (
-        <div className="card mb-4 border-green-500/20 animate-[scale-in_0.3s_ease-out]">
-          <div className="flex items-center gap-2 mb-2">
-            <Unlock className="w-4 h-4 text-green-400" />
-            <span className="text-xs font-medium text-green-400">Content Revealed</span>
-          </div>
-          {item.content.content_type === 'image' ? (
-            <img src={revealedContent} alt="Revealed" className="w-full rounded-lg max-h-60 object-contain bg-black" />
-          ) : item.content.content_type === 'link' ? (
-            <a
-              href={revealedContent}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
-            >
-              <ExternalLink className="w-4 h-4" />
-              {revealedContent}
-            </a>
-          ) : (
-            <p className="text-sm text-gray-200 whitespace-pre-wrap">{revealedContent}</p>
-          )}
-        </div>
-      )}
+      {renderRevealedContent()}
 
       {/* Share link */}
       <div className="card mb-4">
-        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Event ID</p>
-        <div className="flex items-center gap-2">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Share Link</p>
+        <div className="flex items-center gap-2 mb-2">
           <code className="text-[10px] text-gray-300 truncate flex-1 font-mono">
+            {unlockUrl}
+          </code>
+          <button onClick={copyLink} className="p-1.5 hover:bg-surface-700 rounded-lg">
+            {copiedLink ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-gray-500" />}
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <code className="text-[10px] text-gray-500 truncate flex-1 font-mono">
             {item.eventId}
           </code>
           <button onClick={copyEventId} className="p-1.5 hover:bg-surface-700 rounded-lg">
@@ -626,6 +1200,21 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
 
       {/* Actions */}
       <div className="mt-auto space-y-2">
+        {isOwner && (
+          <button
+            onClick={shareToNostr}
+            disabled={sharing || shared}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border border-nostr/30 text-nostr hover:bg-nostr/10 transition-colors disabled:opacity-50"
+          >
+            {shared ? (
+              <><Check className="w-4 h-4" /> Shared to Nostr</>
+            ) : sharing ? (
+              <span className="animate-pulse">Sharing...</span>
+            ) : (
+              <><Share2 className="w-4 h-4" /> Share to Nostr</>
+            )}
+          </button>
+        )}
         {canSign && (
           <button
             onClick={handleSign}
@@ -682,7 +1271,6 @@ async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Prom
         try { ws.close(); } catch {}
       }
 
-      // Merge signatures and reveals into unlock items
       for (const [eventId, item] of unlockMap) {
         item.signatures = sigMap.get(eventId) ?? [];
         const reveal = revealMap.get(eventId);
@@ -708,7 +1296,6 @@ async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Prom
       const subId = `sunlock_${Math.random().toString(36).slice(2, 8)}`;
 
       ws.onopen = () => {
-        // Fetch kind 9810 by this user OR tagged to this user, plus related 9811/9812
         ws.send(JSON.stringify(['REQ', subId, {
           kinds: [CUSTOM_KIND.SOCIAL_UNLOCK],
           authors: [userPubkey],
@@ -727,7 +1314,6 @@ async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Prom
           limit: 50,
         }]));
 
-        // Also fetch unlocks where we can sign (tagged #p to us)
         ws.send(JSON.stringify(['REQ', `${subId}_tagged`, {
           kinds: [CUSTOM_KIND.SOCIAL_UNLOCK],
           '#t': ['social-unlock'],
@@ -744,7 +1330,6 @@ async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Prom
             if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK) {
               const content = parseSocialUnlockContent(event.content);
               if (content && !unlockMap.has(event.id)) {
-                // Only show if we created it or we're in allowed_pubkeys (or open to all)
                 const isOwner = event.pubkey === userPubkey;
                 const isAllowed = !content.allowed_pubkeys || content.allowed_pubkeys.includes(userPubkey);
                 if (isOwner || isAllowed) {

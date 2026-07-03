@@ -70,8 +70,26 @@ export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
 
 export async function loadMyMultisigWallets(ownerPubkey: string): Promise<ArchivedMultisig[]> {
   const all = await loadMultisigWallets();
-  // Show wallets owned by this pubkey, OR wallets without an owner (legacy, show to everyone)
-  return all.filter((w) => !w.ownerPubkey || w.ownerPubkey === ownerPubkey);
+  return all.filter((w) => w.ownerPubkey === ownerPubkey);
+}
+
+/**
+ * Migrate legacy wallets that have no ownerPubkey by stamping them with the
+ * given pubkey.  Call once on app startup so old wallets get assigned to the
+ * current (first) account and stop leaking into other accounts.
+ */
+export async function migrateUnownedWallets(ownerPubkey: string): Promise<void> {
+  const all = await loadMultisigWallets();
+  let changed = false;
+  for (const w of all) {
+    if (!w.ownerPubkey) {
+      w.ownerPubkey = ownerPubkey;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await chrome.storage.local.set({ [STORAGE_KEY_WALLETS]: all });
+  }
 }
 
 export async function getMultisigWallet(id: string): Promise<ArchivedMultisig | null> {
