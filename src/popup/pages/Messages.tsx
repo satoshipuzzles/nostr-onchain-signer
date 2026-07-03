@@ -5,6 +5,7 @@ import { ArrowLeft, Send, MessageCircle } from 'lucide-react';
 import { safeImageUrl } from '@/lib/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { ProfileBadge } from '@/popup/components/ProfileBadge';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { encryptDM, decryptDM } from '@/lib/nostr/dm';
 
 interface Conversation {
@@ -248,15 +249,12 @@ export function Messages() {
           <button onClick={() => setSelectedPubkey(null)} className="p-1.5 hover:bg-white/10 rounded-lg">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          {profile?.picture ? (
-            <img src={safeImageUrl(profile.picture)} alt="" className="w-8 h-8 rounded-full object-cover" />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center">
-              <span className="text-xs font-bold text-white/80">
-                {(profile?.displayName || profile?.name || selectedPubkey.slice(0, 1) || '?').charAt(0).toUpperCase()}
-              </span>
-            </div>
-          )}
+          <ClickableAvatar
+            pubkey={selectedPubkey}
+            picture={profile?.picture}
+            name={displayName}
+            size="md"
+          />
           <p className="font-medium text-sm truncate">{displayName}</p>
         </div>
 

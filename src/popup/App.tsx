@@ -29,6 +29,7 @@ import { SocialUnlockPage } from './pages/SocialUnlockPage';
 import { LightOps } from './pages/LightOps';
 import { OnchainExplorer } from './pages/OnchainExplorer';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ProfilePopupProvider } from './context/ProfilePopupContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
@@ -94,11 +95,13 @@ export function App() {
 
   if (isPublicRoute) {
     return (
-      <Routes>
-        <Route path="sign/:roundId" element={<SignPage />} />
-        <Route path="invoice/:eventId" element={<InvoicePage />} />
-        <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
-      </Routes>
+      <ProfilePopupProvider>
+        <Routes>
+          <Route path="sign/:roundId" element={<SignPage />} />
+          <Route path="invoice/:eventId" element={<InvoicePage />} />
+          <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
+        </Routes>
+      </ProfilePopupProvider>
     );
   }
 
@@ -124,6 +127,7 @@ export function App() {
 
   return (
     <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
+      <ProfilePopupProvider>
       <SigningOverlay />
       <Routes>
         <Route element={<Layout />}>
@@ -152,6 +156,7 @@ export function App() {
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </ProfilePopupProvider>
     </AuthProvider>
   );
 }

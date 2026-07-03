@@ -8,6 +8,8 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { safeImageUrl } from '@/lib/utils';
+import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
 interface Props {
   user: DiscoveredUser;
@@ -51,6 +53,11 @@ function formatTimeAgo(timestamp: number): string {
 }
 
 export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, onViewProfile }: Props) {
+  const { openProfile } = useProfilePopup();
+  const viewProfile = (pubkey: string) => {
+    openProfile(pubkey);
+    onViewProfile?.(pubkey);
+  };
   const [copied, setCopied] = useState('');
   const [activeTab, setActiveTab] = useState<ProfileTab>('notes');
   const [notes, setNotes] = useState<FeedNote[]>([]);
@@ -407,7 +414,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                   key={note.id}
                   note={note}
                   profile={user.profile}
-                  onViewProfile={onViewProfile}
+                  onViewProfile={viewProfile}
                 />
               ))
             )}
@@ -425,7 +432,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                   key={note.id}
                   note={note}
                   profile={user.profile}
-                  onViewProfile={onViewProfile}
+                  onViewProfile={viewProfile}
                 />
               ))
             )}
@@ -475,18 +482,19 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
             ) : (
               <div className="space-y-2">
                 {zaps.map((z, i) => (
-                  <button
+                  <div
                     key={`${z.zapperPubkey}-${i}`}
                     onClick={() => {
-                      if (z.zapperPubkey) onViewProfile?.(z.zapperPubkey);
+                      if (z.zapperPubkey) viewProfile(z.zapperPubkey);
                     }}
-                    className="card flex items-center gap-3 w-full text-left hover:bg-surface-700/80 transition-colors"
+                    className="card flex items-center gap-3 w-full text-left hover:bg-surface-700/80 transition-colors cursor-pointer"
                   >
-                    {z.zapperProfile?.picture ? (
-                      <img
-                        src={safeImageUrl(z.zapperProfile.picture)}
-                        alt=""
-                        className="w-8 h-8 rounded-full object-cover bg-surface-700"
+                    {z.zapperPubkey ? (
+                      <ClickableAvatar
+                        pubkey={z.zapperPubkey}
+                        picture={z.zapperProfile?.picture}
+                        name={z.zapperProfile?.displayName || z.zapperProfile?.name}
+                        size="md"
                       />
                     ) : (
                       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-500/30 to-bitcoin/30 flex items-center justify-center">
@@ -502,7 +510,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                     <span className="text-sm font-semibold text-yellow-500 flex items-center gap-1">
                       <Zap className="w-3 h-3" /> {formatSats(z.amount)}
                     </span>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}

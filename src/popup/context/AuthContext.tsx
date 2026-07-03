@@ -46,7 +46,7 @@ interface AuthActions {
 
 type AuthContextType = AuthState & AuthActions;
 
-const AuthContext = createContext<AuthContextType | null>(null);
+export const AuthContext = createContext<AuthContextType | null>(null);
 
 export function useAuth(): AuthContextType {
   const ctx = useContext(AuthContext);

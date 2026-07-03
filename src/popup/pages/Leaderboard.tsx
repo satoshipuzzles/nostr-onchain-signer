@@ -8,6 +8,7 @@ import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { useAuth } from '../context/AuthContext';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
 interface LeaderboardEntry {
   pubkey: string;
@@ -356,20 +357,12 @@ export function Leaderboard() {
               </div>
 
               {/* Avatar */}
-              {entry.profile?.picture ? (
-                <img
-                  src={entry.profile.picture}
-                  alt=""
-                  className="w-9 h-9 rounded-full object-cover bg-surface-600 flex-shrink-0"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center flex-shrink-0">
-                  <span className="text-xs font-bold text-white/70">
-                    {(entry.profile?.name || '?')[0].toUpperCase()}
-                  </span>
-                </div>
-              )}
+              <ClickableAvatar
+                pubkey={entry.pubkey}
+                picture={entry.profile?.picture}
+                name={entry.profile?.displayName || entry.profile?.name}
+                size="lg"
+              />
 
               {/* User info */}
               <div className="flex-1 min-w-0">

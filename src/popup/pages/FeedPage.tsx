@@ -1,24 +1,15 @@
-import { useAuth } from '@/popup/context/AuthContext';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/popup/context/AuthContext';
+import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
 import { Feed } from './Feed';
 import { ComposeNote } from '@/popup/components/ComposeNote';
-import { useState } from 'react';
-import { getCachedProfile } from '@/lib/nostr/cache';
 
 export function FeedPage() {
-  const { publicKey, following, setViewingUser } = useAuth();
+  const { publicKey, following } = useAuth();
+  const { openProfile } = useProfilePopup();
   const navigate = useNavigate();
   const [refreshKey, setRefreshKey] = useState(0);
-
-  async function handleViewProfile(pubkey: string) {
-    const profile = await getCachedProfile(pubkey);
-    setViewingUser({
-      pubkey,
-      lastActive: Math.floor(Date.now() / 1000),
-      profile: profile || undefined,
-    });
-    navigate(`/discover/${pubkey}`);
-  }
 
   return (
     <div className="h-full flex flex-col pb-20 md:pb-0">
@@ -31,7 +22,7 @@ export function FeedPage() {
           publicKey={publicKey}
           followingPubkeys={following}
           onBack={() => navigate('/')}
-          onViewProfile={handleViewProfile}
+          onViewProfile={openProfile}
         />
       </div>
     </div>

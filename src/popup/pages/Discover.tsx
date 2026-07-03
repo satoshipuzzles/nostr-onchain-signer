@@ -9,6 +9,7 @@ import {
   getCacheStats, searchLocalCache, type ActivityWindow, type CachedProfile,
 } from '@/lib/nostr/cache';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
 interface Props {
   publicKey: string;
@@ -323,33 +324,19 @@ function UserRow({
   onUnfollow: () => void;
   onViewProfile: () => void;
 }) {
-  const [imgFailed, setImgFailed] = useState(false);
   const displayName = (typeof profile.displayName === 'string' ? profile.displayName : '')
     || (typeof profile.name === 'string' ? profile.name : '')
     || profile.pubkey.slice(0, 12);
   const npub = pubkeyToNpub(profile.pubkey);
-  const initial = displayName.charAt(0).toUpperCase();
-
-  const avatarFallback = (
-    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
-      <span className="text-sm font-bold text-white/70">{initial}</span>
-    </div>
-  );
 
   return (
     <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-700/60 transition-colors">
-      <button onClick={onViewProfile} className="flex-shrink-0">
-        {profile.picture && !imgFailed ? (
-          <img
-            src={safeImageUrl(profile.picture)}
-            alt=""
-            className="w-10 h-10 rounded-full object-cover bg-surface-700"
-            onError={() => setImgFailed(true)}
-          />
-        ) : (
-          avatarFallback
-        )}
-      </button>
+      <ClickableAvatar
+        pubkey={profile.pubkey}
+        picture={profile.picture}
+        name={displayName}
+        size="xl"
+      />
 
       <button onClick={onViewProfile} className="flex-1 min-w-0 text-left">
         <div className="flex items-center gap-1.5">

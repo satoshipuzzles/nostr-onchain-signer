@@ -16,6 +16,8 @@ import { ZapDialog } from './ZapDialog';
 import { bech32 } from '@scure/base';
 import { hexToBytes } from '@noble/hashes/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
+import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
+import { ClickableAvatar } from './ClickableAvatar';
 
 export interface NoteEngagement {
   replies: number;
@@ -127,6 +129,11 @@ interface ReactionGroup {
 
 export function NoteCard({ note, profile, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
   const { publicKey } = useAuth();
+  const { openProfile } = useProfilePopup();
+  const viewProfile = (pubkey: string) => {
+    openProfile(pubkey);
+    onViewProfile?.(pubkey);
+  };
   const [expanded, setExpanded] = useState(false);
   const [imageError, setImageError] = useState<Set<string>>(new Set());
 
@@ -519,33 +526,24 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
 
       {/* Author Header */}
       <div className="flex items-center gap-2.5 mb-2.5 pr-8">
+        <ClickableAvatar
+          pubkey={note.pubkey}
+          picture={profile?.picture}
+          name={displayName}
+          size="lg"
+        />
         <button
-          onClick={() => onViewProfile?.(note.pubkey)}
-          className="flex items-center gap-2.5 min-w-0 flex-1"
+          onClick={() => viewProfile(note.pubkey)}
+          className="flex-1 min-w-0 text-left"
         >
-          {profile?.picture ? (
-            <img
-              src={safeImageUrl(profile.picture)}
-              alt=""
-              className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0"
-            />
-          ) : (
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
-              <span className="text-xs font-bold text-white/80">
-                {displayName.charAt(0).toUpperCase()}
-              </span>
-            </div>
-          )}
-          <div className="flex-1 min-w-0 text-left">
-            <p className="text-sm font-medium text-white truncate">
-              {displayName}
+          <p className="text-sm font-medium text-white truncate">
+            {displayName}
+          </p>
+          {profile?.nip05 && (
+            <p className="text-[10px] text-gray-500 truncate">
+              {profile.nip05}
             </p>
-            {profile?.nip05 && (
-              <p className="text-[10px] text-gray-500 truncate">
-                {profile.nip05}
-              </p>
-            )}
-          </div>
+          )}
         </button>
         <div className="flex items-center gap-1 text-gray-500 flex-shrink-0">
           <Clock className="w-3 h-3" />
@@ -748,16 +746,21 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
               </div>
               <div className="space-y-1.5">
                 {zappers.slice(0, 10).map((z, i) => (
-                  <button
+                  <div
                     key={`${z.pubkey}-${i}`}
                     onClick={() => {
-                      if (z.pubkey) onViewProfile?.(z.pubkey);
+                      if (z.pubkey) viewProfile(z.pubkey);
                       setShowZappers(false);
                     }}
-                    className="flex items-center gap-2 w-full text-left hover:bg-surface-600 rounded-lg px-1.5 py-1 transition-colors"
+                    className="flex items-center gap-2 w-full text-left hover:bg-surface-600 rounded-lg px-1.5 py-1 transition-colors cursor-pointer"
                   >
-                    {z.profile?.picture ? (
-                      <img src={safeImageUrl(z.profile.picture)} alt="" className="w-5 h-5 rounded-full object-cover" />
+                    {z.pubkey ? (
+                      <ClickableAvatar
+                        pubkey={z.pubkey}
+                        picture={z.profile?.picture}
+                        name={z.profile?.displayName || z.profile?.name}
+                        size="xs"
+                      />
                     ) : (
                       <div className="w-5 h-5 rounded-full bg-surface-600" />
                     )}
@@ -767,7 +770,7 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
                     <span className="text-[11px] text-yellow-500 font-medium">
                       {formatSats(z.amount)}
                     </span>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

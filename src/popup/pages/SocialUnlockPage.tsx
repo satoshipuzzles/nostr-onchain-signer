@@ -13,6 +13,7 @@ import { CUSTOM_KIND } from '@/lib/nostr/kinds';
 import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
 import type { ProfileMetadata } from '@/lib/nostr/social';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
 interface Signature {
   pubkey: string;
@@ -121,13 +122,7 @@ function PageSignerBadge({ pubkey }: { pubkey: string }) {
 
   return (
     <div className="flex items-center gap-3 py-2">
-      {profile?.picture ? (
-        <img src={safeImageUrl(profile.picture)} alt="" className="w-8 h-8 rounded-full object-cover" />
-      ) : (
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
-          <span className="text-xs font-bold">{(profile?.name || pubkey.slice(0, 2)).charAt(0).toUpperCase()}</span>
-        </div>
-      )}
+      <ClickableAvatar pubkey={pubkey} picture={profile?.picture} name={profile?.displayName || profile?.name} size="md" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate">{profile?.displayName || profile?.name || pubkey.slice(0, 12) + '...'}</p>
         {profile?.nip05 && <p className="text-xs text-nostr/70 truncate">{profile.nip05}</p>}
@@ -155,13 +150,7 @@ function CreatorProfile({ pubkey }: { pubkey: string }) {
   const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
   return (
     <div className="flex items-center gap-3">
-      {profile?.picture ? (
-        <img src={safeImageUrl(profile.picture)} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
-      ) : (
-        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
-          <span className="text-sm font-bold text-white/80">{name.charAt(0).toUpperCase()}</span>
-        </div>
-      )}
+      <ClickableAvatar pubkey={pubkey} picture={profile?.picture} name={name} size="xl" />
       <div className="min-w-0">
         <p className="text-sm font-medium truncate">{name}</p>
         {profile?.nip05 && <p className="text-[10px] text-nostr/70 truncate">{profile.nip05}</p>}
