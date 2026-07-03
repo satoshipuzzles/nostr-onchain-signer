@@ -9,7 +9,8 @@
   ],
   "host_permissions": [
     "https://mempool.space/*",
-    "https://corsproxy.io/*"
+    "https://blockstream.info/*",
+    "https://mempool.emzy.de/*"
   ],
   "background": {
     "service_worker": "src/background/index.ts",

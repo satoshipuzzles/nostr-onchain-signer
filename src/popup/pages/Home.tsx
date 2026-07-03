@@ -83,12 +83,13 @@ export function Home() {
 
       if (bal.error) {
         log.warn('Dashboard', 'Balance fetch failed:', bal.error);
+        if (bal.cached) setBalance(bal.total);
       } else {
         setBalance(bal.total);
       }
 
       const cache: DashboardCache = {
-        balance: bal.error ? (balance ?? 0) : bal.total,
+        balance: bal.error && !bal.cached && balance !== null ? balance : bal.total,
         multisigCount: walletCount,
         multisigTotalSats: cachedTotal,
         pendingSignatures: pending.length,

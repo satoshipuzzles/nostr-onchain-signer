@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
-import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { fetchBalance, formatSats, getCachedBalance } from '@/lib/bitcoin/mempool';
 import {
   loadMyMultisigWallets, updateMultisigBalance,
   type ArchivedMultisig,
@@ -40,6 +40,10 @@ export function Wallets() {
       const multisigs = await loadMyMultisigWallets(publicKey);
       setWallets(multisigs.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
       log.info('Wallets', 'Loaded', multisigs.length, 'wallets from storage');
+
+      // Show cached personal balance if available
+      const cachedBal = getCachedBalance(address);
+      if (cachedBal) setBalance(cachedBal.total);
     } catch (err) {
       log.error('Wallets', 'Storage load failed:', err);
     } finally {
@@ -57,32 +61,29 @@ export function Wallets() {
     try {
       const bal = await fetchBalance(address);
       if (gen !== fetchGenRef.current) return;
-      if (bal.error) {
-        log.warn('Wallets', 'Personal balance fetch failed:', bal.error);
-      } else {
+      if (bal.total > 0 || !bal.error) {
         setBalance(bal.total);
+      } else if (bal.error) {
+        log.warn('Wallets', 'Personal balance fetch failed:', bal.error);
       }
 
       const all = await loadMyMultisigWallets(publicKey);
-      const concurrency = 3;
-      for (let i = 0; i < all.length; i += concurrency) {
+      // Sequential refresh — global rate limiter handles spacing
+      for (const wallet of all) {
         if (gen !== fetchGenRef.current) return;
-        const batch = all.slice(i, i + concurrency);
-        await Promise.allSettled(
-          batch.map(async (wallet) => {
-            try {
-              const wbal = await fetchBalance(wallet.wallet.address);
-              if (wbal.total !== wallet.currentBalance) {
-                await updateMultisigBalance(wallet.id, wbal.total);
-                setWallets((prev) =>
-                  prev.map((w) => w.id === wallet.id ? { ...w, currentBalance: wbal.total } : w)
-                );
-              }
-            } catch (err) {
-              log.warn('Wallets', `Balance refresh failed for ${wallet.name}:`, err);
+        try {
+          const wbal = await fetchBalance(wallet.wallet.address);
+          if (wbal.total !== wallet.currentBalance || wbal.cached) {
+            if (!wbal.error || wbal.cached) {
+              await updateMultisigBalance(wallet.id, wbal.total);
+              setWallets((prev) =>
+                prev.map((w) => w.id === wallet.id ? { ...w, currentBalance: wbal.total } : w)
+              );
             }
-          })
-        );
+          }
+        } catch (err) {
+          log.warn('Wallets', `Balance refresh failed for ${wallet.name}:`, err);
+        }
       }
     } finally {
       if (gen === fetchGenRef.current) setSyncing(false);

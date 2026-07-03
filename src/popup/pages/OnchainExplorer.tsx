@@ -6,7 +6,7 @@ import {
   decodeLightOp,
 } from '@/lib/bitcoin/opreturn';
 import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/ticker';
-import { getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { fetchMempoolApi, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
   Copy, Check, RefreshCw, Clock, ArrowRight, ArrowLeft,
@@ -120,32 +120,6 @@ type ProtocolMatch =
   | { protocol: 'LOPS'; hash: string };
 
 type Tab = 'overview' | 'transaction' | 'address';
-
-const MEMPOOL_API = 'https://mempool.space/api';
-const CORS_PROXY = 'https://corsproxy.io/?';
-
-async function fetchWithTimeout(url: string, ms = 10_000): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    return res;
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
-  }
-}
-
-async function fetchWithFallback(url: string, ms = 10_000): Promise<Response> {
-  try {
-    const res = await fetchWithTimeout(url, ms);
-    if (res.ok) return res;
-    throw new Error(`HTTP ${res.status}`);
-  } catch {
-    return fetchWithTimeout(`${CORS_PROXY}${encodeURIComponent(url)}`, ms);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -357,8 +331,8 @@ export function OnchainExplorer() {
   const loadStats = useCallback(async () => {
     const [s, diffRes, hrRes] = await Promise.allSettled([
       fetchBlockchainStatus(),
-      fetchWithFallback(`${MEMPOOL_API}/v1/difficulty-adjustment`).then((r) => r.ok ? r.json() : null),
-      fetchWithFallback(`${MEMPOOL_API}/v1/mining/hashrate/3d`).then((r) => r.ok ? r.json() : null),
+      fetchMempoolApi('/v1/difficulty-adjustment').then((r) => r.ok ? r.json() : null),
+      fetchMempoolApi('/v1/mining/hashrate/3d').then((r) => r.ok ? r.json() : null),
     ]);
     if (s.status === 'fulfilled') setStatus(s.value);
     if (diffRes.status === 'fulfilled' && diffRes.value) setDifficulty(diffRes.value);
@@ -368,7 +342,7 @@ export function OnchainExplorer() {
   const loadBlocks = useCallback(async () => {
     setBlocksError('');
     try {
-      const res = await fetchWithFallback(`${MEMPOOL_API}/v1/blocks`);
+      const res = await fetchMempoolApi('/v1/blocks');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: BlockSummary[] = await res.json();
       setBlocks(data.slice(0, 10));
@@ -417,7 +391,7 @@ export function OnchainExplorer() {
     if (blockTxs[blockHash]) return;
     setBlockTxsLoading(blockHash);
     try {
-      const res = await fetchWithFallback(`${MEMPOOL_API}/block/${blockHash}/txs`);
+      const res = await fetchMempoolApi(`/block/${blockHash}/txs`);
       if (res.ok) {
         const txs: TxData[] = await res.json();
         setBlockTxs((prev) => ({ ...prev, [blockHash]: txs.slice(0, 25) }));
@@ -438,7 +412,7 @@ export function OnchainExplorer() {
     setTxResult(null);
 
     try {
-      const res = await fetchWithFallback(`${MEMPOOL_API}/tx/${id}`);
+      const res = await fetchMempoolApi(`/tx/${id}`);
       if (!res.ok) throw new Error('Transaction not found');
       const tx: TxData = await res.json();
       setTxResult(tx);
@@ -446,7 +420,7 @@ export function OnchainExplorer() {
       if (status?.blockHeight) setTxCurrentHeight(status.blockHeight);
       else {
         try {
-          const hRes = await fetchWithFallback(`${MEMPOOL_API}/blocks/tip/height`);
+          const hRes = await fetchMempoolApi('/blocks/tip/height');
           if (hRes.ok) setTxCurrentHeight(parseInt(await hRes.text(), 10));
         } catch { /* ignore */ }
       }
@@ -471,9 +445,9 @@ export function OnchainExplorer() {
 
     try {
       const [infoRes, txsRes, utxoRes] = await Promise.all([
-        fetchWithFallback(`${MEMPOOL_API}/address/${address}`),
-        fetchWithFallback(`${MEMPOOL_API}/address/${address}/txs`),
-        fetchWithFallback(`${MEMPOOL_API}/address/${address}/utxo`),
+        fetchMempoolApi(`/address/${address}`),
+        fetchMempoolApi(`/address/${address}/txs`),
+        fetchMempoolApi(`/address/${address}/utxo`),
       ]);
       if (!infoRes.ok) throw new Error('Address not found');
 
