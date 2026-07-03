@@ -2,16 +2,20 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Hash, Copy, Check, Download, ExternalLink,
-  Loader2, Search, CheckCircle2, XCircle, FileDown,
+  Loader2, Search, CheckCircle2, XCircle, FileDown, Compass,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { encodeLightOp, decodeLightOp, verifyLightOp } from '@/lib/bitcoin/opreturn';
+import {
+  encodeLightOp, decodeLightOp, verifyLightOp,
+  decodeNostrOpReturn, decodeInvoiceOpReturn,
+} from '@/lib/bitcoin/opreturn';
 import { buildPsbt, downloadPsbtFile, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
-import { fetchFeeEstimates, formatSats } from '@/lib/bitcoin/mempool';
+import { fetchFeeEstimates, formatSats, fetchAddressTransactions, type Transaction } from '@/lib/bitcoin/mempool';
+import { resolveNip05 } from '@/lib/nostr/nip05';
 import { nip19 } from 'nostr-tools';
 
-type Tab = 'create' | 'verify' | 'history';
+type Tab = 'create' | 'verify' | 'history' | 'discover';
 
 interface LightOpEntry {
   eventId: string;
@@ -109,7 +113,7 @@ export function LightOps() {
 
       {/* Tabs */}
       <div className="flex mx-4 mb-4 bg-surface-800 rounded-xl p-1">
-        {(['create', 'verify', 'history'] as Tab[]).map((t) => (
+        {(['create', 'verify', 'history', 'discover'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -117,7 +121,7 @@ export function LightOps() {
               tab === t ? 'bg-white text-black font-semibold' : 'text-gray-400 hover:text-white'
             }`}
           >
-            {t === 'create' ? 'Create' : t === 'verify' ? 'Verify' : 'History'}
+            {t === 'create' ? 'Create' : t === 'verify' ? 'Verify' : t === 'history' ? 'History' : 'Discover'}
           </button>
         ))}
       </div>
@@ -127,6 +131,7 @@ export function LightOps() {
         {tab === 'create' && <CreateTab publicKey={publicKey} />}
         {tab === 'verify' && <VerifyTab />}
         {tab === 'history' && <HistoryTab publicKey={publicKey} />}
+        {tab === 'discover' && <DiscoverTab publicKey={publicKey} />}
       </div>
     </div>
   );
@@ -598,6 +603,379 @@ function HistoryTab({ publicKey }: { publicKey: string }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Discover Tab ───────────────────────────────────────────────
+
+type ProtocolType = 'NSTR' | 'NINV' | 'LOPS';
+
+interface DiscoveredOpReturn {
+  protocol: ProtocolType;
+  hash: string;
+  txid: string;
+  confirmed: boolean;
+  blockHeight?: number;
+  time?: number;
+}
+
+const PROTOCOL_STYLES: Record<ProtocolType, { label: string; color: string; bg: string; icon: string }> = {
+  NSTR: { label: 'NSTR', color: 'text-purple-400', bg: 'bg-purple-500/10', icon: '🟣' },
+  NINV: { label: 'NINV', color: 'text-orange-400', bg: 'bg-orange-500/10', icon: '🟠' },
+  LOPS: { label: 'LOPS', color: 'text-blue-400', bg: 'bg-blue-500/10', icon: '🔵' },
+};
+
+function scanTransactionForProtocols(tx: Transaction): DiscoveredOpReturn[] {
+  const results: DiscoveredOpReturn[] = [];
+
+  for (const vout of tx.vout) {
+    if (!vout.scriptpubkey || !vout.scriptpubkey.startsWith('6a')) continue;
+
+    const nstr = decodeNostrOpReturn(vout.scriptpubkey);
+    if (nstr) {
+      results.push({
+        protocol: 'NSTR',
+        hash: nstr.eventId,
+        txid: tx.txid,
+        confirmed: tx.status.confirmed,
+        blockHeight: tx.status.block_height,
+        time: tx.status.block_time,
+      });
+      continue;
+    }
+
+    const ninv = decodeInvoiceOpReturn(vout.scriptpubkey);
+    if (ninv) {
+      results.push({
+        protocol: 'NINV',
+        hash: ninv.hash,
+        txid: tx.txid,
+        confirmed: tx.status.confirmed,
+        blockHeight: tx.status.block_height,
+        time: tx.status.block_time,
+      });
+      continue;
+    }
+
+    const lops = decodeLightOp(vout.scriptpubkey);
+    if (lops) {
+      results.push({
+        protocol: 'LOPS',
+        hash: lops.hash,
+        txid: tx.txid,
+        confirmed: tx.status.confirmed,
+        blockHeight: tx.status.block_height,
+        time: tx.status.block_time,
+      });
+      continue;
+    }
+  }
+
+  return results;
+}
+
+async function discoverOpReturns(address: string): Promise<DiscoveredOpReturn[]> {
+  const txs = await fetchAddressTransactions(address);
+  const results: DiscoveredOpReturn[] = [];
+  for (const tx of txs) {
+    results.push(...scanTransactionForProtocols(tx));
+  }
+  return results;
+}
+
+function resolvePubkeyInput(input: string): string | null {
+  const trimmed = input.trim();
+  if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed;
+  try {
+    if (trimmed.startsWith('npub1')) {
+      const decoded = nip19.decode(trimmed);
+      if (decoded.type === 'npub') return decoded.data as string;
+    }
+  } catch {}
+  return null;
+}
+
+function timeAgo(unixSeconds: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSeconds;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(unixSeconds * 1000).toLocaleDateString();
+}
+
+function DiscoverTab({ publicKey }: { publicKey: string }) {
+  const [searchInput, setSearchInput] = useState('');
+  const [searchMode, setSearchMode] = useState<'author' | 'txid'>('author');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [results, setResults] = useState<DiscoveredOpReturn[]>([]);
+  const [resolvedAddress, setResolvedAddress] = useState('');
+  const [ownResults, setOwnResults] = useState<DiscoveredOpReturn[]>([]);
+  const [ownLoading, setOwnLoading] = useState(true);
+  const [copied, setCopied] = useState('');
+
+  useEffect(() => {
+    loadOwnOpReturns();
+  }, [publicKey]);
+
+  async function loadOwnOpReturns() {
+    setOwnLoading(true);
+    try {
+      const address = pubkeyToTaprootAddress(publicKey);
+      const discovered = await discoverOpReturns(address);
+      setOwnResults(discovered);
+    } catch {
+    } finally {
+      setOwnLoading(false);
+    }
+  }
+
+  async function handleSearch() {
+    setError('');
+    setResults([]);
+    setResolvedAddress('');
+
+    if (!searchInput.trim()) {
+      setError('Enter a search query');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      if (searchMode === 'txid') {
+        await searchByTxid();
+      } else {
+        await searchByAuthor();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Search failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function searchByAuthor() {
+    let pubkey: string | null = null;
+
+    pubkey = resolvePubkeyInput(searchInput);
+
+    if (!pubkey && searchInput.includes('@')) {
+      const nip05Result = await resolveNip05(searchInput);
+      if (nip05Result) pubkey = nip05Result.pubkey;
+    }
+
+    if (!pubkey) {
+      setError('Could not resolve pubkey. Provide an npub, 64-char hex, or NIP-05 address.');
+      return;
+    }
+
+    const address = pubkeyToTaprootAddress(pubkey);
+    setResolvedAddress(address);
+
+    const discovered = await discoverOpReturns(address);
+    if (discovered.length === 0) {
+      setError(`No protocol OP_RETURNs found for address ${address.slice(0, 12)}...`);
+      return;
+    }
+    setResults(discovered);
+  }
+
+  async function searchByTxid() {
+    const txid = searchInput.trim();
+    if (!/^[0-9a-f]{64}$/i.test(txid)) {
+      setError('Invalid transaction ID — must be 64-character hex');
+      return;
+    }
+
+    const res = await fetch(`https://mempool.space/api/tx/${txid}`);
+    if (!res.ok) {
+      setError('Transaction not found');
+      return;
+    }
+    const tx: Transaction = await res.json();
+    const discovered = scanTransactionForProtocols(tx);
+    if (discovered.length === 0) {
+      setError('No NSTR/NINV/LOPS protocol data found in this transaction');
+      return;
+    }
+    setResults(discovered);
+  }
+
+  async function copyText(text: string, label: string) {
+    await navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(''), 2000);
+  }
+
+  const allResults = results.length > 0 ? results : ownResults;
+  const showingOwn = results.length === 0 && ownResults.length > 0;
+
+  return (
+    <div className="space-y-4">
+      {/* Search section */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-3">
+          <Compass className="w-4 h-4 text-nostr" />
+          <span className="text-xs text-gray-400">Discover On-Chain Proofs</span>
+        </div>
+
+        <div className="flex gap-1.5 mb-3">
+          <button
+            onClick={() => setSearchMode('author')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              searchMode === 'author' ? 'bg-nostr/20 text-nostr font-medium' : 'bg-surface-700 text-gray-400'
+            }`}
+          >
+            By Author
+          </button>
+          <button
+            onClick={() => setSearchMode('txid')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              searchMode === 'txid' ? 'bg-bitcoin/20 text-bitcoin font-medium' : 'bg-surface-700 text-gray-400'
+            }`}
+          >
+            By Transaction
+          </button>
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            placeholder={searchMode === 'author' ? 'npub, hex pubkey, or NIP-05...' : '64-character txid...'}
+            className="input-field flex-1 text-sm"
+          />
+          <button
+            onClick={handleSearch}
+            disabled={loading || !searchInput.trim()}
+            className="btn-primary px-4 text-sm flex items-center gap-1.5"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            Scan
+          </button>
+        </div>
+
+        {resolvedAddress && (
+          <div className="mt-2 p-2 bg-surface-700/50 rounded-lg">
+            <span className="text-[10px] text-gray-500 block">Taproot Address</span>
+            <p className="text-[11px] font-mono text-gray-300 break-all">{resolvedAddress}</p>
+          </div>
+        )}
+
+        {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+      </div>
+
+      {/* Results */}
+      {allResults.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-xs text-gray-400">
+              {showingOwn ? 'Your On-Chain Proofs' : `Found ${allResults.length} result${allResults.length !== 1 ? 's' : ''}`}
+            </span>
+            {showingOwn && (
+              <span className="text-[10px] text-gray-500">{ownResults.length} total</span>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {allResults.map((item, i) => {
+              const style = PROTOCOL_STYLES[item.protocol];
+              return (
+                <div key={`${item.txid}-${i}`} className="card">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-md ${style.color} ${style.bg}`}>
+                      {style.icon} {style.label}
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ml-auto ${
+                      item.confirmed
+                        ? 'bg-green-500/15 text-green-400'
+                        : 'bg-yellow-500/15 text-yellow-400'
+                    }`}>
+                      {item.confirmed ? 'Confirmed' : 'Unconfirmed'}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500 w-12 flex-shrink-0">
+                        {item.protocol === 'NSTR' ? 'Event' : item.protocol === 'NINV' ? 'Invoice' : 'Hash'}
+                      </span>
+                      <span className="text-xs font-mono text-gray-300 truncate">
+                        {item.hash.slice(0, 16)}...{item.hash.slice(-8)}
+                      </span>
+                      <button onClick={() => copyText(item.hash, `hash-${i}`)} className="p-1 hover:bg-surface-700 rounded flex-shrink-0">
+                        {copied === `hash-${i}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-gray-500" />}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500 w-12 flex-shrink-0">Txid</span>
+                      <span className="text-xs font-mono text-gray-300 truncate">
+                        {item.txid.slice(0, 16)}...{item.txid.slice(-8)}
+                      </span>
+                      <button onClick={() => copyText(item.txid, `txid-${i}`)} className="p-1 hover:bg-surface-700 rounded flex-shrink-0">
+                        {copied === `txid-${i}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-gray-500" />}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                      {item.blockHeight && (
+                        <span>Block {item.blockHeight.toLocaleString()}</span>
+                      )}
+                      {item.blockHeight && item.time && <span>·</span>}
+                      {item.time && <span>{timeAgo(item.time)}</span>}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mt-3">
+                    {(item.protocol === 'NSTR' || item.protocol === 'LOPS') && (
+                      <button
+                        onClick={() => {
+                          const tab = document.querySelector('[data-tab="verify"]') as HTMLButtonElement;
+                          tab?.click();
+                        }}
+                        className="btn-secondary flex-1 text-xs flex items-center justify-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Verify
+                      </button>
+                    )}
+                    <a
+                      href={`https://mempool.space/tx/${item.txid}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-secondary flex-1 text-xs flex items-center justify-center gap-1.5"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Mempool
+                    </a>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state for own results */}
+      {!loading && results.length === 0 && ownResults.length === 0 && !ownLoading && (
+        <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+          <Compass className="w-10 h-10 mb-3 opacity-30" />
+          <p className="text-sm">No on-chain proofs found yet</p>
+          <p className="text-xs mt-1">Search by author or transaction to discover NSTR/NINV/LOPS data</p>
+        </div>
+      )}
+
+      {ownLoading && results.length === 0 && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-5 h-5 animate-spin text-gray-500 mr-2" />
+          <span className="text-sm text-gray-500">Scanning your address...</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -10,9 +10,8 @@ import {
   type SocialUnlockContent,
 } from '@/lib/nostr/social-unlock';
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
-import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
 interface Signature {
@@ -25,15 +24,133 @@ interface RevealData {
   revealed_at: number;
 }
 
+const PROFILE_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band', 'wss://purplepag.es'];
+
+function fetchProfileFromRelay(relayUrl: string, pubkey: string): Promise<ProfileMetadata | null> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => { ws.close(); resolve(null); }, 5000);
+    let ws: WebSocket;
+    try { ws = new WebSocket(relayUrl); } catch { clearTimeout(timeout); resolve(null); return; }
+    const subId = Math.random().toString(36).slice(2, 8);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify(['REQ', subId, { kinds: [0], authors: [pubkey], limit: 1 }]));
+    };
+
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data[0] === 'EVENT' && data[2]) {
+          clearTimeout(timeout);
+          ws.close();
+          const content = JSON.parse(data[2].content);
+          resolve({
+            pubkey,
+            name: content.name,
+            displayName: content.display_name || content.displayName,
+            picture: content.picture,
+            banner: content.banner,
+            about: content.about,
+            nip05: content.nip05,
+            lud16: content.lud16,
+            website: content.website,
+          });
+        } else if (data[0] === 'EOSE') {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(null);
+        }
+      } catch { clearTimeout(timeout); ws.close(); resolve(null); }
+    };
+
+    ws.onerror = () => { clearTimeout(timeout); resolve(null); };
+  });
+}
+
+async function resolveProfile(pubkey: string): Promise<ProfileMetadata | null> {
+  const cached = await getCachedProfile(pubkey);
+  if (cached && (cached.name || cached.displayName || cached.picture)) return cached;
+
+  for (const relayUrl of PROFILE_RELAYS) {
+    try {
+      const profile = await fetchProfileFromRelay(relayUrl, pubkey);
+      if (profile && (profile.name || profile.displayName || profile.picture)) {
+        const map = new Map<string, ProfileMetadata>();
+        map.set(pubkey, profile);
+        await cacheProfiles(map);
+        return profile;
+      }
+    } catch {}
+  }
+  return cached ?? null;
+}
+
+function useResolvedProfile(pubkey: string) {
+  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    resolveProfile(pubkey).then((p) => {
+      if (!cancelled) {
+        setProfile(p);
+        setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [pubkey]);
+
+  return { profile, loading };
+}
+
 function PageSignerBadge({ pubkey }: { pubkey: string }) {
-  return <ProfileBadge pubkey={pubkey} size="sm" showNip05={true} />;
+  const { profile, loading } = useResolvedProfile(pubkey);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3 py-2">
+        <div className="w-8 h-8 rounded-full bg-surface-700 animate-pulse" />
+        <div className="flex-1 min-w-0">
+          <div className="h-4 w-24 bg-surface-700 rounded animate-pulse" />
+        </div>
+        <span className="text-xs text-green-400">✓ Signed</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-3 py-2">
+      {profile?.picture ? (
+        <img src={safeImageUrl(profile.picture)} alt="" className="w-8 h-8 rounded-full object-cover" />
+      ) : (
+        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
+          <span className="text-xs font-bold">{(profile?.name || pubkey.slice(0, 2)).charAt(0).toUpperCase()}</span>
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{profile?.displayName || profile?.name || pubkey.slice(0, 12) + '...'}</p>
+        {profile?.nip05 && <p className="text-xs text-nostr/70 truncate">{profile.nip05}</p>}
+      </div>
+      <span className="text-xs text-green-400">✓ Signed</span>
+    </div>
+  );
 }
 
 function CreatorProfile({ pubkey }: { pubkey: string }) {
-  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
-  useEffect(() => {
-    getCachedProfile(pubkey).then((p) => setProfile(p));
-  }, [pubkey]);
+  const { profile, loading } = useResolvedProfile(pubkey);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-full bg-surface-700 animate-pulse flex-shrink-0" />
+        <div className="min-w-0">
+          <div className="h-4 w-28 bg-surface-700 rounded animate-pulse mb-1" />
+          <div className="h-3 w-20 bg-surface-700 rounded animate-pulse" />
+        </div>
+      </div>
+    );
+  }
 
   const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
   return (
@@ -290,15 +407,9 @@ export function SocialUnlockPage() {
         {signatures.length > 0 && (
           <div className="card mb-4">
             <p className="text-xs text-gray-400 mb-2">Signers ({signatures.length})</p>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
+            <div className="space-y-1 max-h-48 overflow-y-auto">
               {signatures.map((sig, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <PageSignerBadge pubkey={sig.pubkey} />
-                  </div>
-                  {sig.message && <span className="text-[10px] text-gray-500 truncate">&mdash; {sig.message}</span>}
-                </div>
+                <PageSignerBadge key={i} pubkey={sig.pubkey} />
               ))}
             </div>
           </div>

@@ -45,6 +45,8 @@ export interface Transaction {
     };
   }[];
   vout: {
+    scriptpubkey?: string;
+    scriptpubkey_asm?: string;
     scriptpubkey_address?: string;
     value: number;
   }[];
