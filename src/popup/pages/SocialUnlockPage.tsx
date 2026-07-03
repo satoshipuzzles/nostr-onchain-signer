@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Lock, Unlock, Users, ExternalLink, Check, LogIn } from 'lucide-react';
+import { Lock, Unlock, Users, ExternalLink, Check, LogIn, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import {
   decryptContent,
@@ -12,6 +12,7 @@ import {
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
+import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
 interface Signature {
@@ -25,6 +26,10 @@ interface RevealData {
 }
 
 function PageSignerBadge({ pubkey }: { pubkey: string }) {
+  return <ProfileBadge pubkey={pubkey} size="sm" showNip05={true} />;
+}
+
+function CreatorProfile({ pubkey }: { pubkey: string }) {
   const [profile, setProfile] = useState<ProfileMetadata | null>(null);
   useEffect(() => {
     getCachedProfile(pubkey).then((p) => setProfile(p));
@@ -32,19 +37,23 @@ function PageSignerBadge({ pubkey }: { pubkey: string }) {
 
   const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-3">
       {profile?.picture ? (
-        <img src={safeImageUrl(profile.picture)} alt="" className="w-6 h-6 rounded-full object-cover flex-shrink-0" />
+        <img src={safeImageUrl(profile.picture)} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
       ) : (
-        <div className="w-6 h-6 rounded-full bg-surface-600 flex items-center justify-center text-[10px] font-medium flex-shrink-0">
-          {name.charAt(0).toUpperCase()}
+        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
+          <span className="text-sm font-bold text-white/80">{name.charAt(0).toUpperCase()}</span>
         </div>
       )}
-      <span className="text-xs text-gray-300 truncate">{name}</span>
-      {profile?.nip05 && <span className="text-[9px] text-nostr/70 truncate">{profile.nip05}</span>}
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate">{name}</p>
+        {profile?.nip05 && <p className="text-[10px] text-nostr/70 truncate">{profile.nip05}</p>}
+      </div>
     </div>
   );
 }
+
+const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
 
 export function SocialUnlockPage() {
   const { eventId } = useParams<{ eventId: string }>();
@@ -56,6 +65,10 @@ export function SocialUnlockPage() {
   const [reveal, setReveal] = useState<RevealData | null>(null);
   const [revealedContent, setRevealedContent] = useState<string | null>(null);
   const [connectedPubkey, setConnectedPubkey] = useState<string | null>(null);
+  const [signing, setSigning] = useState(false);
+  const [hasSigned, setHasSigned] = useState(false);
+  const [signSuccess, setSignSuccess] = useState(false);
+  const [signError, setSignError] = useState<string | null>(null);
 
   useEffect(() => {
     if (eventId) fetchUnlockEvent(eventId);
@@ -69,6 +82,12 @@ export function SocialUnlockPage() {
     }
   }, [reveal, content]);
 
+  useEffect(() => {
+    if (connectedPubkey && signatures.length > 0) {
+      setHasSigned(signatures.some((s) => s.pubkey === connectedPubkey));
+    }
+  }, [connectedPubkey, signatures]);
+
   async function fetchUnlockEvent(id: string) {
     setLoading(true);
     setError(null);
@@ -78,7 +97,7 @@ export function SocialUnlockPage() {
       const readRelays = getReadRelays(relayList);
 
       if (readRelays.length === 0) {
-        readRelays.push('wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social');
+        readRelays.push(...DEFAULT_RELAYS);
       }
 
       const result = await fetchFromRelays(readRelays, id);
@@ -104,17 +123,96 @@ export function SocialUnlockPage() {
         const pk = await (window as any).nostr.getPublicKey();
         setConnectedPubkey(pk);
       } else {
-        window.location.href = '/';
+        setSignError('No NIP-07 extension found. Install Alby, nos2x, or another Nostr signer extension.');
       }
     } catch (err) {
       console.error('NIP-07 connect failed:', err);
+      setSignError('Failed to connect. Please try again.');
     }
+  }
+
+  function getEligibility(): 'eligible' | 'not_eligible' | 'already_signed' | 'is_creator' {
+    if (!connectedPubkey || !content) return 'eligible';
+    if (connectedPubkey === creatorPubkey) return 'is_creator';
+    if (hasSigned || signSuccess) return 'already_signed';
+    if (content.allowed_pubkeys && content.allowed_pubkeys.length > 0) {
+      if (!content.allowed_pubkeys.includes(connectedPubkey)) return 'not_eligible';
+    }
+    return 'eligible';
+  }
+
+  async function handleSign() {
+    if (!eventId || !connectedPubkey || !content) return;
+    setSigning(true);
+    setSignError(null);
+
+    try {
+      const nostr = (window as any).nostr;
+      if (!nostr) throw new Error('NIP-07 extension not found');
+
+      const signContent = JSON.stringify({
+        unlock_event_id: eventId,
+        message: 'Signed via public unlock page',
+      });
+
+      const event = {
+        kind: CUSTOM_KIND.SOCIAL_UNLOCK_SIGN,
+        content: signContent,
+        tags: [
+          ['e', eventId],
+          ['p', creatorPubkey],
+        ],
+        created_at: Math.floor(Date.now() / 1000),
+      };
+
+      const signedEvent = await nostr.signEvent(event);
+      if (!signedEvent) throw new Error('Signing was cancelled');
+
+      await publishToRelays(signedEvent);
+
+      setSignatures((prev) => {
+        if (prev.some((s) => s.pubkey === connectedPubkey)) return prev;
+        return [...prev, { pubkey: connectedPubkey, message: 'Signed via public unlock page' }];
+      });
+      setHasSigned(true);
+      setSignSuccess(true);
+    } catch (err) {
+      setSignError(err instanceof Error ? err.message : 'Signing failed');
+    } finally {
+      setSigning(false);
+    }
+  }
+
+  async function publishToRelays(event: any): Promise<void> {
+    const relayList = await loadRelayList();
+    const writeRelays = getReadRelays(relayList);
+    const relayUrls = writeRelays.length > 0 ? writeRelays.slice(0, 3) : DEFAULT_RELAYS;
+
+    const promises = relayUrls.map((relayUrl) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(() => { ws.close(); resolve(); }, 8000);
+        let ws: WebSocket;
+        try { ws = new WebSocket(relayUrl); } catch { clearTimeout(timer); resolve(); return; }
+        ws.onopen = () => { ws.send(JSON.stringify(['EVENT', event])); };
+        ws.onmessage = (msg) => {
+          try {
+            const data = JSON.parse(msg.data);
+            if (data[0] === 'OK') { clearTimeout(timer); ws.close(); resolve(); }
+          } catch { /* ignore */ }
+        };
+        ws.onerror = () => { clearTimeout(timer); resolve(); };
+      })
+    );
+    await Promise.allSettled(promises);
   }
 
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="animate-pulse text-gray-500">Loading social unlock...</div>
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-nostr mx-auto mb-3" />
+          <p className="text-gray-500 text-sm">Loading social unlock...</p>
+        </div>
       </div>
     );
   }
@@ -130,11 +228,12 @@ export function SocialUnlockPage() {
 
   const progress = signatures.length / content.threshold;
   const isUnlocked = signatures.length >= content.threshold;
+  const eligibility = getEligibility();
 
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-8 pb-24">
       <div className="max-w-lg mx-auto">
-        {/* Header */}
+        {/* Hero Header */}
         <div className="text-center mb-6">
           <div className={`w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center ${
             isUnlocked ? 'bg-green-500/15' : 'bg-white/5'
@@ -158,7 +257,7 @@ export function SocialUnlockPage() {
               <Users className="w-3.5 h-3.5" />
               Signatures
             </span>
-            <span className="text-sm font-medium">
+            <span className={`text-sm font-medium ${isUnlocked ? 'text-green-400' : ''}`}>
               {signatures.length} / {content.threshold}
             </span>
           </div>
@@ -183,7 +282,7 @@ export function SocialUnlockPage() {
         {creatorPubkey && (
           <div className="card mb-4">
             <p className="text-xs text-gray-400 mb-2">Creator</p>
-            <PageSignerBadge pubkey={creatorPubkey} />
+            <CreatorProfile pubkey={creatorPubkey} />
           </div>
         )}
 
@@ -207,7 +306,7 @@ export function SocialUnlockPage() {
 
         {/* Revealed content or locked state */}
         {isUnlocked && revealedContent ? (
-          <div className="card border-green-500/20 animate-[scale-in_0.3s_ease-out]">
+          <div className="card border-green-500/20 animate-[scale-in_0.3s_ease-out] mb-4">
             <div className="flex items-center gap-2 mb-3">
               <Unlock className="w-4 h-4 text-green-400" />
               <span className="text-xs font-medium text-green-400">Content Unlocked</span>
@@ -229,7 +328,7 @@ export function SocialUnlockPage() {
             )}
           </div>
         ) : !isUnlocked ? (
-          <div className="card text-center">
+          <div className="card text-center mb-4">
             <Lock className="w-8 h-8 text-gray-600 mx-auto mb-2" />
             <p className="text-sm text-gray-400 mb-1">Content is locked</p>
             <p className="text-xs text-gray-600">
@@ -237,29 +336,89 @@ export function SocialUnlockPage() {
             </p>
           </div>
         ) : (
-          <div className="card text-center">
+          <div className="card text-center mb-4">
             <p className="text-sm text-gray-400">Threshold met. Waiting for creator to publish reveal.</p>
           </div>
         )}
 
-        {/* Login to sign */}
-        {!isUnlocked && !connectedPubkey && (
-          <div className="card mt-4 text-center">
-            <p className="text-sm text-gray-400 mb-3">Want to help unlock this content?</p>
+        {/* Connect / Sign Section */}
+        {!connectedPubkey ? (
+          <div className="card text-center">
+            <p className="text-sm text-gray-400 mb-3">
+              {isUnlocked ? 'Connect to verify your identity' : 'Want to help unlock this content?'}
+            </p>
             <button
               onClick={handleConnect}
-              className="btn-primary w-full flex items-center justify-center gap-2"
+              className="btn-primary w-full flex items-center justify-center gap-2 py-3"
             >
               <LogIn className="w-4 h-4" />
-              Connect with NIP-07 to Sign
+              Connect with Nostr
             </button>
+            <p className="text-[10px] text-gray-600 mt-2">Requires a NIP-07 browser extension (Alby, nos2x, etc.)</p>
+            {signError && (
+              <p className="text-xs text-red-400 mt-2">{signError}</p>
+            )}
           </div>
-        )}
+        ) : (
+          <div className="card">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-2 h-2 rounded-full bg-green-400" />
+              <span className="text-xs text-green-400">Connected</span>
+              <code className="text-[10px] text-gray-500 font-mono ml-auto">{connectedPubkey.slice(0, 12)}...{connectedPubkey.slice(-6)}</code>
+            </div>
 
-        {connectedPubkey && !isUnlocked && (
-          <div className="card mt-4 text-center">
-            <p className="text-xs text-green-400 mb-1">Connected</p>
-            <code className="text-[10px] text-gray-400 font-mono">{connectedPubkey.slice(0, 12)}...{connectedPubkey.slice(-6)}</code>
+            {/* Sign Success */}
+            {(eligibility === 'already_signed') && (
+              <div className="flex items-center gap-3 py-3 px-4 bg-green-500/10 border border-green-500/20 rounded-xl">
+                <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-green-400">You've already signed!</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Your signature has been recorded</p>
+                </div>
+              </div>
+            )}
+
+            {/* Creator view */}
+            {eligibility === 'is_creator' && (
+              <div className="flex items-center gap-3 py-3 px-4 bg-nostr/10 border border-nostr/20 rounded-xl">
+                <Users className="w-5 h-5 text-nostr flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-nostr">You created this unlock</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Share the link for others to sign</p>
+                </div>
+              </div>
+            )}
+
+            {/* Not eligible */}
+            {eligibility === 'not_eligible' && (
+              <div className="flex items-center gap-3 py-3 px-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                <XCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-red-400">You're not eligible to sign this unlock</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Only selected users can sign</p>
+                </div>
+              </div>
+            )}
+
+            {/* Eligible to sign */}
+            {eligibility === 'eligible' && !isUnlocked && (
+              <>
+                <button
+                  onClick={handleSign}
+                  disabled={signing}
+                  className="w-full py-3 bg-gradient-to-r from-nostr to-nostr/80 text-white rounded-xl font-medium text-sm hover:opacity-90 transition-all flex items-center justify-center gap-2"
+                >
+                  {signing ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
+                  ) : (
+                    <><Lock className="w-4 h-4" /> Sign to Unlock</>
+                  )}
+                </button>
+                {signError && (
+                  <p className="text-xs text-red-400 mt-2 text-center">{signError}</p>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -322,17 +481,14 @@ async function fetchFromRelays(relayUrls: string[], eventId: string): Promise<Fe
       const subId = `pub_unlock_${Math.random().toString(36).slice(2, 8)}`;
 
       ws.onopen = () => {
-        // Fetch the main event by ID
         ws.send(JSON.stringify(['REQ', subId, { ids: [eventId] }]));
 
-        // Fetch signatures referencing this event
         ws.send(JSON.stringify(['REQ', `${subId}_sigs`, {
           kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_SIGN],
           '#e': [eventId],
           limit: 200,
         }]));
 
-        // Fetch reveal for this event
         ws.send(JSON.stringify(['REQ', `${subId}_reveal`, {
           kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL],
           '#e': [eventId],

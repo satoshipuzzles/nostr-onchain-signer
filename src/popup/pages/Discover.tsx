@@ -48,13 +48,12 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
     if (stats.totalProfiles > 0) {
       await loadFromCache(activityWindow);
       setLoading(false);
-      // Auto-refresh in background if stale (>5 min since last sync)
       if (Date.now() - stats.lastSync > 5 * 60 * 1000) {
         syncFromRelays();
       }
     } else {
-      // First time — auto-sync immediately
-      await syncFromRelays();
+      setLoading(false);
+      syncFromRelays();
     }
   }
 

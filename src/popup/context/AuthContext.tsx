@@ -97,7 +97,14 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     loadProfileAndFollows(initialPublicKey);
     loadAccountsOnMount(initialPassword);
     migrateUnownedWallets(initialPublicKey).catch(() => {});
+    preloadAppData();
   }, []);
+
+  async function preloadAppData() {
+    import('@/lib/nostr/cache').then(({ fullDiscoverySync }) => {
+      fullDiscoverySync('7d', { maxUsers: 2000 }).catch(() => {});
+    });
+  }
 
   async function loadAccountsOnMount(password: string) {
     try {

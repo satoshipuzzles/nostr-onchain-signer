@@ -25,6 +25,7 @@ import { resolveNip05 } from '@/lib/nostr/nip05';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
+import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { SignedEvent } from '@/lib/nostr/events';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
@@ -1234,25 +1235,7 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
 // ─── Signer Badge ───────────────────────────────────────────────
 
 function SignerBadge({ pubkey }: { pubkey: string }) {
-  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
-  useEffect(() => {
-    getCachedProfile(pubkey).then((p) => setProfile(p));
-  }, [pubkey]);
-
-  const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
-  return (
-    <div className="flex items-center gap-2">
-      {profile?.picture ? (
-        <img src={safeImageUrl(profile.picture)} alt="" className="w-6 h-6 rounded-full object-cover flex-shrink-0" />
-      ) : (
-        <div className="w-6 h-6 rounded-full bg-surface-600 flex items-center justify-center text-[10px] font-medium flex-shrink-0">
-          {name.charAt(0).toUpperCase()}
-        </div>
-      )}
-      <span className="text-xs text-gray-300 truncate">{name}</span>
-      {profile?.nip05 && <span className="text-[9px] text-nostr/70 truncate">{profile.nip05}</span>}
-    </div>
-  );
+  return <ProfileBadge pubkey={pubkey} size="sm" showNip05={true} />;
 }
 
 // ─── Relay Fetching ─────────────────────────────────────────────

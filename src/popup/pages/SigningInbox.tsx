@@ -16,6 +16,7 @@ import { formatSats } from '@/lib/bitcoin/mempool';
 
 import { createMessageId } from '@/shared/messages';
 import { InvoiceCreator } from '@/popup/components/InvoiceCreator';
+import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
   Shield, AlertTriangle, Copy, Link, FileText,
@@ -943,8 +944,6 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                           <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Co-signers</p>
                           <div className="space-y-1.5">
                             {signerStatuses.map((signer) => {
-                              const profile = profiles.get(signer.pubkey);
-                              const signerName = profile?.displayName || profile?.name || signer.displayName || signer.pubkey.slice(0, 12);
                               const isSigned = signer.status === 'signed';
                               const isMe = signer.pubkey === publicKey;
 
@@ -955,9 +954,10 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                                   ) : (
                                     <Clock className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
                                   )}
-                                  <span className={`text-xs flex-1 truncate ${isSigned ? 'text-green-400' : 'text-gray-300'}`}>
-                                    {signerName}{isMe ? ' (you)' : ''}
-                                  </span>
+                                  <div className={`flex-1 min-w-0 ${isSigned ? '[&_p]:text-green-400' : ''}`}>
+                                    <ProfileBadge pubkey={signer.pubkey} size="sm" showNip05={false} />
+                                  </div>
+                                  {isMe && <span className="text-[9px] text-bitcoin font-medium">(you)</span>}
                                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
                                     isSigned ? 'bg-green-500/15 text-green-400' : 'bg-gray-500/15 text-gray-400'
                                   }`}>
@@ -1582,9 +1582,7 @@ function RequestDetail({
               {responders.map((r) => (
                 <div key={r.pubkey} className="flex items-center gap-2">
                   <Check className="w-3 h-3 text-green-400 flex-shrink-0" />
-                  <code className="text-[10px] text-gray-300 font-mono truncate">
-                    {r.pubkey.slice(0, 8)}...{r.pubkey.slice(-8)}
-                  </code>
+                  <ProfileBadge pubkey={r.pubkey} size="sm" showNip05={false} />
                 </div>
               ))}
             </div>

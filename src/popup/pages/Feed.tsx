@@ -350,8 +350,8 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
 
       {/* Feed Content */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-24">
-        {/* Loading */}
-        {loading && (
+        {/* Loading — only show spinner when no notes have arrived yet */}
+        {loading && notes.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12">
             <Loader2 className="w-8 h-8 text-nostr animate-spin mb-3" />
             <p className="text-sm text-gray-400">Loading notes...</p>

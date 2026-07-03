@@ -70,7 +70,11 @@ export async function loadMultisigWallets(): Promise<ArchivedMultisig[]> {
 
 export async function loadMyMultisigWallets(ownerPubkey: string): Promise<ArchivedMultisig[]> {
   const all = await loadMultisigWallets();
-  return all.filter((w) => w.ownerPubkey === ownerPubkey);
+  return all.filter((w) =>
+    w.ownerPubkey === ownerPubkey ||
+    w.wallet?.config?.pubkeys?.includes(ownerPubkey) ||
+    w.keyHolders?.some((kh) => kh.pubkey === ownerPubkey)
+  );
 }
 
 /**

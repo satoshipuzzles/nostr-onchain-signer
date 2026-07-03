@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Send, MessageCircle } from 'lucide-react';
 import { safeImageUrl } from '@/lib/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
+import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import { encryptDM, decryptDM } from '@/lib/nostr/dm';
 
 interface Conversation {
@@ -58,8 +59,21 @@ export function Messages() {
   }, [messages]);
 
   async function loadConversations() {
-    setLoading(true);
     try {
+      // Try primary cache key, then legacy fallback
+      const cached = await chrome.storage.local.get([`dm_conversations_${publicKey}`, `messages_${publicKey}`]);
+      const cachedConvs: Conversation[] = cached[`dm_conversations_${publicKey}`] ?? cached[`messages_${publicKey}`] ?? [];
+      if (Array.isArray(cachedConvs) && cachedConvs.length > 0) {
+        setConversations(cachedConvs);
+        setLoading(false);
+        for (const conv of cachedConvs.slice(0, 20)) {
+          const p = await getCachedProfile(conv.pubkey);
+          if (p) setProfiles((prev) => ({ ...prev, [conv.pubkey]: p }));
+        }
+      } else {
+        setLoading(true);
+      }
+
       const convMap = new Map<string, Conversation>();
 
       for (const relayUrl of DEFAULT_RELAYS) {
@@ -103,7 +117,13 @@ export function Messages() {
       }
 
       const sorted = Array.from(convMap.values()).sort((a, b) => b.lastTimestamp - a.lastTimestamp);
-      setConversations(sorted);
+      if (sorted.length > 0) {
+        setConversations(sorted);
+      }
+      chrome.storage.local.set({
+        [`dm_conversations_${publicKey}`]: sorted,
+        [`messages_${publicKey}`]: sorted,
+      }).catch(() => {});
 
       // Progressively load profiles so they render as they arrive
       for (const conv of sorted.slice(0, 20)) {
@@ -310,33 +330,24 @@ export function Messages() {
         )}
 
         {conversations.map((conv) => {
-          const profile = profiles[conv.pubkey];
-          const name = profile?.displayName || profile?.name || conv.pubkey.slice(0, 16) + '...';
           return (
             <button
               key={conv.pubkey}
               onClick={() => setSelectedPubkey(conv.pubkey)}
               className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors border-b border-white/5 text-left"
             >
-              {profile?.picture ? (
-                <img src={safeImageUrl(profile.picture)} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-nostr/40 to-bitcoin/30 flex items-center justify-center flex-shrink-0">
-                  <span className="text-sm font-bold text-white/80">
-                    {(profile?.displayName || profile?.name || conv.pubkey.slice(0, 1) || '?').charAt(0).toUpperCase()}
-                  </span>
-                </div>
-              )}
               <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium truncate">{name}</p>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <ProfileBadge pubkey={conv.pubkey} size="lg" showNip05={false} />
+                  </div>
                   <span className="text-[10px] text-gray-600 flex-shrink-0">
                     {new Date(conv.lastTimestamp * 1000).toLocaleDateString()}
                   </span>
                 </div>
-                <p className="text-xs text-gray-500 truncate">{conv.lastMessage}</p>
+                <p className="text-xs text-gray-500 truncate pl-12 mt-0.5">{conv.lastMessage}</p>
               </div>
-              {conv.unread && <div className="w-2 h-2 rounded-full bg-white flex-shrink-0" />}
+              {conv.unread && <div className="w-2 h-2 rounded-full bg-nostr flex-shrink-0" />}
             </button>
           );
         })}

@@ -114,7 +114,7 @@ export function LightOps() {
             key={t}
             onClick={() => setTab(t)}
             className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
-              tab === t ? 'bg-white text-black' : 'text-gray-400 hover:text-white'
+              tab === t ? 'bg-white text-black font-semibold' : 'text-gray-400 hover:text-white'
             }`}
           >
             {t === 'create' ? 'Create' : t === 'verify' ? 'Verify' : 'History'}

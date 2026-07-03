@@ -2,9 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Loader2, Check, Copy, ExternalLink, QrCode, Shield,
-  CheckCircle2, Download, AlertTriangle, Clock, X,
+  CheckCircle2, Download, AlertTriangle, Clock, X, LogIn, XCircle,
 } from 'lucide-react';
 import { CUSTOM_KIND, type SigningRequestContent, type SigningResponseContent } from '@/lib/nostr/kinds';
+import { getCachedProfile } from '@/lib/nostr/cache';
+import { safeImageUrl } from '@/lib/utils';
+import type { ProfileMetadata } from '@/lib/nostr/social';
 
 const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
 const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
@@ -25,6 +28,38 @@ interface SignerInfo {
   psbtHex?: string;
 }
 
+function SignerBadge({ pubkey, signed }: { pubkey: string; signed: boolean }) {
+  const [profile, setProfile] = useState<ProfileMetadata | null>(null);
+  useEffect(() => {
+    getCachedProfile(pubkey).then((p) => setProfile(p));
+  }, [pubkey]);
+
+  const name = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
+  return (
+    <div className="flex items-center gap-2">
+      {signed ? (
+        <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+      ) : (
+        <Clock className="w-3.5 h-3.5 text-gray-500 flex-shrink-0" />
+      )}
+      {profile?.picture ? (
+        <img src={safeImageUrl(profile.picture)} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
+      ) : (
+        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center flex-shrink-0">
+          <span className="text-[10px] font-bold text-white/70">{name.charAt(0).toUpperCase()}</span>
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <span className="text-xs text-gray-300 truncate block">{name}</span>
+        {profile?.nip05 && <span className="text-[9px] text-nostr/70 truncate block">{profile.nip05}</span>}
+      </div>
+      <span className={`text-[10px] flex-shrink-0 ${signed ? 'text-green-400' : 'text-gray-500'}`}>
+        {signed ? 'Signed' : 'Pending'}
+      </span>
+    </div>
+  );
+}
+
 export function SignPage() {
   const { roundId } = useParams<{ roundId: string }>();
   const [loading, setLoading] = useState(true);
@@ -33,22 +68,28 @@ export function SignPage() {
   const [request, setRequest] = useState<SigningRequestContent | null>(null);
   const [signers, setSigners] = useState<SignerInfo[]>([]);
   const [signedPsbts, setSignedPsbts] = useState<string[]>([]);
-  const [hasNip07, setHasNip07] = useState(false);
   const [signing, setSigning] = useState(false);
   const [signed, setSigned] = useState(false);
   const [userPubkey, setUserPubkey] = useState('');
+  const [connecting, setConnecting] = useState(false);
   const [copied, setCopied] = useState('');
   const [copiedPsbt, setCopiedPsbt] = useState(false);
   const responseCleanupRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    setHasNip07(typeof (window as any).nostr !== 'undefined');
-  }, []);
+  // All co-signer pubkeys extracted from the request event's p tags
+  const [coSignerPubkeys, setCoSignerPubkeys] = useState<string[]>([]);
 
   useEffect(() => {
     if (roundId) fetchSigningRequest(roundId);
     return () => { responseCleanupRef.current?.(); };
   }, [roundId]);
+
+  // Check if the connected user has already signed when we get responses
+  useEffect(() => {
+    if (userPubkey && signers.some((s) => s.pubkey === userPubkey && s.signed)) {
+      setSigned(true);
+    }
+  }, [userPubkey, signers]);
 
   async function fetchSigningRequest(rid: string) {
     setLoading(true);
@@ -73,6 +114,12 @@ export function SignPage() {
     }
 
     setRequestEvent(foundEvent);
+
+    // Extract co-signer pubkeys from p tags
+    const pTags = foundEvent.tags.filter((t) => t[0] === 'p').map((t) => t[1]);
+    // Include the request author as well
+    const allPubkeys = Array.from(new Set([foundEvent.pubkey, ...pTags]));
+    setCoSignerPubkeys(allPubkeys);
 
     try {
       const parsed: SigningRequestContent = JSON.parse(foundEvent.content);
@@ -192,6 +239,34 @@ export function SignPage() {
     };
   }
 
+  async function handleConnect() {
+    setConnecting(true);
+    try {
+      const nostr = (window as any).nostr;
+      if (!nostr?.getPublicKey) {
+        setError('No NIP-07 extension found. Install Alby, nos2x, or another Nostr signer extension.');
+        return;
+      }
+      const pk = await nostr.getPublicKey();
+      setUserPubkey(pk);
+    } catch (err) {
+      console.error('NIP-07 connect failed:', err);
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  function getSignEligibility(): 'eligible' | 'not_cosigner' | 'already_signed' | 'is_initiator' {
+    if (!userPubkey || !requestEvent) return 'eligible';
+    if (signed) return 'already_signed';
+    if (signers.some((s) => s.pubkey === userPubkey && s.signed)) return 'already_signed';
+    // Check if user is a co-signer (in p tags or is the author)
+    const isCoSigner = coSignerPubkeys.includes(userPubkey);
+    if (!isCoSigner) return 'not_cosigner';
+    if (userPubkey === requestEvent.pubkey) return 'is_initiator';
+    return 'eligible';
+  }
+
   async function handleSign() {
     if (!requestEvent || !request || !roundId) return;
 
@@ -200,8 +275,11 @@ export function SignPage() {
       const nostr = (window as any).nostr;
       if (!nostr) throw new Error('NIP-07 extension not found');
 
-      const pubkey = await nostr.getPublicKey();
-      setUserPubkey(pubkey);
+      let pubkey = userPubkey;
+      if (!pubkey) {
+        pubkey = await nostr.getPublicKey();
+        setUserPubkey(pubkey);
+      }
 
       const responseEvent = {
         kind: CUSTOM_KIND.SIGNING_RESPONSE,
@@ -278,10 +356,23 @@ export function SignPage() {
 
   const signingUrl = `${VERCEL_URL}/sign/${roundId}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(signingUrl)}`;
-  const signedCount = signers.length + (request?.signed_count ?? 0);
+  const signedCount = signers.filter((s) => s.signed).length + (request?.signed_count ?? 0);
   const threshold = request?.threshold ?? 0;
   const isReady = threshold > 0 && signedCount >= threshold;
   const isExpired = request?.expires_at ? request.expires_at < Math.floor(Date.now() / 1000) : false;
+  const eligibility = getSignEligibility();
+
+  // Build co-signer display list merging p-tag pubkeys with response data
+  const coSignerDisplay: { pubkey: string; signed: boolean }[] = coSignerPubkeys.map((pk) => ({
+    pubkey: pk,
+    signed: signers.some((s) => s.pubkey === pk && s.signed),
+  }));
+  // Add any signers from responses not in the original co-signer list
+  for (const s of signers) {
+    if (!coSignerDisplay.some((c) => c.pubkey === s.pubkey)) {
+      coSignerDisplay.push({ pubkey: s.pubkey, signed: s.signed });
+    }
+  }
 
   if (loading) {
     return (
@@ -294,7 +385,7 @@ export function SignPage() {
     );
   }
 
-  if (error) {
+  if (error && !requestEvent) {
     return (
       <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
         <div className="text-center max-w-sm">
@@ -367,7 +458,7 @@ export function SignPage() {
                 rel="noopener noreferrer"
                 className="text-[10px] text-bitcoin hover:underline mt-1 block"
               >
-                POST raw tx → mempool.space/api/tx
+                POST raw tx &rarr; mempool.space/api/tx
               </a>
             </div>
           </div>
@@ -400,20 +491,15 @@ export function SignPage() {
             />
           </div>
 
-          {/* Signers list */}
-          {signers.length > 0 && (
+          {/* Co-signers list with profile pictures */}
+          {coSignerDisplay.length > 0 && (
             <div className="space-y-2">
-              {signers.map((signer) => (
-                <div key={signer.pubkey} className="flex items-center gap-2">
-                  <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
-                  <code className="text-[11px] text-gray-300 font-mono truncate">
-                    {signer.pubkey.slice(0, 8)}...{signer.pubkey.slice(-8)}
-                  </code>
-                </div>
+              {coSignerDisplay.map((cs) => (
+                <SignerBadge key={cs.pubkey} pubkey={cs.pubkey} signed={cs.signed} />
               ))}
             </div>
           )}
-          {signers.length === 0 && signedCount > 0 && (
+          {coSignerDisplay.length === 0 && signedCount > 0 && (
             <p className="text-xs text-gray-500">
               {request.signed_count} signature(s) collected before this page was opened
             </p>
@@ -486,32 +572,83 @@ export function SignPage() {
           View on Mempool
         </a>
 
-        {/* Sign Button */}
-        {!signed && !isExpired && hasNip07 && (
-          <button
-            onClick={handleSign}
-            disabled={signing}
-            className="w-full py-3.5 bg-bitcoin text-white rounded-2xl font-medium text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 mb-4"
-          >
-            {signing ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
-            ) : (
-              <><Check className="w-4 h-4" /> Sign Transaction</>
-            )}
-          </button>
-        )}
-
-        {signed && (
-          <div className="w-full flex items-center justify-center gap-2 py-3.5 bg-green-500/10 border border-green-500/20 rounded-2xl text-green-400 text-sm font-medium mb-4">
-            <CheckCircle2 className="w-4 h-4" />
-            Signature Published
+        {/* Connect / Sign Section */}
+        {!userPubkey ? (
+          <div className="bg-surface-800 rounded-2xl p-5 border border-surface-200/10 mb-4 text-center">
+            <p className="text-sm text-gray-400 mb-3">Connect your Nostr identity to sign this transaction</p>
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className="w-full py-3.5 bg-gradient-to-r from-bitcoin to-bitcoin/80 text-white rounded-xl font-medium text-sm hover:opacity-90 transition-all flex items-center justify-center gap-2"
+            >
+              {connecting ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Connecting...</>
+              ) : (
+                <><LogIn className="w-4 h-4" /> Connect with Nostr</>
+              )}
+            </button>
+            <p className="text-[10px] text-gray-600 mt-2">Requires a NIP-07 browser extension (Alby, nos2x, etc.)</p>
+            {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
           </div>
-        )}
+        ) : (
+          <div className="bg-surface-800 rounded-2xl p-4 border border-surface-200/10 mb-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-2 h-2 rounded-full bg-green-400" />
+              <span className="text-xs text-green-400">Connected</span>
+              <code className="text-[10px] text-gray-500 font-mono ml-auto">{userPubkey.slice(0, 12)}...{userPubkey.slice(-6)}</code>
+            </div>
 
-        {!hasNip07 && !signed && (
-          <div className="w-full flex items-center justify-center gap-2 py-3.5 bg-surface-800 border border-surface-200/10 rounded-2xl text-gray-400 text-sm mb-4">
-            <AlertTriangle className="w-4 h-4" />
-            Install a NIP-07 extension to sign
+            {/* Already Signed */}
+            {eligibility === 'already_signed' && (
+              <div className="flex items-center gap-3 py-3 px-4 bg-green-500/10 border border-green-500/20 rounded-xl">
+                <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-green-400">Already Signed</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Your signature has been published</p>
+                </div>
+              </div>
+            )}
+
+            {/* Not a co-signer */}
+            {eligibility === 'not_cosigner' && (
+              <div className="flex items-center gap-3 py-3 px-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                <XCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-red-400">Not a co-signer</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Your key is not part of this multi-sig</p>
+                </div>
+              </div>
+            )}
+
+            {/* Initiator */}
+            {eligibility === 'is_initiator' && !signed && (
+              <button
+                onClick={handleSign}
+                disabled={signing || isExpired}
+                className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2"
+              >
+                {signing ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
+                ) : (
+                  <><Check className="w-4 h-4" /> Sign Transaction</>
+                )}
+              </button>
+            )}
+
+            {/* Eligible co-signer */}
+            {eligibility === 'eligible' && !isExpired && (
+              <button
+                onClick={handleSign}
+                disabled={signing}
+                className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2"
+              >
+                {signing ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
+                ) : (
+                  <><Check className="w-4 h-4" /> Sign Transaction</>
+                )}
+              </button>
+            )}
           </div>
         )}
 

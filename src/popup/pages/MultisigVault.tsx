@@ -4,6 +4,7 @@ import {
   Copy, Check, Send, Loader2, Shield,
 } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import { getMempoolAddressUrl, fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
 import {
   loadMultisigWallets, saveMultisigWallet, updateMultisigBalance,
@@ -308,29 +309,14 @@ function WalletDetail({
 // ─── Key Holder Row ─────────────────────────────────────────────
 
 function KeyHolderRow({ holder }: { holder: KeyHolder }) {
-  const displayName = holder.profile?.displayName || holder.profile?.name || holder.pubkey.slice(0, 12);
-  const npub = pubkeyToNpub(holder.pubkey);
-
   return (
     <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-800/50">
-      {holder.profile?.picture ? (
-        <img src={holder.profile.picture} alt="" className="w-8 h-8 rounded-full object-cover bg-surface-700" />
-      ) : (
-        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-bitcoin/30 to-nostr/30 flex items-center justify-center">
-          <span className="text-xs font-bold text-white/70">{displayName.charAt(0).toUpperCase()}</span>
-        </div>
-      )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <p className="text-sm truncate">{displayName}</p>
-          {holder.isOwnKey && (
-            <span className="text-[9px] bg-bitcoin/20 text-bitcoin px-1.5 py-0.5 rounded">YOU</span>
-          )}
-        </div>
-        <p className="text-[10px] text-gray-500 font-mono truncate">
-          {holder.profile?.nip05 || `${npub.slice(0, 18)}...`}
-        </p>
+        <ProfileBadge pubkey={holder.pubkey} size="md" showNip05={true} showNpub={!holder.profile?.nip05} />
       </div>
+      {holder.isOwnKey && (
+        <span className="text-[9px] bg-bitcoin/20 text-bitcoin px-1.5 py-0.5 rounded flex-shrink-0">YOU</span>
+      )}
     </div>
   );
 }
