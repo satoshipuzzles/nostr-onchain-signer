@@ -163,10 +163,12 @@ export function InvoicePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-bitcoin mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">Fetching invoice from relays...</p>
+      <div className="h-screen overflow-y-auto bg-surface-900">
+        <div className="min-h-full flex items-center justify-center p-4 pb-20">
+          <div className="text-center">
+            <Loader2 className="w-8 h-8 animate-spin text-bitcoin mx-auto mb-3" />
+            <p className="text-gray-400 text-sm">Fetching invoice from relays...</p>
+          </div>
         </div>
       </div>
     );
@@ -174,10 +176,12 @@ export function InvoicePage() {
 
   if (error && !invoice) {
     return (
-      <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
-        <div className="text-center max-w-sm">
-          <p className="text-red-400 text-sm mb-2">{error}</p>
-          <p className="text-gray-500 text-xs">Event ID: {eventId}</p>
+      <div className="h-screen overflow-y-auto bg-surface-900">
+        <div className="min-h-full flex items-center justify-center p-4 pb-20">
+          <div className="text-center max-w-sm">
+            <p className="text-red-400 text-sm mb-2">{error}</p>
+            <p className="text-gray-500 text-xs">Event ID: {eventId}</p>
+          </div>
         </div>
       </div>
     );
@@ -185,30 +189,32 @@ export function InvoicePage() {
 
   if (passwordRequired && !unlocked) {
     return (
-      <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-surface-800 rounded-2xl p-6 border border-surface-200/10">
-          <div className="text-center mb-6">
-            <Lock className="w-10 h-10 text-bitcoin mx-auto mb-3" />
-            <h1 className="text-lg font-bold text-white">Password Protected</h1>
-            <p className="text-gray-400 text-sm mt-1">This invoice requires a password to view</p>
+      <div className="h-screen overflow-y-auto bg-surface-900">
+        <div className="min-h-full flex items-center justify-center p-4 pb-20">
+          <div className="w-full max-w-sm bg-surface-800 rounded-2xl p-6 border border-surface-200/10">
+            <div className="text-center mb-6">
+              <Lock className="w-10 h-10 text-bitcoin mx-auto mb-3" />
+              <h1 className="text-lg font-bold text-white">Password Protected</h1>
+              <p className="text-gray-400 text-sm mt-1">This invoice requires a password to view</p>
+            </div>
+            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => { setPasswordInput(e.target.value); setError(''); }}
+                placeholder="Enter password"
+                className="w-full px-4 py-3 bg-surface-700 border border-surface-200/10 rounded-xl text-white text-sm outline-none focus:border-bitcoin/50"
+                autoFocus
+              />
+              {error && <p className="text-red-400 text-xs">{error}</p>}
+              <button
+                type="submit"
+                className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors"
+              >
+                Unlock Invoice
+              </button>
+            </form>
           </div>
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(e) => { setPasswordInput(e.target.value); setError(''); }}
-              placeholder="Enter password"
-              className="w-full px-4 py-3 bg-surface-700 border border-surface-200/10 rounded-xl text-white text-sm outline-none focus:border-bitcoin/50"
-              autoFocus
-            />
-            {error && <p className="text-red-400 text-xs">{error}</p>}
-            <button
-              type="submit"
-              className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors"
-            >
-              Unlock Invoice
-            </button>
-          </form>
         </div>
       </div>
     );
@@ -236,7 +242,8 @@ export function InvoicePage() {
     : null;
 
   return (
-    <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
+    <div className="h-screen overflow-y-auto bg-surface-900">
+      <div className="min-h-full flex items-center justify-center p-4 pb-20">
       <div className="w-full max-w-sm bg-surface-800 rounded-2xl p-6 border border-surface-200/10">
         <div className="text-center mb-6">
           <h1 className="text-lg font-bold text-white">Onchain Invoice</h1>
@@ -338,6 +345,7 @@ export function InvoicePage() {
             Event ID: {eventId?.slice(0, 16)}...
           </p>
         </div>
+      </div>
       </div>
     </div>
   );

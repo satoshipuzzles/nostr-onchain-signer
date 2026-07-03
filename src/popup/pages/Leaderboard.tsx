@@ -37,7 +37,7 @@ export function Leaderboard() {
   const [processing, setProcessing] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<ViewTab>('following');
+  const [activeTab, setActiveTab] = useState<ViewTab>('global');
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -146,42 +146,38 @@ export function Leaderboard() {
     cacheKey: string,
   ) {
     const results: LeaderboardEntry[] = [];
-    const batchSize = 5;
+    const batchSize = 10;
     const total = pubkeys.length;
 
     for (let i = 0; i < total; i += batchSize) {
       if (signal.aborted) return;
 
       const batch = pubkeys.slice(i, i + batchSize);
-      setProcessing(`Checking ${i + 1}/${total} users...`);
+      setProcessing(`Checking ${i + 1}–${Math.min(i + batchSize, total)} of ${total} users...`);
 
-      const batchResults = await Promise.allSettled(
+      await Promise.allSettled(
         batch.map(async (pubkey) => {
+          if (signal.aborted) return;
           const taprootAddress = pubkeyToTaprootAddress(pubkey);
           const bal = await fetchBalance(taprootAddress);
-          if (bal.total === 0) return null;
+          if (bal.total === 0) return;
 
           const profile = await getCachedProfile(pubkey);
-          return {
+          const entry: LeaderboardEntry = {
             pubkey,
             npub: pubkeyToNpub(pubkey),
             profile: profile || { name: `User ${pubkey.slice(0, 8)}`, pubkey } as ProfileMetadata,
             taprootAddress,
             balance: bal.total,
           };
+
+          if (!signal.aborted) {
+            results.push(entry);
+            const sorted = [...results].sort((a, b) => b.balance - a.balance);
+            setEntries(sorted);
+          }
         })
       );
-
-      for (const r of batchResults) {
-        if (r.status === 'fulfilled' && r.value) {
-          results.push(r.value);
-        }
-      }
-
-      if (!signal.aborted) {
-        const sorted = [...results].sort((a, b) => b.balance - a.balance);
-        setEntries(sorted);
-      }
     }
 
     if (!signal.aborted) {
@@ -256,11 +252,12 @@ export function Leaderboard() {
         </button>
       </div>
 
-      {/* Header stat */}
-      {nonZeroCount > 0 && (
-        <div className="rounded-xl bg-bitcoin/10 border border-bitcoin/20 px-3 py-2 mb-3">
+      {/* Live counter */}
+      {(nonZeroCount > 0 || loading) && (
+        <div className="rounded-xl bg-bitcoin/10 border border-bitcoin/20 px-3 py-2 mb-3 flex items-center gap-2">
+          {loading && <Loader2 className="w-3 h-3 animate-spin text-bitcoin flex-shrink-0" />}
           <p className="text-xs font-medium text-bitcoin">
-            {nonZeroCount} user{nonZeroCount !== 1 ? 's' : ''} with Bitcoin on Taproot
+            Found {nonZeroCount} user{nonZeroCount !== 1 ? 's' : ''} with Bitcoin
           </p>
         </div>
       )}

@@ -102,9 +102,11 @@ const mockChrome = {
         case 'vault:switchAccount': {
           const { index } = (payload || {}) as { index: number };
           const session = sessionGet('session_keys') as any[];
-          if (!session || index >= session.length) return { id, error: 'Invalid index' };
+          if (!session || index < 0 || index >= session.length) return { id, error: 'Invalid index' };
+          // Update index synchronously before returning so subsequent signEvent calls use the new key
           sessionSet('active_index', index);
-          return { id, result: { publicKey: session[index].publicKeyHex } };
+          const newKey = session[index];
+          return { id, result: { publicKey: newKey.publicKeyHex, index } };
         }
 
         case 'nip07:getPublicKey': {

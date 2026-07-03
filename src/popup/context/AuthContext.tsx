@@ -9,6 +9,7 @@ import {
 import { decryptVault, loadVault } from '@/lib/crypto/vault';
 import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 import { createMessageId } from '@/shared/messages';
+import { type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
 
 interface AuthState {
   publicKey: string;
@@ -21,12 +22,20 @@ interface AuthState {
   viewingUser: DiscoveredUser | null;
 }
 
+export interface SigningRequest {
+  event: { kind: number; content: string; pubkey: string; tags: string[][] };
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
 interface AuthActions {
   handleFollow: (pubkey: string) => Promise<void>;
   handleUnfollow: (pubkey: string) => Promise<void>;
   handleSwitchAccount: (index: number) => Promise<void>;
   handleAddAccount: () => Promise<void>;
   handleBackupKeys: () => Promise<void>;
+  confirmAndSign: (event: Omit<UnsignedEvent, 'pubkey'>) => Promise<SignedEvent>;
+  signingRequest: SigningRequest | null;
   setSelectedMultisigWallet: (w: ArchivedMultisig | null) => void;
   setViewingUser: (u: DiscoveredUser | null) => void;
   setMyProfile: (p: ProfileMetadata | null) => void;
@@ -79,6 +88,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }
   const [selectedMultisigWallet, setSelectedMultisigWallet] = useState<ArchivedMultisig | null>(null);
   const [viewingUser, setViewingUser] = useState<DiscoveredUser | null>(null);
+  const [signingRequest, setSigningRequest] = useState<SigningRequest | null>(null);
   const followingRef = useRef(following);
   followingRef.current = following;
 
@@ -190,21 +200,33 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }, [publicKey]);
 
   async function handleSwitchAccount(index: number) {
-    if (index >= accounts.length) return;
-    setActiveAccountIndex(index);
-    await saveActiveAccountIndex(index);
+    if (index < 0 || index >= accounts.length) return;
     const acct = accounts[index];
-    setPublicKey(acct.publicKeyHex);
-    setMyProfile(null);
-    setFollowing(new Set());
 
-    await chrome.runtime.sendMessage({
+    // Switch the vault's active key FIRST — this must complete before any
+    // subsequent signEvent calls to prevent signing with the wrong keypair.
+    const response = await chrome.runtime.sendMessage({
       type: 'vault:switchAccount',
       payload: { index },
       id: createMessageId(),
     });
 
-    loadProfileAndFollows(acct.publicKeyHex);
+    if (response.error) {
+      console.error('Failed to switch account in vault:', response.error);
+      return;
+    }
+
+    // Only update local state AFTER the vault has confirmed the switch
+    await saveActiveAccountIndex(index);
+    setActiveAccountIndex(index);
+    setPublicKey(acct.publicKeyHex);
+
+    // Clear previous account's cached data
+    setMyProfile(null);
+    setFollowing(new Set());
+
+    // Load profile/following for the new account
+    await loadProfileAndFollows(acct.publicKeyHex);
   }
 
   async function handleAddAccount() {
@@ -257,6 +279,32 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }
   }
 
+  async function confirmAndSign(event: Omit<UnsignedEvent, 'pubkey'>): Promise<SignedEvent> {
+    return new Promise((resolve, reject) => {
+      setSigningRequest({
+        event: { ...event, pubkey: publicKey },
+        onConfirm: () => {
+          setSigningRequest(null);
+          chrome.runtime.sendMessage({
+            type: 'nip07:signEvent',
+            payload: { event },
+            id: createMessageId(),
+          }).then((response: { result?: SignedEvent; error?: string }) => {
+            if (response.error) {
+              reject(new Error(response.error));
+            } else {
+              resolve(response.result!);
+            }
+          }).catch(reject);
+        },
+        onCancel: () => {
+          setSigningRequest(null);
+          reject(new Error('Signing cancelled by user'));
+        },
+      });
+    });
+  }
+
   return (
     <AuthContext.Provider value={{
       publicKey,
@@ -267,11 +315,13 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       vaultPassword,
       selectedMultisigWallet,
       viewingUser,
+      signingRequest,
       handleFollow,
       handleUnfollow,
       handleSwitchAccount,
       handleAddAccount,
       handleBackupKeys,
+      confirmAndSign,
       setSelectedMultisigWallet,
       setViewingUser,
       setMyProfile,

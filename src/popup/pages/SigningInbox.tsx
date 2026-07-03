@@ -10,6 +10,7 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
+import { encryptDM } from '@/lib/nostr/dm';
 
 import { createMessageId } from '@/shared/messages';
 import { InvoiceCreator } from '@/popup/components/InvoiceCreator';
@@ -397,7 +398,6 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   }
 
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
-  const outboundPending = outbound.filter((r) => r.status === 'pending').length;
 
   if (showInvoiceCreator) {
     return (
@@ -466,7 +466,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
           }`}
         >
           <Send className="w-3.5 h-3.5" />
-          Sent {outboundPending > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{outboundPending}</span>}
+          Sent {outbound.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{outbound.length}</span>}
         </button>
         <button
           onClick={() => setActiveTab('invoices')}
@@ -477,7 +477,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
           }`}
         >
           <FileText className="w-3.5 h-3.5" />
-          Invoices
+          Invoices {invoices.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{invoices.length}</span>}
         </button>
       </div>
 
@@ -933,14 +933,17 @@ function RequestDetail({
       const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
 
       let encryptedDmContent = dmContent;
-      if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
-        encryptedDmContent = await (window as any).nostr.nip04.encrypt(request.senderPubkey, dmContent);
-      } else {
-        console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+      let dmKind = 4;
+      try {
+        const result = await encryptDM(request.senderPubkey, dmContent);
+        encryptedDmContent = result.content;
+        dmKind = result.kind;
+      } catch {
+        console.warn('DM encryption failed — sending as plaintext');
       }
 
       const dmEvent = {
-        kind: 4,
+        kind: dmKind,
         content: encryptedDmContent,
         tags: [['p', request.senderPubkey]],
         created_at: Math.floor(Date.now() / 1000),

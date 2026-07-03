@@ -22,9 +22,16 @@ import { EditProfileWrapper } from './pages/EditProfileWrapper';
 import { Settings } from './pages/Settings';
 import { InvoicePage } from './pages/InvoicePage';
 import { SignPage } from './pages/SignPage';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
+
+function SigningOverlay() {
+  const { signingRequest } = useAuth();
+  if (!signingRequest) return null;
+  return <SigningConfirmation request={signingRequest} />;
+}
 
 type AppStatus = 'loading' | 'landing' | 'setup' | 'unlock' | 'authenticated';
 
@@ -110,6 +117,7 @@ export function App() {
 
   return (
     <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
+      <SigningOverlay />
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Home />} />

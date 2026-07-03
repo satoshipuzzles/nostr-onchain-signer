@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Send, User, MessageCircle } from 'lucide-react';
 import { safeImageUrl } from '@/lib/utils';
 import { getCachedProfile } from '@/lib/nostr/cache';
+import { encryptDM, decryptDM } from '@/lib/nostr/dm';
 
 interface Conversation {
   pubkey: string;
@@ -17,6 +18,7 @@ interface DM {
   content: string;
   created_at: number;
   isMine: boolean;
+  kind: number;
 }
 
 const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
@@ -91,8 +93,8 @@ export function Messages() {
             };
 
             ws.send(JSON.stringify(['REQ', subId,
-              { kinds: [4], authors: [publicKey!], limit: 50 },
-              { kinds: [4], '#p': [publicKey!], limit: 50 },
+              { kinds: [4, 14], authors: [publicKey!], limit: 50 },
+              { kinds: [4, 14], '#p': [publicKey!], limit: 50 },
             ]));
           });
         } catch {}
@@ -135,6 +137,7 @@ export function Messages() {
                 content: event.content,
                 created_at: event.created_at,
                 isMine: event.pubkey === publicKey,
+                kind: event.kind,
               });
             }
             if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
@@ -142,26 +145,20 @@ export function Messages() {
         };
 
         ws.send(JSON.stringify(['REQ', subId,
-          { kinds: [4], authors: [publicKey!], '#p': [peerPubkey], limit: 100 },
-          { kinds: [4], authors: [peerPubkey], '#p': [publicKey!], limit: 100 },
+          { kinds: [4, 14], authors: [publicKey!], '#p': [peerPubkey], limit: 100 },
+          { kinds: [4, 14], authors: [peerPubkey], '#p': [publicKey!], limit: 100 },
         ]));
       });
 
       const sorted = dms.sort((a, b) => a.created_at - b.created_at);
 
-      // Try to decrypt NIP-04 encrypted messages
-      if (typeof (window as any).nostr?.nip04?.decrypt === 'function') {
-        for (const dm of sorted) {
-          try {
-            const other = dm.isMine ? peerPubkey : dm.pubkey;
-            const decrypted = await (window as any).nostr.nip04.decrypt(other, dm.content);
-            dm.content = decrypted;
-          } catch {
-            // Content might already be plaintext or encrypted with a different method
-            // Leave as-is if it looks like readable text, otherwise mark it
-            if (dm.content.includes('?iv=') || dm.content.length > 200 && !/\s/.test(dm.content)) {
-              dm.content = '(encrypted - approval needed)';
-            }
+      for (const dm of sorted) {
+        try {
+          const other = dm.isMine ? peerPubkey : dm.pubkey;
+          dm.content = await decryptDM(other, dm.content, dm.kind);
+        } catch {
+          if (dm.content.includes('?iv=') || (dm.content.length > 200 && !/\s/.test(dm.content))) {
+            dm.content = '(unable to decrypt)';
           }
         }
       }
@@ -176,14 +173,10 @@ export function Messages() {
     if (!newMessage.trim() || !selectedPubkey || !publicKey) return;
     setSending(true);
     try {
-      let encryptedContent = newMessage;
-
-      if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
-        encryptedContent = await (window as any).nostr.nip04.encrypt(selectedPubkey, newMessage);
-      }
+      const { content: encryptedContent, kind: dmKind } = await encryptDM(selectedPubkey, newMessage);
 
       const event = {
-        kind: 4,
+        kind: dmKind,
         content: encryptedContent,
         tags: [['p', selectedPubkey]],
         created_at: Math.floor(Date.now() / 1000),
@@ -211,6 +204,7 @@ export function Messages() {
           content: newMessage,
           created_at: Math.floor(Date.now() / 1000),
           isMine: true,
+          kind: dmKind,
         }]);
         setNewMessage('');
       }
@@ -287,7 +281,7 @@ export function Messages() {
     <div className="h-full flex flex-col">
       <div className="px-4 py-4 border-b border-white/10">
         <h1 className="text-lg font-bold">Messages</h1>
-        <p className="text-xs text-gray-500">Encrypted DMs (NIP-04)</p>
+        <p className="text-xs text-gray-500">Encrypted DMs (NIP-44 / NIP-04)</p>
       </div>
 
       <div className="flex-1 overflow-y-auto">

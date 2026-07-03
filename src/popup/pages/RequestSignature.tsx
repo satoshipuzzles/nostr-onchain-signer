@@ -7,6 +7,7 @@ import { publishEvent } from '@/lib/nostr/discovery';
 import { createMessageId } from '@/shared/messages';
 import { formatSats } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { encryptDM } from '@/lib/nostr/dm';
 
 interface Props {
   wallet: ArchivedMultisig;
@@ -100,14 +101,17 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
             `nostr:${response.result.id}`;
 
           let encryptedDmContent = dmContent;
-          if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
-            encryptedDmContent = await (window as any).nostr.nip04.encrypt(signer.pubkey, dmContent);
-          } else {
-            console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+          let dmKind = 4;
+          try {
+            const result = await encryptDM(signer.pubkey, dmContent);
+            encryptedDmContent = result.content;
+            dmKind = result.kind;
+          } catch {
+            console.warn('DM encryption failed — sending as plaintext');
           }
 
           const dmEvent = {
-            kind: 4,
+            kind: dmKind,
             content: encryptedDmContent,
             tags: [['p', signer.pubkey]],
             created_at: Math.floor(Date.now() / 1000),

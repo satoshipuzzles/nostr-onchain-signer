@@ -33,7 +33,6 @@ const SUGGESTED_RELAYS: RelayConfig[] = [
   { url: 'wss://relay.nostr.band', read: true, write: false },
   { url: 'wss://purplepag.es', read: true, write: false },
   { url: 'wss://relay.snort.social', read: true, write: true },
-  { url: 'wss://relay.primal.net', read: true, write: false },
   { url: 'wss://nostr.wine', read: true, write: false },
   { url: 'wss://relay.nostr.bg', read: true, write: true },
   { url: 'wss://nostr-pub.wellorder.net', read: true, write: true },

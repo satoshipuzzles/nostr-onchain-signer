@@ -6,6 +6,7 @@ import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { npubToPubkey } from '@/lib/nostr/keys';
 import { ArrowLeft, Loader2, Send, ImageIcon, X, Repeat } from 'lucide-react';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
+import { encryptDM } from '@/lib/nostr/dm';
 
 const INVOICE_BASE_URL = 'https://nostr-onchain-signer.vercel.app/invoice';
 
@@ -138,14 +139,17 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
       ].filter(Boolean).join('\n');
 
       let encryptedDmContent = dmContent;
-      if (typeof (window as any).nostr?.nip04?.encrypt === 'function') {
-        encryptedDmContent = await (window as any).nostr.nip04.encrypt(recipientHex, dmContent);
-      } else {
-        console.warn('NIP-04 encrypt not available — sending DM as plaintext');
+      let dmKind = 4;
+      try {
+        const result = await encryptDM(recipientHex, dmContent);
+        encryptedDmContent = result.content;
+        dmKind = result.kind;
+      } catch {
+        console.warn('DM encryption failed — sending as plaintext');
       }
 
       const dmEvent = {
-        kind: 4,
+        kind: dmKind,
         content: encryptedDmContent,
         tags: [['p', recipientHex]],
         created_at: Math.floor(Date.now() / 1000),
