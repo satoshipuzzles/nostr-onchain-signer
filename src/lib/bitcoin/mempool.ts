@@ -104,6 +104,23 @@ export async function fetchTransactions(address: string, limit = 10): Promise<Tr
 }
 
 /**
+ * Fetch all transactions for an address (no limit).
+ * Used by invoice status tracking to find payments to an invoice address.
+ */
+export async function fetchAddressTransactions(address: string): Promise<Transaction[]> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(`${MEMPOOL_API}/address/${address}/txs`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Fetch UTXOs for an address.
  */
 export async function fetchUTXOs(address: string): Promise<UTXO[]> {

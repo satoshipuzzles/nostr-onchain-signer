@@ -11,6 +11,8 @@ import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadPendingRequests, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
 import { encryptDM } from '@/lib/nostr/dm';
+import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
+import { formatSats } from '@/lib/bitcoin/mempool';
 
 import { createMessageId } from '@/shared/messages';
 import { InvoiceCreator } from '@/popup/components/InvoiceCreator';
@@ -18,7 +20,7 @@ import {
   ArrowLeft, Inbox, Loader2, Check, X, Clock,
   Shield, AlertTriangle, Copy, Link, FileText,
   Send, QrCode, Download, ExternalLink, CheckCircle2,
-  Plus, ChevronDown, ChevronUp,
+  Plus, ChevronDown, ChevronUp, RefreshCw, Image,
 } from 'lucide-react';
 
 const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
@@ -83,6 +85,71 @@ interface InvoiceItem {
   createdAt: number;
   direction: 'sent' | 'received';
   invoice: OnchainInvoiceContent;
+}
+
+interface CachedInvoice {
+  eventId: string;
+  address: string;
+  amountSats?: number;
+  memo?: string;
+  expiresAt?: number;
+  createdAt: number;
+  recipientPubkey: string;
+  creatorPubkey: string;
+  status?: InvoiceStatus;
+  lastChecked?: number;
+}
+
+function invoiceStorageKey(pubkey: string): string {
+  return `my_invoices_${pubkey}`;
+}
+
+async function loadCachedInvoices(pubkey: string): Promise<CachedInvoice[]> {
+  try {
+    const result = await chrome.storage.local.get(invoiceStorageKey(pubkey));
+    return result[invoiceStorageKey(pubkey)] || [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveCachedInvoices(pubkey: string, invoices: CachedInvoice[]): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [invoiceStorageKey(pubkey)]: invoices });
+  } catch { /* ignore */ }
+}
+
+function InvoiceStatusBadge({ status }: { status?: InvoiceStatus }) {
+  switch (status) {
+    case 'paid':
+      return (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-500/15 text-green-400 border border-green-500/20">
+          <Check className="w-2.5 h-2.5" />
+          Paid
+        </span>
+      );
+    case 'partially_paid':
+      return (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-500/15 text-orange-400 border border-orange-500/20">
+          <Clock className="w-2.5 h-2.5" />
+          Partial
+        </span>
+      );
+    case 'expired':
+      return (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/15 text-red-400 border border-red-500/20">
+          <X className="w-2.5 h-2.5" />
+          Expired
+        </span>
+      );
+    default:
+      return (
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-bitcoin/15 text-bitcoin border border-bitcoin/20">
+          <Clock className="w-2.5 h-2.5" />
+          Pending
+        </span>
+      );
+  }
 }
 
 // ─── 9801 response subscription ────────────────────────────────
@@ -275,6 +342,9 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   const [invoicesLoading, setInvoicesLoading] = useState(true);
   const [selectedRequest, setSelectedRequest] = useState<SigningRequest | null>(null);
   const [activeTab, setActiveTab] = useState<'incoming' | 'outbound' | 'invoices'>('incoming');
+  const [invoiceSubTab, setInvoiceSubTab] = useState<'all' | 'sent' | 'received'>('all');
+  const [invoiceStatuses, setInvoiceStatuses] = useState<Map<string, { status: InvoiceStatus; confirmedSats: number; unconfirmedSats: number }>>(new Map());
+  const [checkingStatuses, setCheckingStatuses] = useState(false);
   const [copied, setCopied] = useState('');
   const [showInvoiceCreator, setShowInvoiceCreator] = useState(false);
   const [expandedOutbound, setExpandedOutbound] = useState<string | null>(null);
@@ -345,6 +415,15 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   }
 
   async function loadInvoices() {
+    const cached = await loadCachedInvoices(publicKey);
+    const statusMap = new Map<string, { status: InvoiceStatus; confirmedSats: number; unconfirmedSats: number }>();
+    for (const c of cached) {
+      if (c.status) {
+        statusMap.set(c.eventId, { status: c.status, confirmedSats: 0, unconfirmedSats: 0 });
+      }
+    }
+    if (statusMap.size > 0) setInvoiceStatuses(statusMap);
+
     const relayList = await loadRelayList();
     const relays = getReadRelays(relayList);
     const relayUrls = relays.length > 0
@@ -358,14 +437,99 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       publicKey,
       (item) => {
         collected.push(item);
-        setInvoices([...collected].sort((a, b) => b.createdAt - a.createdAt));
+        const sorted = [...collected].sort((a, b) => b.createdAt - a.createdAt);
+        setInvoices(sorted);
+        resolveProfile(item.pubkey);
       },
       () => {
         setInvoicesLoading(false);
+        cacheInvoiceItems(collected);
       }
     );
 
     setTimeout(() => setInvoicesLoading(false), 15000);
+  }
+
+  async function cacheInvoiceItems(items: InvoiceItem[]) {
+    const cached: CachedInvoice[] = items.map((item) => {
+      const pTag = item.direction === 'sent' ? '' : item.pubkey;
+      return {
+        eventId: item.eventId,
+        address: item.invoice.address,
+        amountSats: item.invoice.amount_sats,
+        memo: item.invoice.memo,
+        expiresAt: item.invoice.expires_at,
+        createdAt: item.createdAt,
+        recipientPubkey: pTag,
+        creatorPubkey: item.pubkey,
+        status: invoiceStatuses.get(item.eventId)?.status,
+        lastChecked: invoiceStatuses.get(item.eventId) ? Date.now() / 1000 : undefined,
+      };
+    });
+    await saveCachedInvoices(publicKey, cached);
+  }
+
+  async function batchCheckStatuses() {
+    if (checkingStatuses || invoices.length === 0) return;
+    setCheckingStatuses(true);
+
+    const newStatuses = new Map(invoiceStatuses);
+
+    for (let i = 0; i < invoices.length; i++) {
+      const inv = invoices[i];
+      try {
+        const result = await checkInvoiceStatus(
+          inv.invoice.address,
+          inv.invoice.amount_sats,
+          inv.invoice.expires_at,
+        );
+        newStatuses.set(inv.eventId, {
+          status: result.status,
+          confirmedSats: result.confirmedSats,
+          unconfirmedSats: result.unconfirmedSats,
+        });
+        setInvoiceStatuses(new Map(newStatuses));
+      } catch { /* skip this one */ }
+
+      if (i < invoices.length - 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+
+    setCheckingStatuses(false);
+
+    const cachedItems: CachedInvoice[] = invoices.map((item) => ({
+      eventId: item.eventId,
+      address: item.invoice.address,
+      amountSats: item.invoice.amount_sats,
+      memo: item.invoice.memo,
+      expiresAt: item.invoice.expires_at,
+      createdAt: item.createdAt,
+      recipientPubkey: item.direction === 'sent' ? '' : item.pubkey,
+      creatorPubkey: item.pubkey,
+      status: newStatuses.get(item.eventId)?.status,
+      lastChecked: Math.floor(Date.now() / 1000),
+    }));
+    await saveCachedInvoices(publicKey, cachedItems);
+  }
+
+  async function checkSingleInvoiceStatus(inv: InvoiceItem) {
+    try {
+      const result = await checkInvoiceStatus(
+        inv.invoice.address,
+        inv.invoice.amount_sats,
+        inv.invoice.expires_at,
+      );
+      setInvoiceStatuses((prev) => {
+        const next = new Map(prev);
+        next.set(inv.eventId, {
+          status: result.status,
+          confirmedSats: result.confirmedSats,
+          unconfirmedSats: result.unconfirmedSats,
+        });
+        return next;
+      });
+    } catch { /* ignore */ }
   }
 
   const resolveProfile = useCallback(async (pubkey: string) => {
@@ -702,14 +866,52 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
         {activeTab === 'invoices' && (
           <>
-            {/* Feature 2: Create Invoice button */}
-            <button
-              onClick={() => setShowInvoiceCreator(true)}
-              className="btn-primary w-full flex items-center justify-center gap-2 mb-4 min-h-[44px]"
-            >
-              <Plus className="w-4 h-4" />
-              Create Invoice
-            </button>
+            {/* Create Invoice + Check All Statuses */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => setShowInvoiceCreator(true)}
+                className="btn-primary flex-1 flex items-center justify-center gap-2 min-h-[44px]"
+              >
+                <Plus className="w-4 h-4" />
+                Create Invoice
+              </button>
+              {invoices.length > 0 && (
+                <button
+                  onClick={batchCheckStatuses}
+                  disabled={checkingStatuses}
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium bg-surface-700 text-gray-300 hover:bg-surface-600 border border-white/5 transition-colors min-h-[44px]"
+                  title="Check all invoice statuses"
+                >
+                  {checkingStatuses ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              )}
+            </div>
+
+            {/* Sent / Received sub-tabs */}
+            <div className="flex gap-1 mb-3 bg-surface-800 rounded-lg p-0.5">
+              {(['all', 'sent', 'received'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setInvoiceSubTab(tab)}
+                  className={`flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
+                    invoiceSubTab === tab
+                      ? 'bg-white/10 text-white'
+                      : 'text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {tab === 'all' ? 'All' : tab === 'sent' ? 'Sent' : 'Received'}
+                  {tab !== 'all' && (
+                    <span className="ml-1 text-[9px] opacity-60">
+                      {invoices.filter((i) => i.direction === tab).length || ''}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
 
             {invoicesLoading && invoices.length === 0 && (
               <div className="flex flex-col items-center justify-center py-8">
@@ -728,54 +930,102 @@ export function SigningInbox({ publicKey, onBack }: Props) {
               </div>
             )}
 
-            {invoices.map((item) => (
-              <div
-                key={item.eventId}
-                className="card mb-3 cursor-pointer hover:bg-surface-700/50 transition-colors"
-                onClick={() => navigate(`/invoice/${item.eventId}`)}
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    item.direction === 'sent' ? 'bg-bitcoin/20' : 'bg-nostr/20'
-                  }`}>
-                    <FileText className={`w-4 h-4 ${
-                      item.direction === 'sent' ? 'text-bitcoin' : 'text-nostr'
-                    }`} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-sm font-medium truncate">
-                        {item.invoice.memo || 'Onchain Invoice'}
-                      </span>
-                      <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
-                        item.direction === 'sent' ? 'bg-bitcoin/15 text-bitcoin' : 'bg-nostr/15 text-nostr'
-                      }`}>
-                        {item.direction === 'sent' ? 'Sent' : 'Received'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] text-gray-500">
-                      {item.invoice.amount_sats && (
-                        <span className="text-bitcoin font-medium">{item.invoice.amount_sats.toLocaleString()} sats</span>
+            {invoices
+              .filter((item) => invoiceSubTab === 'all' || item.direction === invoiceSubTab)
+              .map((item) => {
+                const profile = profiles.get(item.pubkey);
+                const displayName = profile?.displayName || profile?.name || item.pubkey.slice(0, 12);
+                const statusInfo = invoiceStatuses.get(item.eventId);
+                const memoText = item.invoice.memo || '';
+                const hasImage = memoText.includes('https://') && (
+                  memoText.includes('.png') || memoText.includes('.jpg') ||
+                  memoText.includes('.jpeg') || memoText.includes('.webp') ||
+                  memoText.includes('.gif') || memoText.includes('nostr.build')
+                );
+                const memoClean = memoText.replace(/https?:\/\/\S+/g, '').trim();
+                const invoiceLink = `https://nostr-onchain-signer.vercel.app/invoice/${item.eventId}`;
+
+                return (
+                  <div
+                    key={item.eventId}
+                    className="bg-surface-700 rounded-xl p-3 mb-3 cursor-pointer hover:bg-surface-600/80 transition-colors"
+                    onClick={() => navigate(`/invoice/${item.eventId}`)}
+                  >
+                    <div className="flex items-start gap-3">
+                      {/* Profile pic or direction icon */}
+                      {profile?.picture ? (
+                        <img src={profile.picture} alt="" className="w-9 h-9 rounded-full object-cover bg-surface-700 flex-shrink-0" />
+                      ) : (
+                        <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
+                          item.direction === 'sent'
+                            ? 'bg-gradient-to-br from-bitcoin/40 to-bitcoin/20'
+                            : 'bg-gradient-to-br from-nostr/40 to-nostr/20'
+                        }`}>
+                          <FileText className={`w-4 h-4 ${
+                            item.direction === 'sent' ? 'text-bitcoin' : 'text-nostr'
+                          }`} />
+                        </div>
                       )}
-                      <span>{formatTimeAgo(item.createdAt)}</span>
+
+                      <div className="flex-1 min-w-0">
+                        {/* Name + direction badge */}
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-sm font-medium text-white truncate">{displayName}</span>
+                          <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
+                            item.direction === 'sent' ? 'bg-bitcoin/15 text-bitcoin' : 'bg-nostr/15 text-nostr'
+                          }`}>
+                            {item.direction === 'sent' ? 'Sent' : 'Received'}
+                          </span>
+                          {hasImage && <Image className="w-3 h-3 text-gray-500 flex-shrink-0" />}
+                        </div>
+
+                        {/* Memo (truncated) */}
+                        {memoClean && (
+                          <p className="text-xs text-gray-300 mb-1 line-clamp-1">{memoClean}</p>
+                        )}
+
+                        {/* Amount + time */}
+                        <div className="flex items-center gap-2 text-[10px] text-gray-500 mb-2">
+                          {item.invoice.amount_sats ? (
+                            <span className="text-bitcoin font-medium">
+                              {formatSats(item.invoice.amount_sats)}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">Any amount</span>
+                          )}
+                          <span>{formatTimeAgo(item.createdAt)}</span>
+                          {statusInfo && statusInfo.confirmedSats > 0 && (
+                            <span className="text-green-400">
+                              {formatSats(statusInfo.confirmedSats)} received
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Status badge + action buttons */}
+                        <div className="flex items-center gap-2">
+                          <InvoiceStatusBadge status={statusInfo?.status} />
+
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(invoiceLink, `link_${item.eventId}`); }}
+                            className="p-1 rounded hover:bg-surface-600 text-gray-500 hover:text-white transition-colors min-w-[28px] min-h-[28px] flex items-center justify-center"
+                            title="Copy invoice link"
+                          >
+                            {copied === `link_${item.eventId}` ? <Check className="w-3 h-3 text-green-400" /> : <Link className="w-3 h-3" />}
+                          </button>
+
+                          <button
+                            onClick={(e) => { e.stopPropagation(); checkSingleInvoiceStatus(item); }}
+                            className="p-1 rounded hover:bg-surface-600 text-gray-500 hover:text-white transition-colors min-w-[28px] min-h-[28px] flex items-center justify-center"
+                            title="Check payment status"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <code className="text-[9px] text-gray-600 font-mono block mt-1 truncate">
-                      {item.invoice.address}
-                    </code>
                   </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); copyToClipboard(item.eventId, `inv_${item.eventId}`); }}
-                      className="p-1.5 rounded hover:bg-surface-700 text-gray-500 hover:text-white transition-colors min-w-[32px] min-h-[32px] flex items-center justify-center"
-                      title="Copy event ID"
-                    >
-                      {copied === `inv_${item.eventId}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                    </button>
-                    <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
-                  </div>
-                </div>
-              </div>
-            ))}
+                );
+              })}
           </>
         )}
       </div>
