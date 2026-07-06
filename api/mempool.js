@@ -38,7 +38,9 @@ export default async function handler(req, res) {
   for (const base of PROVIDERS) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const timeout = setTimeout(() => {
+        controller.abort(new DOMException('Request timeout', 'TimeoutError'));
+      }, 20_000);
       const url = `${base}${path}`;
 
       const resp = await fetch(url, {

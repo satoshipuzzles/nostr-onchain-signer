@@ -7,6 +7,12 @@
     "storage",
     "activeTab"
   ],
+  "host_permissions": [
+    "https://nostr-onchain-signer.vercel.app/*",
+    "https://blockstream.info/*",
+    "https://mempool.emzy.de/*",
+    "https://mempool.space/*"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"

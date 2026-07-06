@@ -10,6 +10,9 @@ const PROVIDERS = [
   'https://mempool.space/api',
 ] as const;
 
+/** Server-side proxy — used by PWA and extension (avoids browser rate limits / hangs). */
+const ESPLORA_PROXY = 'https://nostr-onchain-signer.vercel.app/api/mempool';
+
 const BALANCE_CACHE_KEY = 'balance_cache_v1';
 const TX_CACHE_KEY = 'tx_cache_v1';
 const BLOCKS_CACHE_KEY = 'blocks_cache_v1';
@@ -204,25 +207,43 @@ function isWebDeploy(): boolean {
   }
 }
 
-async function fetchWithTimeout(url: string, ms = 12_000, init?: RequestInit): Promise<Response> {
+async function fetchWithTimeout(url: string, ms = 20_000, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
+  const timeout = setTimeout(() => {
+    controller.abort(new DOMException(`Request timeout (${ms}ms)`, 'TimeoutError'));
+  }, ms);
   try {
-    return await fetch(url, { signal: controller.signal, ...init });
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timeout after ${Math.round(ms / 1000)}s`);
+    }
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function fetchEsplora(path: string, ms = 12_000, init?: RequestInit): Promise<Response> {
-  if (isWebDeploy()) {
-    const proxyUrl = `/api/mempool?path=${encodeURIComponent(path)}`;
-    const res = await scheduleRequest(() => fetchWithTimeout(proxyUrl, ms, init));
-    if (res.ok) return res;
-    const errText = await res.text().catch(() => '');
-    throw new Error(errText || `HTTP ${res.status}`);
+async function fetchViaProxy(path: string, ms: number, init?: RequestInit): Promise<Response> {
+  const proxyPath = isWebDeploy()
+    ? `/api/mempool?path=${encodeURIComponent(path)}`
+    : `${ESPLORA_PROXY}?path=${encodeURIComponent(path)}`;
+  return scheduleRequest(() => fetchWithTimeout(proxyPath, ms, init));
+}
+
+async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Promise<Response> {
+  // Prefer server-side proxy (PWA relative URL, extension hits Vercel)
+  try {
+    const proxyRes = await fetchViaProxy(path, ms, init);
+    if (proxyRes.ok) return proxyRes;
+    const errText = await proxyRes.text().catch(() => '');
+    log.warn('Mempool', `Proxy ${proxyRes.status} on ${path}:`, errText.slice(0, 80));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Proxy failed';
+    log.warn('Mempool', `Proxy error on ${path}:`, msg);
   }
 
+  // Fallback: direct Esplora providers (extension only — needs host_permissions)
   let lastError = 'All providers failed';
   const startIdx = providerCursor;
 
@@ -235,14 +256,12 @@ async function fetchEsplora(path: string, ms = 12_000, init?: RequestInit): Prom
         return res;
       }
       if (res.status === 403 || res.status === 429) {
-        log.warn('Mempool', `${base} ${res.status} on ${path}`);
         lastError = `HTTP ${res.status}`;
         continue;
       }
       lastError = `HTTP ${res.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'Network error';
-      log.warn('Mempool', `${base} error:`, lastError);
     }
   }
   throw new Error(lastError);
