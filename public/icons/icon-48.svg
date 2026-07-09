@@ -1,4 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
-  <rect width="48" height="48" rx="8" fill="#F7931A"/>
-  <text x="50%" y="55%" dominant-baseline="middle" text-anchor="middle" fill="white" font-size="24" font-family="Arial" font-weight="bold">N</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Nostr Onchain">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#A855F7"/>
+      <stop offset="50%" stop-color="#7C3AED"/>
+      <stop offset="100%" stop-color="#4C1D95"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="8" result="blur"/>
+      <feOffset in="blur" dx="0" dy="4" result="shifted"/>
+      <feFlood flood-color="#A855F7" flood-opacity="0.3" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  <g fill="white" filter="url(#glow)">
+    <!-- Top serifs -->
+    <rect x="218" y="96" width="22" height="44" rx="11"/>
+    <rect x="274" y="96" width="22" height="44" rx="11"/>
+    <!-- Bottom serifs -->
+    <rect x="218" y="372" width="22" height="44" rx="11"/>
+    <rect x="274" y="372" width="22" height="44" rx="11"/>
+    <!-- B letterform -->
+    <path d="M196 136h96c42 0 76 26 76 60 0 26-16 48-40 56 28 8 48 34 48 62 0 38-34 68-80 68H196V136zm36 36v52h54c22 0 40-11 40-26s-18-26-40-26h-54zm0 86v58h58c26 0 44-13 44-29s-18-29-44-29h-58z"/>
+  </g>
+  <!-- Subtle chain link accent -->
+  <g fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3" stroke-linecap="round">
+    <path d="M370 380c12 12 32 12 44 0s12-32 0-44"/>
+    <path d="M382 392c8 8 20 8 28 0"/>
+  </g>
 </svg>

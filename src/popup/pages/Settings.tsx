@@ -6,7 +6,7 @@ import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
 import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
 import { loadVault, decryptVault } from '@/lib/crypto/vault';
-import { privkeyToNsec } from '@/lib/nostr/keys';
+import { privkeyToNsec, pubkeyToNpub } from '@/lib/nostr/keys';
 import { loadMultisigWallets, walletToSyncConfig, syncConfigToWallet, saveMultisigWallet } from '@/lib/bitcoin/wallet-store';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
 import { loadBitcoinNodeConfig, saveBitcoinNodeConfig, testNodeConnection, type BitcoinNodeConfig } from '@/lib/bitcoin/node';
@@ -19,7 +19,9 @@ export function Settings() {
     vaultPassword,
   } = useAuth();
 
-  const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
+  const activeAccount = accounts[activeAccountIndex];
+  const displayName = myProfile?.displayName || myProfile?.name || activeAccount?.displayName || activeAccount?.label || 'Anonymous';
+  const npub = activeAccount?.npub || pubkeyToNpub(publicKey);
 
   const [nwcUri, setNwcUri] = useState('');
   const [nwcConnected, setNwcConnected] = useState(false);
@@ -241,10 +243,15 @@ export function Settings() {
         className="card mb-4 w-full text-left hover:border-bitcoin/30 transition-colors"
       >
         <div className="flex items-center gap-3">
-          {myProfile?.picture ? (
-            <img src={myProfile.picture} alt="" className="w-12 h-12 rounded-full object-cover bg-surface-700" />
+          {myProfile?.picture || activeAccount?.picture ? (
+            <img
+              key={publicKey}
+              src={myProfile?.picture || activeAccount?.picture}
+              alt=""
+              className="w-12 h-12 rounded-full object-cover bg-surface-700"
+            />
           ) : (
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/40 flex items-center justify-center">
+            <div key={publicKey} className="w-12 h-12 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/40 flex items-center justify-center">
               <span className="text-lg font-bold text-white/80">
                 {displayName.charAt(0).toUpperCase()}
               </span>
@@ -252,7 +259,9 @@ export function Settings() {
           )}
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">{displayName}</p>
-            <p className="text-xs text-gray-500">Edit profile</p>
+            <p className="text-[10px] text-gray-500 font-mono truncate" title={npub}>
+              {npub.slice(0, 18)}...{npub.slice(-6)}
+            </p>
           </div>
           <Edit3 className="w-4 h-4 text-gray-500" />
         </div>

@@ -51,7 +51,15 @@ export function getSuggestedRelays(): RelayConfig[] {
 
 export async function loadRelayList(): Promise<RelayList> {
   const result = await chrome.storage.local.get('relayList');
-  return result.relayList ?? getDefaultRelayList();
+  const list: RelayList = result.relayList ?? getDefaultRelayList();
+  const writeCount = list.relays.filter((r) => r.write).length;
+  const readCount = list.relays.filter((r) => r.read).length;
+  if (writeCount === 0 || readCount === 0 || list.relays.length === 0) {
+    const defaults = getDefaultRelayList();
+    chrome.storage.local.set({ relayList: defaults }).catch(() => {});
+    return defaults;
+  }
+  return list;
 }
 
 export async function saveRelayList(list: RelayList): Promise<void> {

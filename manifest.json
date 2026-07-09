@@ -8,6 +8,7 @@
     "activeTab"
   ],
   "host_permissions": [
+    "https://nostr-onchain-signer.vercel.app/*",
     "https://mempool.space/*",
     "https://blockstream.info/*",
     "https://mempool.emzy.de/*"
@@ -39,7 +40,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["src/content/nostr-provider.js"],
+      "resources": ["src/content/nostr-provider.js", "src/content/nostr-provider-bitcoin.js"],
       "matches": ["<all_urls>"]
     }
   ]

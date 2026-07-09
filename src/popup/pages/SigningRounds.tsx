@@ -183,7 +183,7 @@ function RoundDetail({ round, onBack }: { round: SigningRound; onBack: () => voi
         </button>
       )}
 
-      {progress.isExpired && round.status === 'collecting' && (
+      {progress.isExpired && round.expiresAt > 0 && round.status === 'collecting' && (
         <p className="text-center text-sm text-red-400 mt-3">
           This signing round has expired
         </p>

@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-title" content="Nostr Onchain" />
     <meta name="theme-color" content="#0a0a0f" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/logo.png" />
+    <link rel="icon" type="image/png" sizes="128x128" href="/icons/icon-128.png" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>Nostr Onchain</title>
     <style>
@@ -20,7 +20,11 @@
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#888;font-family:system-ui,sans-serif;background:#0a0a0f">
+        Loading Nostr Onchain...
+      </div>
+    </div>
     <script>
       // Unregister any stale service workers to prevent cache issues
       if ('serviceWorker' in navigator) {

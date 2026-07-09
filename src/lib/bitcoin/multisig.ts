@@ -230,9 +230,10 @@ export interface MultisigWallet {
  * internal key ensures spending MUST go through the script path.
  */
 export function createMultisigAddress(config: MultisigConfig): MultisigWallet {
-  const pubkeyBytes = config.pubkeys.map((hex) => {
-    const bytes = hexToBytes(hex);
-    if (bytes.length !== 32) throw new Error(`Invalid pubkey length: ${hex}`);
+  const sortedPubkeys = [...config.pubkeys].sort((a, b) => a.localeCompare(b));
+  const pubkeyBytes = sortedPubkeys.map((hexStr) => {
+    const bytes = hexToBytes(hexStr);
+    if (bytes.length !== 32) throw new Error(`Invalid pubkey length: ${hexStr}`);
     return bytes;
   });
 
@@ -252,7 +253,7 @@ export function createMultisigAddress(config: MultisigConfig): MultisigWallet {
 
   return {
     address,
-    config,
+    config: { ...config, pubkeys: sortedPubkeys },
     script,
     scriptHex: bytesToHex(script),
     merkleRoot: leafHash,

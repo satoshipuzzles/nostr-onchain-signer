@@ -39,19 +39,19 @@ export function SigningConfirmation({ request }: Props) {
   const npub = pubkeyToNpub(event.pubkey);
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-[340px] bg-surface-800 border border-surface-200/20 rounded-2xl shadow-2xl p-5 mx-4">
-        <div className="flex items-center justify-between mb-4">
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-safe">
+      <div className="w-full max-w-[340px] bg-surface-800 border border-surface-200/20 rounded-2xl shadow-2xl p-5 mx-auto max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between mb-4 flex-shrink-0">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-bitcoin" />
             <h3 className="text-base font-semibold">Confirm Signing</h3>
           </div>
-          <button onClick={onCancel} className="p-1 hover:bg-surface-700 rounded-lg transition-colors">
+          <button onClick={onCancel} className="p-1 hover:bg-surface-700 rounded-lg transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center">
             <X className="w-4 h-4 text-gray-400" />
           </button>
         </div>
 
-        <div className="space-y-3 mb-5">
+        <div className="space-y-3 mb-5 overflow-y-auto flex-1 min-h-0">
           <div className="bg-surface-900/50 rounded-lg p-3">
             <p className="text-xs text-gray-400 mb-1">Event Type</p>
             <p className="text-sm font-medium">{kindLabel(event.kind)}</p>
@@ -68,16 +68,16 @@ export function SigningConfirmation({ request }: Props) {
           </div>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-shrink-0 modal-footer-safe">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 px-4 rounded-xl border border-surface-200/20 text-sm font-medium hover:bg-surface-700 transition-colors"
+            className="flex-1 py-2.5 px-4 rounded-xl border border-surface-200/20 text-sm font-medium hover:bg-surface-700 transition-colors min-h-[48px]"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="flex-1 py-2.5 px-4 rounded-xl bg-bitcoin text-black text-sm font-semibold hover:bg-bitcoin/90 transition-colors"
+            className="flex-1 py-2.5 px-4 rounded-xl bg-bitcoin text-black text-sm font-semibold hover:bg-bitcoin/90 transition-colors min-h-[48px]"
           >
             Confirm
           </button>

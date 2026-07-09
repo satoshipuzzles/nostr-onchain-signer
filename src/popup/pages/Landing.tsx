@@ -6,7 +6,7 @@ interface Props {
 
 export function Landing({ onGetStarted }: Props) {
   return (
-    <div className="h-full overflow-y-auto bg-black text-white">
+    <div className="min-h-screen overflow-y-auto bg-black text-white">
       {/* Header */}
       <header className="sticky top-0 z-50 backdrop-blur-xl bg-black/80 border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-4">

@@ -10,7 +10,7 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { encryptDM } from '@/lib/nostr/dm';
-import { loadSigningRounds, saveSigningRound, recordBroadcast, type SigningRound } from '@/lib/bitcoin/signing-round';
+import { loadSigningRounds, saveSigningRound, recordBroadcast, recordSignature, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { formatSats } from '@/lib/bitcoin/mempool';
@@ -25,10 +25,10 @@ import {
   Plus, ChevronDown, ChevronUp, RefreshCw, Image, Bell,
 } from 'lucide-react';
 
-const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
+import { appOrigin } from '@/lib/nostr/public-relay';
 
 function signingUrl(roundId: string): string {
-  return `${VERCEL_URL}/sign/${roundId}`;
+  return `${appOrigin()}/sign/${roundId}`;
 }
 
 function parseRoundMeta(psbtHex: string): { amount?: number; recipient?: string } {
@@ -428,23 +428,33 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       relayUrls,
       publicKey,
       (roundId, responderPubkey, psbtHex) => {
-        setRequests((prev) =>
-          prev.map((r) => {
-            if (r.round_id === roundId) {
-              return { ...r, signed_count: r.signed_count + 1 };
-            }
-            return r;
-          })
-        );
         setRoundResponses((prev) => {
+          const existing = prev.get(roundId) || [];
+          if (existing.some((r) => r.pubkey === responderPubkey)) return prev;
+
           const next = new Map(prev);
-          const existing = next.get(roundId) || [];
-          if (!existing.some((r) => r.pubkey === responderPubkey)) {
-            next.set(roundId, [...existing, { pubkey: responderPubkey, psbtHex }]);
+          next.set(roundId, [...existing, { pubkey: responderPubkey, psbtHex }]);
+
+          setRequests((reqs) =>
+            reqs.map((r) =>
+              r.round_id === roundId ? { ...r, signed_count: r.signed_count + 1 } : r,
+            ),
+          );
+
+          if (psbtHex) {
+            loadSigningRounds().then((rounds) => {
+              const round = rounds.find((r) => r.id === roundId);
+              if (round) {
+                const updated = recordSignature(round, responderPubkey, psbtHex);
+                saveSigningRound(updated);
+                setRounds((prevRounds) => prevRounds.map((r) => (r.id === roundId ? updated : r)));
+              }
+            });
           }
+
           return next;
         });
-      }
+      },
     );
 
     setTimeout(() => setLoading(false), 15000);
@@ -602,14 +612,14 @@ export function SigningInbox({ publicKey, onBack }: Props) {
     psbtHexList: string[],
   ) {
     if (broadcastingRoundId) return;
-    const psbts = psbtHexList.filter(Boolean);
-    if (psbts.length === 0) {
+    const unique = [...new Set([round.psbtHex, ...psbtHexList.filter(Boolean)])];
+    if (unique.length === 0) {
       alert('No signed PSBTs collected yet.');
       return;
     }
     setBroadcastingRoundId(round.id);
     try {
-      const txid = await broadcastPsbts(psbts);
+      const txid = await broadcastPsbts(unique);
       const updated = recordBroadcast(round, txid);
       await saveSigningRound(updated);
       setRounds((prev) => prev.map((r) => (r.id === round.id ? updated : r)));
@@ -627,15 +637,11 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       const link = signingUrl(round.id);
       const dmContent = `Reminder: You have a pending signing request. View and sign: ${link}`;
 
-      let content = dmContent;
-      let kind = 4;
-      try {
-        const result = await encryptDM(signerPubkey, dmContent);
-        content = result.content;
-        kind = result.kind;
-      } catch {
-        console.warn('DM encryption failed for nudge');
-      }
+      let content: string;
+      let kind: number;
+      const result = await encryptDM(signerPubkey, dmContent);
+      content = result.content;
+      kind = result.kind;
 
       const dmEvent = {
         kind,
@@ -652,7 +658,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       });
 
       if (!response.error && response.result) {
-        const { publishEvent } = await import('@/lib/nostr/discovery');
+        const { publishEvent } = await import('@/lib/nostr/publish');
         await publishEvent(response.result);
       }
     } catch (err) {
@@ -1461,11 +1467,26 @@ function RequestDetail({
   async function handleSign() {
     setSigning(true);
     try {
+      let signedPsbt = request.psbt_hex;
+
+      const partialResp = await chrome.runtime.sendMessage({
+        type: 'btc:signPsbtPartial',
+        payload: { psbtHex: request.psbt_hex },
+        id: createMessageId(),
+      });
+
+      if (partialResp.error) {
+        throw new Error(partialResp.error);
+      }
+      if (partialResp.result?.psbtHex) {
+        signedPsbt = partialResp.result.psbtHex as string;
+      }
+
       const responseEvent = {
         kind: 9801,
         content: JSON.stringify({
           round_id: request.round_id,
-          psbt_hex: request.psbt_hex,
+          psbt_hex: signedPsbt,
           accepted: true,
           message: 'Signed via Nostr Onchain',
         }),
@@ -1486,20 +1507,14 @@ function RequestDetail({
 
       if (signResponse.error) throw new Error(signResponse.error);
 
-      const { publishEvent } = await import('@/lib/nostr/discovery');
+      const { publishEvent } = await import('@/lib/nostr/publish');
       await publishEvent(signResponse.result);
 
       const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
 
-      let encryptedDmContent = dmContent;
-      let dmKind = 4;
-      try {
-        const result = await encryptDM(request.senderPubkey, dmContent);
-        encryptedDmContent = result.content;
-        dmKind = result.kind;
-      } catch {
-        console.warn('DM encryption failed — sending as plaintext');
-      }
+      const encryptResult = await encryptDM(request.senderPubkey, dmContent);
+      const encryptedDmContent = encryptResult.content;
+      const dmKind = encryptResult.kind;
 
       const dmEvent = {
         kind: dmKind,

@@ -10,8 +10,8 @@ const PROVIDERS = [
   'https://mempool.space/api',
 ] as const;
 
-/** Server-side proxy — used by PWA and extension (avoids browser rate limits / hangs). */
-const ESPLORA_PROXY = 'https://nostr-onchain-signer.vercel.app/api/mempool';
+/** Vercel serverless proxy — extension uses this (has host_permission in manifest). */
+const VERCEL_MEMPOOL_PROXY = 'https://nostr-onchain-signer.vercel.app/api/mempool';
 
 const BALANCE_CACHE_KEY = 'balance_cache_v1';
 const TX_CACHE_KEY = 'tx_cache_v1';
@@ -225,25 +225,12 @@ async function fetchWithTimeout(url: string, ms = 20_000, init?: RequestInit): P
 }
 
 async function fetchViaProxy(path: string, ms: number, init?: RequestInit): Promise<Response> {
-  const proxyPath = isWebDeploy()
-    ? `/api/mempool?path=${encodeURIComponent(path)}`
-    : `${ESPLORA_PROXY}?path=${encodeURIComponent(path)}`;
+  const proxyBase = isWebDeploy() ? '/api/mempool' : VERCEL_MEMPOOL_PROXY;
+  const proxyPath = `${proxyBase}?path=${encodeURIComponent(path)}`;
   return scheduleRequest(() => fetchWithTimeout(proxyPath, ms, init));
 }
 
-async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Promise<Response> {
-  // Prefer server-side proxy (PWA relative URL, extension hits Vercel)
-  try {
-    const proxyRes = await fetchViaProxy(path, ms, init);
-    if (proxyRes.ok) return proxyRes;
-    const errText = await proxyRes.text().catch(() => '');
-    log.warn('Mempool', `Proxy ${proxyRes.status} on ${path}:`, errText.slice(0, 80));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Proxy failed';
-    log.warn('Mempool', `Proxy error on ${path}:`, msg);
-  }
-
-  // Fallback: direct Esplora providers (extension only — needs host_permissions)
+async function fetchDirectProviders(path: string, ms: number, init?: RequestInit): Promise<Response> {
   let lastError = 'All providers failed';
   const startIdx = providerCursor;
 
@@ -265,6 +252,35 @@ async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Prom
     }
   }
   throw new Error(lastError);
+}
+
+async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Promise<Response> {
+  const isExtension = !isWebDeploy();
+
+  if (isExtension) {
+    // Extension has host_permissions for Esplora APIs — use direct first (no broken chrome-extension:// proxy)
+    try {
+      return await fetchDirectProviders(path, ms, init);
+    } catch (directErr) {
+      try {
+        const proxyRes = await fetchViaProxy(path, ms, init);
+        if (proxyRes.ok) return proxyRes;
+      } catch {
+        // fall through
+      }
+      throw directErr;
+    }
+  }
+
+  // PWA: relative Vercel proxy first, then direct fallback
+  try {
+    const proxyRes = await fetchViaProxy(path, ms, init);
+    if (proxyRes.ok) return proxyRes;
+  } catch {
+    // fall through to direct
+  }
+
+  return fetchDirectProviders(path, ms, init);
 }
 
 const inflightBalances = new Map<string, Promise<BalanceResult>>();

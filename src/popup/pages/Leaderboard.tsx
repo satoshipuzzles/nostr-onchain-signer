@@ -8,6 +8,7 @@ import { getCachedProfile, getAllCachedProfiles } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { useAuth } from '../context/AuthContext';
+import { useProfilePopup } from '../context/ProfilePopupContext';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { log } from '@/lib/utils/logger';
 
@@ -38,6 +39,7 @@ const DISCOVERY_RELAYS = [
 export function Leaderboard() {
   const navigate = useNavigate();
   const { publicKey, following } = useAuth();
+  const { openProfile } = useProfilePopup();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -89,11 +91,13 @@ export function Leaderboard() {
       }
 
       if (followingPubkeys.length === 0) {
-        throw new Error('No following list found. Follow some users first, or switch to Global.');
+        followingPubkeys = [publicKey];
+      } else if (!followingPubkeys.includes(publicKey)) {
+        followingPubkeys = [publicKey, ...followingPubkeys];
       }
 
       setProcessing('Checking balances...');
-      await batchCheckBalances(followingPubkeys.slice(0, MAX_PUBKEYS_FOLLOWING), signal, CACHE_KEY);
+      await batchCheckBalances(followingPubkeys.slice(0, MAX_PUBKEYS_FOLLOWING), signal, CACHE_KEY, publicKey);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         log.error('Leaderboard', 'Following load failed:', err.message);
@@ -138,6 +142,7 @@ export function Leaderboard() {
       const known = loadKnownPubkeys();
 
       const allPubkeys = new Set([
+        publicKey,
         ...trending,
         ...discovered,
         ...followingPubkeys,
@@ -145,8 +150,7 @@ export function Leaderboard() {
         ...known,
         ...cachedPubkeys,
       ]);
-      allPubkeys.delete(publicKey);
-      const toCheck = Array.from(allPubkeys).slice(0, MAX_PUBKEYS_GLOBAL);
+      const toCheck = [publicKey, ...Array.from(allPubkeys).filter((p) => p !== publicKey)].slice(0, MAX_PUBKEYS_GLOBAL);
       saveKnownPubkeys(toCheck);
 
       if (toCheck.length === 0) {
@@ -155,7 +159,7 @@ export function Leaderboard() {
 
       setProcessing(`Scanning ${toCheck.length} users...`);
       log.info('Leaderboard', `Scanning ${toCheck.length} global users`);
-      await batchCheckBalances(toCheck, signal, CACHE_KEY_GLOBAL);
+      await batchCheckBalances(toCheck, signal, CACHE_KEY_GLOBAL, publicKey);
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         log.error('Leaderboard', 'Global load failed:', err.message);
@@ -172,10 +176,11 @@ export function Leaderboard() {
     pubkeys: string[],
     signal: AbortSignal,
     cacheKey: string,
+    selfPubkey: string,
   ) {
     // Try server-side scan first (fast, no browser rate limits)
     const serverResults = await tryServerScan(pubkeys, signal);
-    if (serverResults.length > 0 && !signal.aborted) {
+    if (!signal.aborted && serverResults.length > 0) {
       const results: LeaderboardEntry[] = [];
       for (const r of serverResults) {
         const profile = await getCachedProfile(r.pubkey);
@@ -187,7 +192,21 @@ export function Leaderboard() {
           balance: r.balance,
         });
       }
-      const sorted = results.sort((a, b) => b.balance - a.balance);
+
+      if (!results.some((r) => r.pubkey === selfPubkey)) {
+        const taprootAddress = pubkeyToTaprootAddress(selfPubkey);
+        const bal = await fetchBalance(taprootAddress);
+        const profile = await getCachedProfile(selfPubkey);
+        results.push({
+          pubkey: selfPubkey,
+          npub: pubkeyToNpub(selfPubkey),
+          profile: profile || { name: `You`, pubkey: selfPubkey } as ProfileMetadata,
+          taprootAddress,
+          balance: bal.total,
+        });
+      }
+
+      const sorted = finalizeLeaderboardEntries(results, selfPubkey);
       setEntries(sorted);
       cacheLeaderboard(cacheKey, sorted);
       log.info('Leaderboard', 'Server scan:', sorted.length, 'entries');
@@ -214,7 +233,7 @@ export function Leaderboard() {
           if (bal.error) {
             log.warn('Leaderboard', `Balance error for ${pubkey.slice(0, 8)}:`, bal.error);
           }
-          if (bal.total === 0 && !bal.cached) return;
+          if (bal.total === 0 && !bal.cached && pubkey !== selfPubkey) return;
 
           const profile = await getCachedProfile(pubkey);
           const entry: LeaderboardEntry = {
@@ -228,7 +247,7 @@ export function Leaderboard() {
           if (!signal.aborted && !seen.has(pubkey)) {
             seen.add(pubkey);
             results.push(entry);
-            const sorted = [...results].sort((a, b) => b.balance - a.balance);
+            const sorted = finalizeLeaderboardEntries(results, selfPubkey);
             setEntries(sorted);
           }
         })
@@ -236,7 +255,7 @@ export function Leaderboard() {
     }
 
     if (!signal.aborted) {
-      const finalSorted = results.sort((a, b) => b.balance - a.balance);
+      const finalSorted = finalizeLeaderboardEntries(results, selfPubkey);
       setEntries(finalSorted);
       cacheLeaderboard(cacheKey, finalSorted);
       log.info('Leaderboard', 'Cached', finalSorted.length, 'entries');
@@ -259,18 +278,20 @@ export function Leaderboard() {
       for (const profile of foundProfiles) {
         const taprootAddress = pubkeyToTaprootAddress(profile.pubkey);
         const bal = await fetchBalance(taprootAddress);
-        results.push({
-          pubkey: profile.pubkey,
-          npub: pubkeyToNpub(profile.pubkey),
-          profile,
-          taprootAddress,
-          balance: bal.total,
-        });
+        if (bal.total > 0) {
+          results.push({
+            pubkey: profile.pubkey,
+            npub: pubkeyToNpub(profile.pubkey),
+            profile,
+            taprootAddress,
+            balance: bal.total,
+          });
+        }
       }
 
       const existingPubkeys = new Set(entries.map(e => e.pubkey));
       const newEntries = results.filter(r => !existingPubkeys.has(r.pubkey));
-      const merged = [...entries, ...newEntries].sort((a, b) => b.balance - a.balance);
+      const merged = [...entries, ...newEntries].filter((e) => e.balance > 0).sort((a, b) => b.balance - a.balance);
       setEntries(merged);
     } catch (err: any) {
       setError(err.message || 'Search failed');
@@ -279,7 +300,7 @@ export function Leaderboard() {
     }
   }, [searchTerm, entries]);
 
-  const filtered = searchTerm
+  const filtered = (searchTerm
     ? entries.filter(e => {
         const name = (e.profile?.displayName || e.profile?.name || '').toLowerCase();
         const nip05 = (e.profile?.nip05 || '').toLowerCase();
@@ -287,7 +308,8 @@ export function Leaderboard() {
                nip05.includes(searchTerm.toLowerCase()) ||
                e.npub.includes(searchTerm.toLowerCase());
       })
-    : entries;
+    : entries
+  ).filter((e) => e.balance > 0 || e.pubkey === publicKey);
 
   const nonZeroCount = entries.filter(e => e.balance > 0).length;
 
@@ -405,17 +427,30 @@ export function Leaderboard() {
               : 'No users found'}
           </p>
         ) : (
-          filtered.map((entry, idx) => (
+          filtered.map((entry, idx) => {
+            const isSelf = entry.pubkey === publicKey;
+            const rank = entries
+              .filter((e) => e.balance > 0)
+              .sort((a, b) => b.balance - a.balance)
+              .findIndex((e) => e.pubkey === entry.pubkey) + 1;
+
+            return (
             <div
               key={entry.pubkey}
-              onClick={() => navigate(`/discover/${entry.pubkey}`)}
-              className="flex items-center gap-3 p-3 rounded-xl hover:bg-surface-700 cursor-pointer transition-colors"
+              onClick={() => openProfile(entry.pubkey)}
+              className={`flex items-center gap-3 p-3 rounded-xl hover:bg-surface-700 cursor-pointer transition-colors ${
+                isSelf ? 'bg-nostr/10 border border-nostr/20' : ''
+              }`}
             >
               {/* Rank */}
               <div className="w-8 text-center">
-                <span className={`text-sm font-bold ${idx < 3 ? 'text-bitcoin' : 'text-gray-500'}`}>
-                  #{idx + 1}
-                </span>
+                {isSelf && entry.balance === 0 ? (
+                  <span className="text-[10px] font-bold text-nostr">You</span>
+                ) : (
+                  <span className={`text-sm font-bold ${rank > 0 && rank <= 3 ? 'text-bitcoin' : 'text-gray-500'}`}>
+                    {rank > 0 ? `#${rank}` : '—'}
+                  </span>
+                )}
               </div>
 
               {/* Avatar */}
@@ -430,6 +465,7 @@ export function Leaderboard() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">
                   {entry.profile?.displayName || entry.profile?.name || 'Unknown'}
+                  {isSelf && <span className="ml-1.5 text-[10px] text-nostr font-semibold">(You)</span>}
                 </p>
                 {entry.profile?.nip05 && (
                   <p className="text-[10px] text-gray-500 truncate">{entry.profile.nip05}</p>
@@ -453,7 +489,8 @@ export function Leaderboard() {
                 </a>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
@@ -461,6 +498,20 @@ export function Leaderboard() {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
+
+function finalizeLeaderboardEntries(
+  entries: LeaderboardEntry[],
+  selfPubkey: string,
+): LeaderboardEntry[] {
+  const ranked = entries
+    .filter((e) => e.balance > 0)
+    .sort((a, b) => b.balance - a.balance);
+  const self = entries.find((e) => e.pubkey === selfPubkey);
+  if (!self || self.balance > 0 || ranked.some((e) => e.pubkey === selfPubkey)) {
+    return ranked;
+  }
+  return [...ranked, self];
+}
 
 function npubToHex(npub: string): string | null {
   try {
@@ -554,11 +605,13 @@ async function tryServerScan(
       if (res.ok) {
         const data = await res.json();
         for (const entry of data.entries || []) {
-          results.push({
-            pubkey: entry.pubkey,
-            balance: entry.balance,
-            address: entry.address,
-          });
+          if (entry.balance > 0 || (entry.txCount ?? 0) > 0) {
+            results.push({
+              pubkey: entry.pubkey,
+              balance: entry.balance ?? 0,
+              address: entry.address,
+            });
+          }
         }
       }
     } catch (err) {

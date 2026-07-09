@@ -12,7 +12,15 @@
 
   html, body, #root {
     height: 100%;
+  }
+
+  body {
     overflow: hidden;
+  }
+
+  #root {
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   body {
@@ -120,4 +128,12 @@
     justify-content: center;
   }
   .btn-icon:active { background: rgba(255,255,255,0.05); }
+
+  .pb-safe {
+    padding-bottom: calc(0.5rem + var(--safe-bottom));
+  }
+
+  .modal-footer-safe {
+    padding-bottom: calc(1rem + var(--safe-bottom));
+  }
 }

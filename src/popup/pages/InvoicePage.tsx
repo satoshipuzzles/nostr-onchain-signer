@@ -1,9 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
-import { Loader2, Copy, Check, ExternalLink, Lock, Repeat } from 'lucide-react';
+import { useParams, Link } from 'react-router-dom';
+import { Loader2, Copy, Check, ExternalLink, Lock, Repeat, Bitcoin } from 'lucide-react';
 import { parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol'];
+const RELAYS = [
+  'wss://relay.damus.io',
+  'wss://nos.lol',
+  'wss://relay.snort.social',
+  'wss://nostr-pub.wellorder.net',
+  'wss://relay.nostr.bg',
+];
 const KIND_ONCHAIN_INVOICE = 9733;
 
 interface InvoiceEvent {
@@ -317,6 +323,17 @@ export function InvoicePage() {
               <p className="text-[10px] text-gray-500 mt-0.5">{occurrencesLabel}</p>
             )}
           </div>
+        )}
+
+        {/* Pay in Nostr Onchain Signer */}
+        {eventId && (
+          <Link
+            to={`/send?invoice=${eventId}&to=${encodeURIComponent(invoice.address)}${invoice.amount_sats ? `&amount=${invoice.amount_sats}` : ''}`}
+            className="w-full py-3 bg-nostr text-white rounded-xl font-medium text-sm hover:bg-nostr/90 transition-colors flex items-center justify-center gap-2 mb-3 min-h-[48px]"
+          >
+            <Bitcoin className="w-4 h-4" />
+            Pay in App (OP_RETURN included)
+          </Link>
         )}
 
         {/* Copy Address Button */}

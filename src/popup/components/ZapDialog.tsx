@@ -14,7 +14,8 @@ import { type ProfileMetadata } from '@/lib/nostr/social';
 import { useNavigate } from 'react-router-dom';
 
 interface Props {
-  note: FeedNote;
+  note?: FeedNote;
+  recipientPubkey: string;
   profile?: ProfileMetadata | null;
   onClose: () => void;
 }
@@ -23,7 +24,7 @@ const ZAP_AMOUNTS = [21, 100, 420, 1000, 5000, 10000];
 
 type ZapStatus = 'idle' | 'fetching' | 'paying' | 'success' | 'error';
 
-export function ZapDialog({ note, profile, onClose }: Props) {
+export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   const { publicKey } = useAuth();
   const navigate = useNavigate();
   const [amount, setAmount] = useState(1000);
@@ -114,7 +115,7 @@ export function ZapDialog({ note, profile, onClose }: Props) {
       ].slice(0, 5);
 
       const zapReq = createZapRequestEvent(
-        note.pubkey, note.id, publicKey, amountMsats, relays, comment,
+        recipientPubkey, note?.id, publicKey, amountMsats, relays, comment,
       );
 
       const response = await chrome.runtime.sendMessage({
@@ -164,7 +165,7 @@ export function ZapDialog({ note, profile, onClose }: Props) {
   }
 
   const displayName =
-    profile?.displayName || profile?.name || note.pubkey.slice(0, 12);
+    profile?.displayName || profile?.name || recipientPubkey.slice(0, 12);
 
   return (
     <div

@@ -471,7 +471,7 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
   const noteRef = `nostr:${encodeNoteId(note.id)}`;
 
   return (
-    <div className={`card mb-3 relative ${highlighted ? 'ring-1 ring-nostr/40 bg-nostr/5' : ''} ${compact ? 'py-2' : ''}`}>
+    <div className={`relative ${highlighted ? 'bg-purple-500/5 ring-1 ring-purple-500/20 rounded-xl px-1' : ''} ${compact ? 'py-1' : ''}`}>
       {/* Three-dot menu */}
       <div className="absolute top-2 right-2 z-10" ref={moreMenuRef}>
         <button
@@ -812,6 +812,7 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
       {showZapDialog && (
         <ZapDialog
           note={note}
+          recipientPubkey={note.pubkey}
           profile={profile}
           onClose={() => setShowZapDialog(false)}
         />

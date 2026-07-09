@@ -33,7 +33,7 @@ async function saveDashboardCache(pubkey: string, data: DashboardCache) {
 
 export function Home() {
   const navigate = useNavigate();
-  const { publicKey, myProfile, following, accounts } = useAuth();
+  const { publicKey, myProfile, following, accounts, activeAccountIndex } = useAuth();
   const [balance, setBalance] = useState<number | null>(null);
   const [pendingSignatures, setPendingSignatures] = useState(0);
   const [multisigCount, setMultisigCount] = useState(0);
@@ -44,9 +44,9 @@ export function Home() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fetchGenRef = useRef(0);
 
-  const npub = pubkeyToNpub(publicKey);
+  const npub = accounts[activeAccountIndex]?.npub || pubkeyToNpub(publicKey);
   const btcAddress = pubkeyToTaprootAddress(publicKey);
-  const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
+  const displayName = myProfile?.displayName || myProfile?.name || accounts[activeAccountIndex]?.displayName || accounts[activeAccountIndex]?.label || 'Anonymous';
 
   const applyCache = useCallback((cache: DashboardCache) => {
     setBalance(cache.balance);
@@ -143,8 +143,9 @@ export function Home() {
       <div className="flex items-center gap-3 mb-5 md:mb-6">
         <div className="relative flex-shrink-0">
           <ClickableAvatar
+            key={publicKey}
             pubkey={publicKey}
-            picture={myProfile?.picture}
+            picture={myProfile?.picture || accounts[activeAccountIndex]?.picture}
             name={displayName}
             size="2xl"
           />

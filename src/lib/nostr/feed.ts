@@ -1,9 +1,10 @@
 /**
  * Nostr feed subscription manager.
- * Connects to relays via WebSocket and fetches notes by feed mode.
  */
 
 import { CUSTOM_KIND } from './kinds';
+import { subscribeRelays } from './relay-subscribe';
+import type { Filter } from 'nostr-tools/filter';
 
 export type FeedMode = 'global' | 'following' | 'media' | 'onchain' | 'hashtag' | 'kind';
 
@@ -35,243 +36,95 @@ export interface FeedFilter {
   until?: number;
 }
 
-interface RelayConnection {
-  ws: WebSocket;
-  url: string;
-  subId: string;
-}
-
 const IMAGE_REGEX = /https?:\/\/\S+\.(jpg|jpeg|png|gif|webp)(\?\S*)?/i;
 
-function buildNostrFilter(filter: FeedFilter): Record<string, unknown> {
+function buildNostrFilter(filter: FeedFilter): Filter {
   const limit = filter.limit ?? 50;
-  const base: Record<string, unknown> = { limit };
+  const base: Filter = { limit };
+  if (filter.until) base.until = filter.until;
 
-  if (filter.until) {
-    base.until = filter.until;
-  }
+  const recentSince = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   switch (filter.mode) {
     case 'global':
-      return { ...base, kinds: [1] };
-
+      return { ...base, kinds: [1], since: recentSince };
     case 'following':
-      if (!filter.pubkeys || filter.pubkeys.length === 0) {
-        return { ...base, kinds: [1] };
-      }
+      if (!filter.pubkeys?.length) return { ...base, kinds: [1], limit: 0 };
       return { ...base, kinds: [1], authors: filter.pubkeys };
-
     case 'media':
       return { ...base, kinds: [1] };
-
     case 'onchain':
       return { ...base, kinds: [1, CUSTOM_KIND.ONCHAIN_INVOICE] };
-
     case 'hashtag':
-      if (!filter.hashtag) {
-        return { ...base, kinds: [1] };
-      }
+      if (!filter.hashtag) return { ...base, kinds: [1] };
       return { ...base, kinds: [1], '#t': [filter.hashtag.toLowerCase().replace(/^#/, '')] };
-
     case 'kind':
       return { ...base, kinds: [filter.kind ?? 1] };
-
     default:
       return { ...base, kinds: [1] };
   }
 }
 
 function passesClientFilter(note: FeedNote, filter: FeedFilter): boolean {
-  if (filter.mode === 'media') {
-    return IMAGE_REGEX.test(note.content);
-  }
-
+  if (filter.mode === 'media') return IMAGE_REGEX.test(note.content);
   if (filter.mode === 'onchain') {
     if (note.kind === CUSTOM_KIND.ONCHAIN_INVOICE) return true;
     const lower = note.content.toLowerCase();
-    return (
-      lower.includes('bitcoin') ||
-      lower.includes('transaction') ||
-      lower.includes('btc') ||
-      lower.includes('sats') ||
-      lower.includes('onchain') ||
-      lower.includes('on-chain') ||
-      lower.includes('utxo') ||
-      lower.includes('psbt')
-    );
+    return /bitcoin|transaction|btc|sats|onchain|on-chain|utxo|psbt/.test(lower);
   }
-
   return true;
 }
 
-/**
- * Subscribe to a Nostr feed across multiple relays.
- * Returns a cleanup function to close all connections.
- */
-/**
- * Generic subscription: fetch events matching an arbitrary filter from relays.
- * Returns a cleanup function. Calls onEvent for each new event.
- */
 export function subscribeEvents(
   relayUrls: string[],
-  filter: Record<string, unknown>,
+  filter: Filter,
   onEvent: (event: NostrEvent) => void,
-  onEose?: () => void
+  onEose?: () => void,
 ): () => void {
-  const connections: RelayConnection[] = [];
   const seenIds = new Set<string>();
-  let eoseCount = 0;
-  let eoseFired = false;
-  const totalRelays = relayUrls.length;
-
-  for (const url of relayUrls) {
-    const subId = `sub_${Math.random().toString(36).slice(2, 10)}`;
-
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      continue;
-    }
-
-    const conn: RelayConnection = { ws, url, subId };
-    connections.push(conn);
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify(['REQ', subId, filter]));
-    };
-
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        if (data[0] === 'EVENT' && data[1] === subId) {
-          const event = data[2];
-          if (seenIds.has(event.id)) return;
-          seenIds.add(event.id);
-          onEvent(event);
-        } else if (data[0] === 'EOSE' && data[1] === subId) {
-          eoseCount++;
-          if (!eoseFired && eoseCount >= Math.min(totalRelays, 2)) {
-            eoseFired = true;
-            onEose?.();
-          }
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
-
-    ws.onerror = () => {
-      eoseCount++;
-      if (!eoseFired && eoseCount >= totalRelays) {
-        eoseFired = true;
-        onEose?.();
-      }
-    };
-  }
-
-  return () => {
-    for (const conn of connections) {
-      try {
-        if (conn.ws.readyState === WebSocket.OPEN) {
-          conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
-        }
-        conn.ws.close();
-      } catch {
-        // ignore close errors
-      }
-    }
-    connections.length = 0;
-  };
+  return subscribeRelays({
+    relayUrls,
+    filter,
+    onEvent: (event) => {
+      const e = event as unknown as NostrEvent;
+      if (!e.id || seenIds.has(e.id)) return;
+      seenIds.add(e.id);
+      onEvent(e);
+    },
+    onEose,
+  });
 }
 
-/**
- * Subscribe to a Nostr feed across multiple relays.
- * Returns a cleanup function to close all connections.
- */
 export function subscribeFeed(
   relayUrls: string[],
   filter: FeedFilter,
   onNote: (note: FeedNote) => void,
-  onEose?: () => void
+  onEose?: () => void,
 ): () => void {
-  const connections: RelayConnection[] = [];
-  const seenIds = new Set<string>();
-  let eoseCount = 0;
-  let eoseFired = false;
-  const totalRelays = relayUrls.length;
-
-  for (const url of relayUrls) {
-    const subId = `feed_${Math.random().toString(36).slice(2, 10)}`;
-
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      continue;
-    }
-
-    const conn: RelayConnection = { ws, url, subId };
-    connections.push(conn);
-
-    ws.onopen = () => {
-      const nostrFilter = buildNostrFilter(filter);
-      ws.send(JSON.stringify(['REQ', subId, nostrFilter]));
-    };
-
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-
-        if (data[0] === 'EVENT' && data[1] === subId) {
-          const event = data[2];
-          if (seenIds.has(event.id)) return;
-          seenIds.add(event.id);
-
-          const note: FeedNote = {
-            id: event.id,
-            pubkey: event.pubkey,
-            content: event.content,
-            created_at: event.created_at,
-            tags: event.tags ?? [],
-            kind: event.kind,
-          };
-
-          if (passesClientFilter(note, filter)) {
-            onNote(note);
-          }
-        } else if (data[0] === 'EOSE' && data[1] === subId) {
-          eoseCount++;
-          if (!eoseFired && eoseCount >= Math.min(totalRelays, 2)) {
-            eoseFired = true;
-            onEose?.();
-          }
-        }
-      } catch {
-        // ignore parse errors
-      }
-    };
-
-    ws.onerror = () => {
-      eoseCount++;
-      if (!eoseFired && eoseCount >= totalRelays) {
-        eoseFired = true;
-        onEose?.();
-      }
-    };
+  const nostrFilter = buildNostrFilter(filter);
+  if (filter.mode === 'following' && (!filter.pubkeys?.length)) {
+    onEose?.();
+    return () => {};
   }
 
-  return () => {
-    for (const conn of connections) {
-      try {
-        if (conn.ws.readyState === WebSocket.OPEN) {
-          conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
-        }
-        conn.ws.close();
-      } catch {
-        // ignore close errors
-      }
-    }
-    connections.length = 0;
-  };
+  const seenIds = new Set<string>();
+  return subscribeRelays({
+    relayUrls,
+    filter: nostrFilter,
+    onEvent: (event) => {
+      const e = event as unknown as NostrEvent;
+      if (!e.id || seenIds.has(e.id)) return;
+      seenIds.add(e.id);
+      const note: FeedNote = {
+        id: e.id,
+        pubkey: e.pubkey,
+        content: e.content,
+        created_at: e.created_at,
+        tags: e.tags ?? [],
+        kind: e.kind,
+      };
+      if (passesClientFilter(note, filter)) onNote(note);
+    },
+    onEose,
+  });
 }

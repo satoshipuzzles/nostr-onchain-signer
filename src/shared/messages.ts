@@ -15,8 +15,13 @@ export type MessageType =
   | 'nip07:nip44:decrypt'
   // Bitcoin messages
   | 'btc:signPsbt'
+  | 'btc:signPsbtPartial'
   | 'btc:getAddress'
   | 'btc:getMultisigAddress'
+  // External signing approval
+  | 'approval:get'
+  | 'approval:confirm'
+  | 'approval:reject'
   // Vault messages
   | 'vault:unlock'
   | 'vault:lock'

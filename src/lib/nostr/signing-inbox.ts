@@ -51,6 +51,10 @@ export async function getRequestStatus(
   return state.seen[eventId]?.status ?? null;
 }
 
+export function isSigningExpired(expiresAt: number): boolean {
+  return expiresAt > 0 && expiresAt < Math.floor(Date.now() / 1000);
+}
+
 function parseSigningRequest(eventId: string, pubkey: string, content: string, createdAt: number): SigningRequest | null {
   try {
     const parsed: SigningRequestContent = JSON.parse(content);
@@ -59,8 +63,7 @@ function parseSigningRequest(eventId: string, pubkey: string, content: string, c
       return null;
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const isExpired = parsed.expires_at > 0 && parsed.expires_at < now;
+    const isExpired = isSigningExpired(parsed.expires_at);
 
     return {
       eventId,

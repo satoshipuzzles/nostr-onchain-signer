@@ -29,7 +29,7 @@ import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { SignedEvent } from '@/lib/nostr/events';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
-const UNLOCK_BASE_URL = 'https://nostr-onchain-signer.vercel.app/unlock';
+const UNLOCK_BASE_URL = `${typeof window !== 'undefined' ? window.location.origin : 'https://nostr-onchain-signer.vercel.app'}/unlock`;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ interface UnlockItem {
   createdAt: number;
 }
 
-type View = 'list' | 'create' | 'detail';
+type View = 'list' | 'create' | 'detail' | 'wild';
 
 type SignerMode = 'anyone' | 'followers' | 'selected';
 
@@ -135,6 +135,16 @@ export function SocialUnlocks() {
     setView('detail');
   }
 
+  if (view === 'wild') {
+    return (
+      <WildView
+        publicKey={publicKey}
+        onBack={() => setView('list')}
+        onSelectUnlock={handleSelectUnlock}
+      />
+    );
+  }
+
   if (view === 'create') {
     return (
       <CreateUnlockView
@@ -167,7 +177,7 @@ export function SocialUnlocks() {
 
   return (
     <div className="h-full flex flex-col p-4 md:p-6 pb-24">
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <button onClick={() => navigate('/')} className="btn-back">
             <ArrowLeft className="w-5 h-5" />
@@ -183,6 +193,22 @@ export function SocialUnlocks() {
         >
           <Plus className="w-4 h-4" />
           Create
+        </button>
+      </div>
+
+      {/* Tab bar: My Unlocks / The Wild */}
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setView('list')}
+          className="flex-1 py-2 rounded-xl text-sm font-medium bg-white/10 text-white border border-white/20"
+        >
+          My Unlocks
+        </button>
+        <button
+          onClick={() => setView('wild')}
+          className="flex-1 py-2 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 border border-transparent transition-colors"
+        >
+          The Wild 🌐
         </button>
       </div>
 
@@ -323,6 +349,10 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
   const searchInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Hashtags
+  const [hashtags, setHashtags] = useState<string[]>(['social-unlock']);
+  const [tagInput, setTagInput] = useState('');
 
   // Image upload
   const [uploadedImageUrl, setUploadedImageUrl] = useState('');
@@ -558,7 +588,7 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
       const noteEvent = {
         kind: 1,
         content: noteContent,
-        tags: [['t', 'social-unlock'], ['e', createdEventId]],
+        tags: [['t', 'social-unlock'], ['e', createdEventId], ...hashtags.filter((t) => t !== 'social-unlock').map((t) => ['t', t])],
         created_at: Math.floor(Date.now() / 1000),
       };
 
@@ -782,6 +812,52 @@ function CreateUnlockView({ publicKey, confirmAndSign, onCreated, onBack }: Crea
         <p className="text-[10px] text-gray-600">
           {threshold} of {totalSlots} signatures required to unlock
         </p>
+
+        {/* Hashtags for discoverability */}
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Hashtags (for discovery in The Wild)</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {hashtags.map((tag) => (
+              <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 bg-purple-500/15 rounded-full text-[11px] text-purple-300">
+                #{tag}
+                {tag !== 'social-unlock' && (
+                  <button type="button" onClick={() => setHashtags(hashtags.filter((t) => t !== tag))} className="w-3 h-3 flex items-center justify-center hover:text-white">
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value.replace(/[^a-zA-Z0-9-]/g, ''))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && tagInput.trim()) {
+                  e.preventDefault();
+                  const tag = tagInput.trim().toLowerCase();
+                  if (!hashtags.includes(tag)) setHashtags([...hashtags, tag]);
+                  setTagInput('');
+                }
+              }}
+              placeholder="Add a tag..."
+              className="input-field text-sm flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (tagInput.trim()) {
+                  const tag = tagInput.trim().toLowerCase();
+                  if (!hashtags.includes(tag)) setHashtags([...hashtags, tag]);
+                  setTagInput('');
+                }
+              }}
+              className="px-3 py-2 rounded-xl bg-white/5 text-xs text-gray-400 hover:text-white"
+            >
+              Add
+            </button>
+          </div>
+        </div>
 
         {/* Who can sign? */}
         <div>
@@ -1206,6 +1282,259 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
       </div>
     </div>
   );
+}
+
+// ─── The Wild (Discovery) ────────────────────────────────────────
+
+interface WildViewProps {
+  publicKey: string;
+  onBack: () => void;
+  onSelectUnlock: (item: UnlockItem) => void;
+}
+
+function WildView({ publicKey, onBack, onSelectUnlock }: WildViewProps) {
+  const [wildUnlocks, setWildUnlocks] = useState<UnlockItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTag, setSearchTag] = useState('');
+  const [activeTag, setActiveTag] = useState('');
+  const [profiles, setProfiles] = useState<Record<string, { displayName?: string; picture?: string }>>({});
+
+  const popularTags = ['social-unlock', 'bitcoin', 'nostr', 'art', 'music', 'alpha', 'giveaway'];
+
+  useEffect(() => {
+    fetchWild();
+  }, [activeTag]);
+
+  async function fetchWild() {
+    setLoading(true);
+    try {
+      const relayList = await loadRelayList();
+      const readRelays = getReadRelays(relayList);
+      const items = await fetchWildUnlocks(readRelays, activeTag || undefined);
+      setWildUnlocks(items);
+
+      for (const item of items.slice(0, 20)) {
+        const profile = await getCachedProfile(item.pubkey);
+        if (profile) {
+          setProfiles((prev) => ({ ...prev, [item.pubkey]: profile }));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch wild unlocks:', err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleTagSearch(e: React.FormEvent) {
+    e.preventDefault();
+    setActiveTag(searchTag.trim().toLowerCase().replace(/^#/, ''));
+  }
+
+  return (
+    <div className="h-full flex flex-col p-4 md:p-6 pb-24">
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={onBack} className="btn-back">
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <div>
+          <h1 className="text-lg font-bold">The Wild</h1>
+          <p className="text-xs text-gray-500">Discover social unlocks from the community</p>
+        </div>
+      </div>
+
+      {/* Search by hashtag */}
+      <form onSubmit={handleTagSearch} className="mb-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+          <input
+            value={searchTag}
+            onChange={(e) => setSearchTag(e.target.value)}
+            placeholder="Search by hashtag..."
+            className="input-field pl-9 text-sm"
+          />
+        </div>
+      </form>
+
+      {/* Popular tags */}
+      <div className="flex gap-2 flex-wrap mb-4">
+        <button
+          onClick={() => setActiveTag('')}
+          className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors ${
+            !activeTag ? 'bg-white/15 text-white' : 'bg-white/5 text-gray-400 hover:text-white'
+          }`}
+        >
+          All
+        </button>
+        {popularTags.map((tag) => (
+          <button
+            key={tag}
+            onClick={() => setActiveTag(tag)}
+            className={`px-2.5 py-1 rounded-full text-[10px] font-medium transition-colors ${
+              activeTag === tag ? 'bg-purple-500/20 text-purple-300' : 'bg-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            #{tag}
+          </button>
+        ))}
+      </div>
+
+      {/* Results */}
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin text-gray-500" />
+        </div>
+      ) : wildUnlocks.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+          <Search className="w-10 h-10 text-gray-700 mb-3" />
+          <p className="text-sm text-gray-400">No unlocks found</p>
+          <p className="text-xs text-gray-600 mt-1">
+            {activeTag ? `No unlocks tagged #${activeTag}` : 'No public unlocks discovered yet'}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 overflow-y-auto flex-1">
+          {wildUnlocks.map((item) => {
+            const profile = profiles[item.pubkey];
+            const progress = item.signatures.length / item.content.threshold;
+            const isUnlocked = item.signatures.length >= item.content.threshold;
+
+            return (
+              <button
+                key={item.eventId}
+                onClick={() => onSelectUnlock(item)}
+                className="card text-left hover:border-white/20 transition-all"
+              >
+                {/* Creator header */}
+                <div className="flex items-center gap-2 mb-2">
+                  {profile?.picture ? (
+                    <img src={safeImageUrl(profile.picture)} alt="" className="w-7 h-7 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-white/10" />
+                  )}
+                  <span className="text-xs text-gray-400 truncate">
+                    {profile?.displayName || pubkeyToNpub(item.pubkey).slice(0, 14) + '...'}
+                  </span>
+                </div>
+
+                {/* Title */}
+                <h3 className="text-sm font-semibold mb-1 line-clamp-2">{item.content.title}</h3>
+                {item.content.description && (
+                  <p className="text-[11px] text-gray-500 line-clamp-2 mb-2">{item.content.description}</p>
+                )}
+
+                {/* Progress bar */}
+                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-2">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.min(progress * 100, 100)}%`,
+                      background: isUnlocked ? '#22c55e' : '#6b7280',
+                    }}
+                  />
+                </div>
+
+                {/* Footer */}
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-gray-500">
+                    <Users className="w-3 h-3 inline mr-1" />
+                    {item.signatures.length}/{item.content.threshold}
+                  </span>
+                  <StatusBadge isUnlocked={isUnlocked} progress={progress} />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Wild Relay Fetching ─────────────────────────────────────────
+
+async function fetchWildUnlocks(relayUrls: string[], hashtag?: string): Promise<UnlockItem[]> {
+  return new Promise((resolve) => {
+    const unlockMap = new Map<string, UnlockItem>();
+    const sigMap = new Map<string, { pubkey: string; message?: string }[]>();
+    let eoseCount = 0;
+    const connections: WebSocket[] = [];
+    let resolved = false;
+
+    function finalize() {
+      if (resolved) return;
+      resolved = true;
+      for (const ws of connections) { try { ws.close(); } catch {} }
+      for (const [eventId, item] of unlockMap) {
+        item.signatures = sigMap.get(eventId) ?? [];
+      }
+      resolve(Array.from(unlockMap.values()).sort((a, b) => b.createdAt - a.createdAt));
+    }
+
+    const timeout = setTimeout(finalize, 12000);
+    const relays = relayUrls.slice(0, 4);
+
+    for (const url of relays) {
+      let ws: WebSocket;
+      try { ws = new WebSocket(url); } catch { eoseCount++; continue; }
+      connections.push(ws);
+      const subId = `wild_${Math.random().toString(36).slice(2, 8)}`;
+
+      ws.onopen = () => {
+        const filter: any = {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK],
+          limit: 100,
+        };
+        if (hashtag) filter['#t'] = [hashtag];
+
+        ws.send(JSON.stringify(['REQ', subId, filter]));
+        ws.send(JSON.stringify(['REQ', `${subId}_signs`, {
+          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_SIGN],
+          limit: 500,
+        }]));
+      };
+
+      ws.onmessage = (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+          if (data[0] === 'EVENT') {
+            const event = data[2];
+            if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK) {
+              const content = parseSocialUnlockContent(event.content);
+              if (content && !unlockMap.has(event.id)) {
+                unlockMap.set(event.id, {
+                  eventId: event.id,
+                  pubkey: event.pubkey,
+                  content,
+                  signatures: [],
+                  createdAt: event.created_at,
+                });
+              }
+            } else if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK_SIGN) {
+              const signContent = parseSocialUnlockSignContent(event.content);
+              if (signContent) {
+                const existing = sigMap.get(signContent.unlock_event_id) ?? [];
+                if (!existing.some((s) => s.pubkey === event.pubkey)) {
+                  existing.push({ pubkey: event.pubkey, message: signContent.message });
+                  sigMap.set(signContent.unlock_event_id, existing);
+                }
+              }
+            }
+          } else if (data[0] === 'EOSE') {
+            eoseCount++;
+            if (eoseCount >= relays.length * 2) { clearTimeout(timeout); finalize(); }
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        eoseCount += 2;
+        if (eoseCount >= relays.length * 2) { clearTimeout(timeout); finalize(); }
+      };
+    }
+
+    if (relays.length === 0) { clearTimeout(timeout); resolve([]); }
+  });
 }
 
 // ─── Signer Badge ───────────────────────────────────────────────

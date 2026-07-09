@@ -13,12 +13,31 @@ interface Props {
   onViewProfile?: (pubkey: string) => void;
 }
 
+/** NIP-10: find immediate parent and thread anchor for reply threading. */
+function getThreadContext(note: FeedNote): { parentId: string | null; threadId: string } {
+  const eTags = note.tags.filter((t) => t[0] === 'e' && t[1]);
+
+  const replyTag = eTags.find((t) => t[3] === 'reply') || eTags.find((t) => !t[3] || t[3] === '');
+  const rootTag = eTags.find((t) => t[3] === 'root');
+
+  const parentId = replyTag?.[1] || null;
+  const threadId = rootTag?.[1] || parentId || note.id;
+
+  return { parentId, threadId };
+}
+
 export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
+  const { parentId, threadId } = getThreadContext(note);
+  const isReply = !!parentId && parentId !== note.id;
+
   const [parent, setParent] = useState<FeedNote | null>(null);
   const [replies, setReplies] = useState<FeedNote[]>([]);
   const [loadingReplies, setLoadingReplies] = useState(true);
   const [threadProfiles, setThreadProfiles] = useState<Map<string, ProfileMetadata>>(new Map(profiles));
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Thread anchor: parent note for replies, otherwise the opened note
+  const anchorId = isReply ? parentId! : note.id;
 
   useEffect(() => {
     let cancelled = false;
@@ -31,12 +50,10 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
         ? relays.slice(0, 3)
         : ['wss://relay.damus.io', 'wss://nos.lol'];
 
-      // Fetch parent if this note is a reply
-      const parentTag = note.tags.find((t) => t[0] === 'e');
-      if (parentTag && parentTag[1]) {
+      if (isReply && parentId) {
         const cleanup = subscribeEvents(
           relayUrls,
-          { kinds: [1], ids: [parentTag[1]], limit: 1 },
+          { kinds: [1], ids: [parentId], limit: 1 },
           (event: NostrEvent) => {
             if (cancelled) return;
             setParent({
@@ -53,14 +70,14 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
         cleanups.push(cleanup);
       }
 
-      // Fetch replies
-      const replyList: FeedNote[] = [];
+      const replyMap = new Map<string, FeedNote>();
+
       const cleanup = subscribeEvents(
         relayUrls,
-        { kinds: [1], '#e': [note.id], limit: 50 },
+        { kinds: [1], '#e': [anchorId], limit: 100 },
         (event: NostrEvent) => {
           if (cancelled) return;
-          replyList.push({
+          replyMap.set(event.id, {
             id: event.id,
             pubkey: event.pubkey,
             content: event.content,
@@ -68,7 +85,8 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
             tags: event.tags,
             kind: event.kind,
           });
-          setReplies([...replyList].sort((a, b) => a.created_at - b.created_at));
+          const sorted = Array.from(replyMap.values()).sort((a, b) => a.created_at - b.created_at);
+          setReplies(sorted);
           resolveThreadProfile(event.pubkey);
         },
         () => {
@@ -88,7 +106,7 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
       cancelled = true;
       cleanups.forEach((fn) => fn());
     };
-  }, [note.id]);
+  }, [note.id, anchorId, isReply, parentId]);
 
   async function resolveThreadProfile(pubkey: string) {
     if (threadProfiles.has(pubkey)) return;
@@ -108,6 +126,10 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
     }
   }
 
+  const visibleReplies = isReply
+    ? replies.filter((r) => r.id !== parent?.id)
+    : replies.filter((r) => r.id !== note.id);
+
   return (
     <div
       ref={overlayRef}
@@ -115,7 +137,6 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
       className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm overflow-y-auto"
     >
       <div className="max-w-lg mx-auto p-4 pt-8 pb-24 min-h-full">
-        {/* Close button */}
         <button
           onClick={onClose}
           className="fixed top-4 right-4 z-50 p-2 rounded-full bg-surface-800 text-gray-400 hover:text-white hover:bg-surface-700 transition-colors"
@@ -123,7 +144,6 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
           <X className="w-5 h-5" />
         </button>
 
-        {/* Parent note */}
         {parent && (
           <div className="relative">
             <div className="absolute left-6 top-full w-0.5 h-4 bg-surface-200/20" />
@@ -136,14 +156,12 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
           </div>
         )}
 
-        {/* Connecting line from parent */}
         {parent && (
           <div className="flex justify-start pl-6 -my-1">
             <div className="w-0.5 h-4 bg-surface-200/20" />
           </div>
         )}
 
-        {/* Main note (highlighted) */}
         <NoteCard
           note={note}
           profile={threadProfiles.get(note.pubkey) || profiles.get(note.pubkey)}
@@ -151,18 +169,17 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
           highlighted
         />
 
-        {/* Replies */}
-        {(replies.length > 0 || loadingReplies) && (
+        {(visibleReplies.length > 0 || loadingReplies) && (
           <div className="mt-1">
-            {replies.length > 0 && (
+            {visibleReplies.length > 0 && (
               <p className="text-xs text-gray-500 mb-2 px-1">
-                {replies.length} {replies.length === 1 ? 'reply' : 'replies'}
+                {visibleReplies.length} {visibleReplies.length === 1 ? 'comment' : 'comments'}
               </p>
             )}
 
-            {replies.map((reply, i) => (
+            {visibleReplies.map((reply, i) => (
               <div key={reply.id} className="relative">
-                {i < replies.length - 1 && (
+                {i < visibleReplies.length - 1 && (
                   <div className="absolute left-6 top-full w-0.5 h-3 bg-surface-200/10" />
                 )}
                 <NoteCard
@@ -177,7 +194,7 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
             {loadingReplies && (
               <div className="flex items-center justify-center py-4">
                 <Loader2 className="w-5 h-5 text-nostr animate-spin" />
-                <span className="text-xs text-gray-500 ml-2">Loading replies...</span>
+                <span className="text-xs text-gray-500 ml-2">Loading comments...</span>
               </div>
             )}
           </div>

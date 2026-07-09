@@ -171,6 +171,23 @@ export function createSigningRequestEvent(
   };
 }
 
+/** Public index event for /sign/:roundId pages (no #p tag). */
+export function createPublicSigningRequestEvent(
+  request: SigningRequestContent,
+  myPubkey: string,
+) {
+  return {
+    kind: CUSTOM_KIND.SIGNING_REQUEST,
+    content: JSON.stringify(request),
+    tags: [
+      ['r', request.round_id],
+      ['a', request.multisig_address],
+    ],
+    created_at: Math.floor(Date.now() / 1000),
+    pubkey: myPubkey,
+  };
+}
+
 // ─── Signing Response ───────────────────────────────────────────
 
 export interface SigningResponseContent {

@@ -1,17 +1,40 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import { Toaster } from 'sonner';
 import { App } from './App';
 import './index.css';
 
-const needsMock = !globalThis.chrome?.runtime?.id || globalThis.chrome?.runtime?.id === 'pwa-mode';
+// Static import — must run before boot so chrome APIs exist in PWA mode.
+// Safe in extension: mock only applies when chrome.runtime.id is missing.
+import '../dev/chrome-mock';
 
 function boot() {
-  ReactDOM.createRoot(document.getElementById('root')!).render(
+  const root = document.getElementById('root');
+  if (!root) return;
+
+  ReactDOM.createRoot(root).render(
     <React.StrictMode>
       <ErrorBoundary>
         <BrowserRouter>
           <App />
+          <Toaster
+            position="top-center"
+            theme="dark"
+            closeButton
+            gap={8}
+            toastOptions={{
+              style: {
+                marginTop: 'var(--safe-top)',
+                background: '#1a1a2e',
+                border: '1px solid rgba(255,255,255,0.08)',
+                color: '#fff',
+                fontSize: '13px',
+                borderRadius: '14px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+              },
+            }}
+          />
         </BrowserRouter>
       </ErrorBoundary>
     </React.StrictMode>
@@ -31,6 +54,10 @@ class ErrorBoundary extends React.Component<
     return { hasError: true, error: error.message || String(error) };
   }
 
+  componentDidCatch(error: Error) {
+    console.error('[NostrOnchain] Render error:', error);
+  }
+
   handleReset = () => {
     const keys = Object.keys(localStorage);
     for (const key of keys) {
@@ -43,7 +70,7 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 24, textAlign: 'center', color: '#fff', fontFamily: '-apple-system, sans-serif' }}>
+        <div style={{ padding: 24, textAlign: 'center', color: '#fff', fontFamily: '-apple-system, sans-serif', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
           <h2 style={{ marginBottom: 8 }}>Something went wrong</h2>
           <p style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>{this.state.error}</p>
@@ -69,8 +96,4 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-if (needsMock) {
-  import('../dev/chrome-mock').then(boot).catch(boot);
-} else {
-  boot();
-}
+boot();

@@ -7,11 +7,18 @@
  */
 
 import { decryptVault, loadVault, VaultData } from '@/lib/crypto/vault';
-import { signEvent, computeEventId, type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
-import { keyPairFromPrivateKey } from '@/lib/nostr/keys';
+import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
+import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
 import { schnorrSign } from '@/lib/bitcoin/psbt';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import type { ExtensionMessage, ExtensionResponse } from '@/shared/messages';
+import {
+  needsApproval,
+  queueForApproval,
+  getPendingApproval,
+  getWaiter,
+  clearPendingApproval,
+} from './pending-approval';
 
 const SESSION_KEY = 'unlocked_session';
 const SESSION_INDEX_KEY = 'active_account_index';
@@ -62,8 +69,8 @@ function hasVaultPrivateKey(key: VaultData): boolean {
 }
 
 chrome.runtime.onMessage.addListener(
-  (message: ExtensionMessage, _sender, sendResponse) => {
-    handleMessage(message)
+  (message: ExtensionMessage, sender, sendResponse) => {
+    handleMessage(message, sender)
       .then((response) => sendResponse(response))
       .catch((err) => sendResponse({ id: message.id, error: err.message }));
     return true;
@@ -71,9 +78,19 @@ chrome.runtime.onMessage.addListener(
 );
 
 async function handleMessage(
-  message: ExtensionMessage
+  message: ExtensionMessage,
+  sender?: chrome.runtime.MessageSender,
+  options?: { skipApproval?: boolean }
 ): Promise<ExtensionResponse> {
   const { type, payload, id } = message;
+
+  if (!options?.skipApproval && sender && needsApproval(type, sender)) {
+    const key = await getActiveKey();
+    if (!key) {
+      return { id, error: 'Vault is locked — open the extension and unlock first' };
+    }
+    return queueForApproval(message, sender, key.publicKeyHex);
+  }
 
   switch (type) {
     case 'vault:status': {
@@ -97,7 +114,6 @@ async function handleMessage(
       try {
         const keys = await decryptVault(vault, password);
         await setSession(keys);
-        // Restore active index from local storage (popup persists this)
         const localStored = await chrome.storage.local.get('activeAccountIndex');
         const idx = typeof localStored.activeAccountIndex === 'number'
           ? Math.min(localStored.activeAccountIndex, keys.length - 1)
@@ -128,6 +144,44 @@ async function handleMessage(
       return { id, result: { publicKey: session[index].publicKeyHex } };
     }
 
+    case 'approval:get': {
+      const { approvalId } = payload as { approvalId: string };
+      const pending = await getPendingApproval(approvalId);
+      if (!pending) return { id, error: 'Request expired or not found' };
+      return {
+        id,
+        result: {
+          origin: pending.origin,
+          type: pending.type,
+          preview: pending.preview,
+          pubkey: pending.pubkey,
+        },
+      };
+    }
+
+    case 'approval:reject': {
+      const { approvalId } = payload as { approvalId: string };
+      const waiter = getWaiter(approvalId);
+      if (waiter) {
+        waiter.resolve({ id: waiter.message.id, error: 'User denied signing request' });
+      }
+      await clearPendingApproval(approvalId);
+      return { id, result: { rejected: true } };
+    }
+
+    case 'approval:confirm': {
+      const { approvalId } = payload as { approvalId: string };
+      const pending = await getPendingApproval(approvalId);
+      const waiter = getWaiter(approvalId);
+      if (!pending || !waiter) {
+        return { id, error: 'Request expired — try again from the website' };
+      }
+      const result = await handleMessage(waiter.message, undefined, { skipApproval: true });
+      waiter.resolve(result);
+      await clearPendingApproval(approvalId);
+      return { id, result: { approved: true } };
+    }
+
     case 'nip07:getPublicKey': {
       const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
@@ -138,7 +192,10 @@ async function handleMessage(
       const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
       if (!hasVaultPrivateKey(key)) {
-        return { id, error: 'External signer account — no key in extension vault' };
+        return {
+          id,
+          error: 'This account has no private key in the vault. Use a generated/imported account, or unlock your NIP-07 extension (Alby/nos2x).',
+        };
       }
 
       const { event } = payload as { event: Omit<UnsignedEvent, 'pubkey'> };
@@ -149,7 +206,6 @@ async function handleMessage(
 
       const signed = signEvent(unsigned, key.privateKeyHex);
 
-      // Log signed event for Signed Events page
       try {
         const stored = await chrome.storage.local.get('signed_events_log');
         const log: Array<Record<string, unknown>> = stored.signed_events_log || [];
@@ -161,7 +217,7 @@ async function handleMessage(
           pubkey: signed.pubkey,
           sig: signed.sig,
           tags: signed.tags,
-          origin: 'extension',
+          origin: sender?.tab?.url || 'extension',
         });
         await chrome.storage.local.set({ signed_events_log: log.slice(0, 500) });
       } catch (err) {
@@ -201,6 +257,66 @@ async function handleMessage(
       return { id, result: result.relays ?? {} };
     }
 
+    case 'nip07:nip04:encrypt': {
+      const key = await getActiveKey();
+      if (!key || !hasVaultPrivateKey(key)) {
+        return { id, error: 'Vault is locked or has no private key for DM encryption' };
+      }
+      const { pubkey, plaintext } = payload as { pubkey: string; plaintext: string };
+      try {
+        const encrypted = await encryptNip04(key.privateKeyHex, pubkey, plaintext);
+        return { id, result: encrypted };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'NIP-04 encrypt failed';
+        return { id, error: msg };
+      }
+    }
+
+    case 'nip07:nip04:decrypt': {
+      const key = await getActiveKey();
+      if (!key || !hasVaultPrivateKey(key)) {
+        return { id, error: 'Vault is locked or has no private key for DM decryption' };
+      }
+      const { pubkey, ciphertext } = payload as { pubkey: string; ciphertext: string };
+      try {
+        const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
+        return { id, result: decrypted };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'NIP-04 decrypt failed';
+        return { id, error: msg };
+      }
+    }
+
+    case 'nip07:nip44:encrypt': {
+      const key = await getActiveKey();
+      if (!key || !hasVaultPrivateKey(key)) {
+        return { id, error: 'Vault is locked or has no private key for DM encryption' };
+      }
+      const { pubkey, plaintext } = payload as { pubkey: string; plaintext: string };
+      try {
+        const encrypted = encryptNip44(key.privateKeyHex, pubkey, plaintext);
+        return { id, result: encrypted };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'NIP-44 encrypt failed';
+        return { id, error: msg };
+      }
+    }
+
+    case 'nip07:nip44:decrypt': {
+      const key = await getActiveKey();
+      if (!key || !hasVaultPrivateKey(key)) {
+        return { id, error: 'Vault is locked or has no private key for DM decryption' };
+      }
+      const { pubkey, ciphertext } = payload as { pubkey: string; ciphertext: string };
+      try {
+        const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
+        return { id, result: decrypted };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'NIP-44 decrypt failed';
+        return { id, error: msg };
+      }
+    }
+
     case 'btc:getAddress': {
       const key = await getActiveKey();
       if (!key) return { id, error: 'Vault is locked' };
@@ -224,6 +340,27 @@ async function handleMessage(
         network ?? 'mainnet'
       );
       return { id, result: wallet };
+    }
+
+    case 'btc:signPsbtPartial': {
+      const key = await getActiveKey();
+      if (!key) return { id, error: 'Vault is locked' };
+      if (!hasVaultPrivateKey(key)) {
+        return {
+          id,
+          error: 'No private key in vault — import nsec or switch to a full-key account.',
+        };
+      }
+      const { psbtHex } = payload as { psbtHex: string };
+      if (!psbtHex) return { id, error: 'Missing psbtHex' };
+      try {
+        const { signMultisigPsbtPartial } = await import('@/lib/bitcoin/multisig-psbt');
+        const signed = signMultisigPsbtPartial(psbtHex, key.privateKeyHex);
+        return { id, result: { psbtHex: signed } };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to partial-sign PSBT';
+        return { id, error: msg };
+      }
     }
 
     case 'btc:signPsbt': {

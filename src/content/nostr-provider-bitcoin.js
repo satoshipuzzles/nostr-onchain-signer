@@ -49,6 +49,7 @@
   });
 
   var bridge = {
+    _nostrOnchainSigner: true,
     signSchnorr: function (hash) {
       return sendRequest('nip07:signSchnorr', { hash: hash });
     },
@@ -63,7 +64,8 @@
     },
   };
 
-  if (window.nostr) {
+  if (window.nostr && !window.nostr._nostrOnchainSigner) {
+    // Augment third-party signers with Bitcoin Schnorr + keep their Nostr signing
     if (!window.nostr.signSchnorr) {
       window.nostr.signSchnorr = bridge.signSchnorr;
     }
@@ -71,16 +73,23 @@
     window.nostr = bridge;
   }
 
-  if (!window.bitcoin) {
+  if (!window.bitcoin || !window.bitcoin._nostrOnchainSigner) {
     window.bitcoin = {
+      _nostrOnchainSigner: true,
       getAddress: function () {
         return sendRequest('btc:getAddress');
       },
       signPsbt: function (psbtHex, options) {
         return sendRequest('btc:signPsbt', Object.assign({ psbtHex: psbtHex }, options || {}));
       },
+      signPsbtPartial: function (psbtHex) {
+        return sendRequest('btc:signPsbtPartial', { psbtHex: psbtHex });
+      },
     };
   }
 
+  window.dispatchEvent(new Event('nostr:init'));
+  window.dispatchEvent(new Event('nostr-provider-loaded'));
   window.dispatchEvent(new Event('nostr-onchain-bitcoin-ready'));
+  window.dispatchEvent(new Event('bitcoin-provider-loaded'));
 })();

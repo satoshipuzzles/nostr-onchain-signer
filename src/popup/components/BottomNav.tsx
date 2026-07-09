@@ -1,17 +1,17 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Wallet, Compass, Inbox, Settings } from 'lucide-react';
+import { LayoutDashboard, Wallet, Rss, MessageCircle, Menu } from 'lucide-react';
 
 const tabs = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
-  { to: '/signing', icon: Inbox, label: 'Signing' },
-  { to: '/discover', icon: Compass, label: 'Discover' },
+  { to: '/feed', icon: Rss, label: 'Feed' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
-  { to: '/settings', icon: Settings, label: 'More' },
+  { to: '/messages', icon: MessageCircle, label: 'Messages' },
+  { to: '/more', icon: Menu, label: 'More' },
 ];
 
 export function BottomNav() {
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-black border-t border-white/10 z-50"
+    <nav className="fixed bottom-0 left-0 right-0 bg-black/95 backdrop-blur-md border-t border-white/10 z-50"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
       <div className="flex items-center justify-around h-14">

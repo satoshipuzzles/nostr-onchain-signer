@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { Lock, Unlock, Users, ExternalLink, Check, LogIn, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
-import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
+import { queryPublicEvents, publishPublicEvent } from '@/lib/nostr/public-relay';
 import {
   decryptContent,
   parseSocialUnlockContent,
@@ -159,8 +159,6 @@ function CreatorProfile({ pubkey }: { pubkey: string }) {
   );
 }
 
-const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
-
 export function SocialUnlockPage() {
   const { eventId } = useParams<{ eventId: string }>();
   const [loading, setLoading] = useState(true);
@@ -199,16 +197,9 @@ export function SocialUnlockPage() {
     setError(null);
 
     try {
-      const relayList = await loadRelayList();
-      const readRelays = getReadRelays(relayList);
-
-      if (readRelays.length === 0) {
-        readRelays.push(...DEFAULT_RELAYS);
-      }
-
-      const result = await fetchFromRelays(readRelays, id);
+      const result = await fetchFromRelays(id);
       if (!result) {
-        setError('Event not found on relays');
+        setError('Event not found on relays. It may not have been published yet, or relays may be temporarily unavailable.');
         return;
       }
 
@@ -216,8 +207,8 @@ export function SocialUnlockPage() {
       setCreatorPubkey(result.pubkey);
       setSignatures(result.signatures);
       if (result.reveal) setReveal(result.reveal);
-    } catch (err) {
-      setError('Failed to fetch event');
+    } catch {
+      setError('Failed to fetch event from relays');
     } finally {
       setLoading(false);
     }
@@ -274,42 +265,42 @@ export function SocialUnlockPage() {
       const signedEvent = await nostr.signEvent(event);
       if (!signedEvent) throw new Error('Signing was cancelled');
 
-      await publishToRelays(signedEvent);
+      const result = await publishPublicEvent(signedEvent);
+      if (!result.ok) throw new Error(result.error || 'Failed to publish signature to relays');
 
+      const newSigCount = signatures.length + 1;
       setSignatures((prev) => {
         if (prev.some((s) => s.pubkey === connectedPubkey)) return prev;
         return [...prev, { pubkey: connectedPubkey, message: 'Signed via public unlock page' }];
       });
       setHasSigned(true);
       setSignSuccess(true);
+
+      // If this signature meets the threshold, DM the creator with reveal link
+      if (content && newSigCount >= content.threshold && connectedPubkey !== creatorPubkey) {
+        try {
+          const unlockUrl = `${window.location.origin}/unlock/${eventId}`;
+          const dmText = `Your social unlock "${content.title}" has reached ${content.threshold} signatures and is ready to reveal! Open it here: ${unlockUrl}`;
+          if (nostr?.nip04?.encrypt) {
+            const encrypted = await nostr.nip04.encrypt(creatorPubkey, dmText);
+            const dmEvent = {
+              kind: 4,
+              content: encrypted,
+              tags: [['p', creatorPubkey]],
+              created_at: Math.floor(Date.now() / 1000),
+            };
+            const signedDm = await nostr.signEvent(dmEvent);
+            if (signedDm) await publishPublicEvent(signedDm);
+          }
+        } catch {
+          // Non-critical — threshold DM is best-effort
+        }
+      }
     } catch (err) {
       setSignError(err instanceof Error ? err.message : 'Signing failed');
     } finally {
       setSigning(false);
     }
-  }
-
-  async function publishToRelays(event: any): Promise<void> {
-    const relayList = await loadRelayList();
-    const writeRelays = getReadRelays(relayList);
-    const relayUrls = writeRelays.length > 0 ? writeRelays.slice(0, 3) : DEFAULT_RELAYS;
-
-    const promises = relayUrls.map((relayUrl) =>
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(() => { ws.close(); resolve(); }, 8000);
-        let ws: WebSocket;
-        try { ws = new WebSocket(relayUrl); } catch { clearTimeout(timer); resolve(); return; }
-        ws.onopen = () => { ws.send(JSON.stringify(['EVENT', event])); };
-        ws.onmessage = (msg) => {
-          try {
-            const data = JSON.parse(msg.data);
-            if (data[0] === 'OK') { clearTimeout(timer); ws.close(); resolve(); }
-          } catch { /* ignore */ }
-        };
-        ws.onerror = () => { clearTimeout(timer); resolve(); };
-      })
-    );
-    await Promise.allSettled(promises);
   }
 
   if (loading) {
@@ -327,7 +318,16 @@ export function SocialUnlockPage() {
     return (
       <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center">
         <Lock className="w-12 h-12 text-gray-600 mb-4" />
-        <p className="text-sm text-gray-400">{error || 'Content not found'}</p>
+        <p className="text-sm text-gray-400 mb-4">{error || 'Content not found'}</p>
+        {eventId && (
+          <button
+            onClick={() => fetchUnlockEvent(eventId)}
+            className="px-4 py-2 bg-nostr/20 text-nostr rounded-xl text-sm hover:bg-nostr/30 transition-colors"
+          >
+            Retry
+          </button>
+        )}
+        <p className="text-[10px] text-gray-600 mt-4 font-mono break-all max-w-sm">{eventId}</p>
       </div>
     );
   }
@@ -437,7 +437,11 @@ export function SocialUnlockPage() {
           </div>
         ) : (
           <div className="card text-center mb-4">
-            <p className="text-sm text-gray-400">Threshold met. Waiting for creator to publish reveal.</p>
+            <Unlock className="w-8 h-8 text-green-400 mx-auto mb-2" />
+            <p className="text-sm text-green-400 font-medium mb-1">Threshold met!</p>
+            <p className="text-xs text-gray-400">
+              Waiting for the creator to publish the reveal key. If you created this unlock, open it in the app and tap &quot;Reveal Content&quot;.
+            </p>
           </div>
         )}
 
@@ -535,117 +539,46 @@ interface FetchResult {
   reveal?: RevealData;
 }
 
-async function fetchFromRelays(relayUrls: string[], eventId: string): Promise<FetchResult | null> {
-  return new Promise((resolve) => {
-    let foundContent: SocialUnlockContent | null = null;
-    let foundPubkey = '';
-    const signatures: Signature[] = [];
-    let revealData: RevealData | null = null;
-    const connections: WebSocket[] = [];
-    let eoseCount = 0;
-    let resolved = false;
-    const targetEose = relayUrls.slice(0, 3).length * 3;
+async function fetchFromRelays(eventId: string): Promise<FetchResult | null> {
+  const [unlockEvents, signEvents, revealEvents] = await Promise.all([
+    queryPublicEvents({ ids: [eventId] }),
+    queryPublicEvents({ kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_SIGN], '#e': [eventId], limit: 200 }),
+    queryPublicEvents({ kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL], '#e': [eventId], limit: 5 }),
+  ]);
 
-    function finalize() {
-      if (resolved) return;
-      resolved = true;
-      for (const ws of connections) {
-        try { ws.close(); } catch {}
-      }
+  const unlockEvent = unlockEvents.find((e) => e.kind === CUSTOM_KIND.SOCIAL_UNLOCK);
+  if (!unlockEvent) return null;
 
-      if (!foundContent) {
-        resolve(null);
-        return;
-      }
+  const parsed = parseSocialUnlockContent(unlockEvent.content);
+  if (!parsed) return null;
 
-      resolve({
-        content: foundContent,
-        pubkey: foundPubkey,
-        signatures,
-        reveal: revealData ?? undefined,
-      });
-    }
+  const signatures: Signature[] = [];
+  const seen = new Set<string>();
+  for (const evt of signEvents) {
+    const signContent = parseSocialUnlockSignContent(evt.content);
+    if (!signContent || signContent.unlock_event_id !== eventId) continue;
+    if (seen.has(evt.pubkey)) continue;
+    seen.add(evt.pubkey);
+    signatures.push({ pubkey: evt.pubkey, message: signContent.message });
+    if (parsed.total_slots > 0 && signatures.length >= parsed.total_slots) break;
+  }
 
-    const timeout = setTimeout(finalize, 12000);
-
-    for (const url of relayUrls.slice(0, 3)) {
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(url);
-      } catch {
-        eoseCount += 3;
-        continue;
-      }
-      connections.push(ws);
-
-      const subId = `pub_unlock_${Math.random().toString(36).slice(2, 8)}`;
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify(['REQ', subId, { ids: [eventId] }]));
-
-        ws.send(JSON.stringify(['REQ', `${subId}_sigs`, {
-          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_SIGN],
-          '#e': [eventId],
-          limit: 200,
-        }]));
-
-        ws.send(JSON.stringify(['REQ', `${subId}_reveal`, {
-          kinds: [CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL],
-          '#e': [eventId],
-          limit: 1,
-        }]));
+  let reveal: RevealData | undefined;
+  for (const evt of revealEvents) {
+    const revealContent = parseSocialUnlockRevealContent(evt.content);
+    if (revealContent?.unlock_event_id === eventId) {
+      reveal = {
+        decryption_key: revealContent.decryption_key,
+        revealed_at: revealContent.revealed_at,
       };
-
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          if (data[0] === 'EVENT') {
-            const event = data[2];
-
-            if (event.id === eventId && event.kind === CUSTOM_KIND.SOCIAL_UNLOCK) {
-              const parsed = parseSocialUnlockContent(event.content);
-              if (parsed) {
-                foundContent = parsed;
-                foundPubkey = event.pubkey;
-              }
-            } else if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK_SIGN) {
-              const signContent = parseSocialUnlockSignContent(event.content);
-              if (signContent && signContent.unlock_event_id === eventId) {
-                if (!signatures.some((s) => s.pubkey === event.pubkey)) {
-                  signatures.push({ pubkey: event.pubkey, message: signContent.message });
-                }
-              }
-            } else if (event.kind === CUSTOM_KIND.SOCIAL_UNLOCK_REVEAL) {
-              const revealContent = parseSocialUnlockRevealContent(event.content);
-              if (revealContent && revealContent.unlock_event_id === eventId) {
-                revealData = {
-                  decryption_key: revealContent.decryption_key,
-                  revealed_at: revealContent.revealed_at,
-                };
-              }
-            }
-          } else if (data[0] === 'EOSE') {
-            eoseCount++;
-            if (eoseCount >= targetEose) {
-              clearTimeout(timeout);
-              finalize();
-            }
-          }
-        } catch {}
-      };
-
-      ws.onerror = () => {
-        eoseCount += 3;
-        if (eoseCount >= targetEose) {
-          clearTimeout(timeout);
-          finalize();
-        }
-      };
+      break;
     }
+  }
 
-    if (relayUrls.length === 0) {
-      clearTimeout(timeout);
-      resolve(null);
-    }
-  });
+  return {
+    content: parsed,
+    pubkey: unlockEvent.pubkey,
+    signatures,
+    reveal,
+  };
 }

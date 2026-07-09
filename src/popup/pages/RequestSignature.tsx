@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { ArrowLeft, Send, Users, Loader2, Check } from 'lucide-react';
 import { type ArchivedMultisig, savePendingRequest, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
-import { createSigningRound, encodeSigningRequest, saveSigningRound } from '@/lib/bitcoin/signing-round';
-import { createSigningRequestEvent, CUSTOM_KIND } from '@/lib/nostr/kinds';
-import { publishEvent } from '@/lib/nostr/discovery';
+import { createSigningRound, saveSigningRound } from '@/lib/bitcoin/signing-round';
+import { buildMultisigPsbt } from '@/lib/bitcoin/multisig-psbt';
+import { createSigningRequestEvent, createPublicSigningRequestEvent, createSigningResponseEvent, CUSTOM_KIND } from '@/lib/nostr/kinds';
+import { publishEvent } from '@/lib/nostr/publish';
 import { createMessageId } from '@/shared/messages';
 import { formatSats } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { appOrigin } from '@/lib/nostr/public-relay';
 import { encryptDM } from '@/lib/nostr/dm';
 
 interface Props {
@@ -37,44 +39,99 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
       if (!amount || amount <= 0) throw new Error('Invalid amount');
       if (!recipient) throw new Error('Enter a recipient address');
 
-      // Create a placeholder PSBT (in production this would be a real unsigned PSBT)
-      // For now we encode the transaction intent
-      const psbtPlaceholder = JSON.stringify({
-        intent: 'send',
-        from: wallet.wallet.address,
-        to: recipient,
-        amount,
-        memo,
+      const psbtResult = await buildMultisigPsbt({
+        wallet: wallet.wallet,
+        toAddress: recipient,
+        amountSats: amount,
       });
 
-      // Create signing round
+      let psbtHex = psbtResult.psbtHex;
+      let initiatorSigned = false;
+
+      // Partial-sign as initiator when vault holds our key
+      try {
+        const signResp = await chrome.runtime.sendMessage({
+          type: 'btc:signPsbtPartial',
+          payload: { psbtHex },
+          id: createMessageId(),
+        });
+        if (!signResp.error && signResp.result?.psbtHex) {
+          psbtHex = signResp.result.psbtHex as string;
+          initiatorSigned = true;
+        }
+      } catch {
+        /* initiator may use external signer only */
+      }
+
       const signerPubkeys = wallet.keyHolders.map((h) => h.pubkey);
       const round = createSigningRound({
         multisigAddress: wallet.wallet.address,
         threshold: wallet.wallet.config.threshold,
         signerPubkeys,
-        psbtHex: psbtPlaceholder,
+        psbtHex,
         memo: memo || `Send ${formatSats(amount)} to ${recipient.slice(0, 12)}...`,
-        ttlHours: 48,
+        ttlHours: 168,
+        initiatorPubkey: publicKey,
+        initiatorSigned,
       });
 
       await saveSigningRound(round);
+
+      const requestContent = {
+        psbt_hex: psbtHex,
+        round_id: round.id,
+        multisig_address: wallet.wallet.address,
+        threshold: wallet.wallet.config.threshold,
+        signed_count: initiatorSigned ? 1 : 0,
+        total_signers: signerPubkeys.length,
+        memo: round.memo,
+        expires_at: round.expiresAt,
+      };
+
+      const signUrl = `${appOrigin()}/sign/${round.id}`;
+
+      // Public anchor event so /sign/:roundId pages can discover the request
+      let anchorEventId = '';
+      const anchorEvent = createPublicSigningRequestEvent(requestContent, publicKey);
+      const anchorResp = await chrome.runtime.sendMessage({
+        type: 'nip07:signEvent',
+        payload: { event: anchorEvent },
+        id: createMessageId(),
+      });
+      if (!anchorResp.error && anchorResp.result) {
+        await publishEvent(anchorResp.result);
+        anchorEventId = anchorResp.result.id;
+      }
+
+      // Publish initiator's own 9801 response so progress counts correctly
+      if (initiatorSigned && anchorEventId) {
+        const initiatorResponse = createSigningResponseEvent(
+          {
+            round_id: round.id,
+            psbt_hex: psbtHex,
+            accepted: true,
+            message: 'Initiator signed',
+          },
+          publicKey,
+          anchorEventId,
+          publicKey,
+        );
+        const initResp = await chrome.runtime.sendMessage({
+          type: 'nip07:signEvent',
+          payload: { event: initiatorResponse },
+          id: createMessageId(),
+        });
+        if (!initResp.error && initResp.result) {
+          await publishEvent(initResp.result);
+        }
+      }
 
       // Send signing requests to each co-signer via kind 9800
       const sentToPubkeys: string[] = [];
 
       for (const signer of otherSigners) {
         const requestEvent = createSigningRequestEvent(
-          {
-            psbt_hex: psbtPlaceholder,
-            round_id: round.id,
-            multisig_address: wallet.wallet.address,
-            threshold: wallet.wallet.config.threshold,
-            signed_count: 0,
-            total_signers: signerPubkeys.length,
-            memo: round.memo,
-            expires_at: round.expiresAt,
-          },
+          requestContent,
           signer.pubkey,
           publicKey
         );
@@ -97,18 +154,14 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
             `💰 ${formatSats(amount)} sats\n` +
             `📍 ${wallet.wallet.address.slice(0, 20)}...\n` +
             `🔗 Round: ${round.id.slice(0, 16)}...\n\n` +
-            `Open your Nostr Onchain signer to review and sign.\n` +
+            `Sign here: ${signUrl}\n` +
             `nostr:${response.result.id}`;
 
-          let encryptedDmContent = dmContent;
-          let dmKind = 4;
-          try {
-            const result = await encryptDM(signer.pubkey, dmContent);
-            encryptedDmContent = result.content;
-            dmKind = result.kind;
-          } catch {
-            console.warn('DM encryption failed — sending as plaintext');
-          }
+          let encryptedDmContent: string;
+          let dmKind: number;
+          const result = await encryptDM(signer.pubkey, dmContent);
+          encryptedDmContent = result.content;
+          dmKind = result.kind;
 
           const dmEvent = {
             kind: dmKind,
@@ -136,7 +189,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
           roundId: round.id,
           direction: 'outbound',
           status: 'pending',
-          psbtHex: psbtPlaceholder,
+          psbtHex,
           recipientPubkey: signer.pubkey,
           amount,
           memo: round.memo,

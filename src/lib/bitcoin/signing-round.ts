@@ -61,24 +61,36 @@ export function createSigningRound(params: {
   memo?: string;
   opReturnEventId?: string;
   ttlHours?: number;
+  initiatorPubkey?: string;
+  initiatorSigned?: boolean;
 }): SigningRound {
   const now = Math.floor(Date.now() / 1000);
-  const ttl = (params.ttlHours ?? 24) * 3600;
+  const ttl = params.ttlHours ? params.ttlHours * 3600 : 0;
+
+  const signers = params.signerPubkeys.map((pubkey) => {
+    const isInitiator = params.initiatorSigned
+      && params.initiatorPubkey
+      && pubkey === params.initiatorPubkey;
+    return {
+      pubkey,
+      status: isInitiator ? ('signed' as SignerStatus) : ('pending' as SignerStatus),
+      signedAt: isInitiator ? now : undefined,
+    };
+  });
+
+  const signedCount = signers.filter((s) => s.status === 'signed').length;
 
   return {
     id: generateRoundId(),
     multisigAddress: params.multisigAddress,
     threshold: params.threshold,
     totalSigners: params.signerPubkeys.length,
-    signers: params.signerPubkeys.map((pubkey) => ({
-      pubkey,
-      status: 'pending',
-    })),
+    signers,
     psbtHex: params.psbtHex,
     createdAt: now,
     updatedAt: now,
-    status: 'collecting',
-    expiresAt: now + ttl,
+    status: signedCount >= params.threshold ? 'ready' : 'collecting',
+    expiresAt: ttl > 0 ? now + ttl : 0,
     memo: params.memo,
     opReturnEventId: params.opReturnEventId,
   };
@@ -155,7 +167,7 @@ export function getProgress(round: SigningRound): {
     remaining,
     percentComplete: Math.round((signed / round.threshold) * 100),
     isReady: signed >= round.threshold,
-    isExpired: now > round.expiresAt,
+    isExpired: round.expiresAt > 0 && now > round.expiresAt,
   };
 }
 

@@ -8,9 +8,8 @@ import { CUSTOM_KIND, type SigningRequestContent, type SigningResponseContent } 
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
 import type { ProfileMetadata } from '@/lib/nostr/social';
-
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
-const VERCEL_URL = 'https://nostr-onchain-signer.vercel.app';
+import { isSigningExpired } from '@/lib/nostr/signing-inbox';
+import { queryPublicEvents, publishPublicEvent, appOrigin } from '@/lib/nostr/public-relay';
 
 interface NostrEvent {
   id: string;
@@ -95,17 +94,13 @@ export function SignPage() {
     setLoading(true);
     setError('');
 
-    const results = await Promise.allSettled(
-      RELAYS.map((url) => fetchRequestFromRelay(url, rid))
-    );
+    const events = await queryPublicEvents({
+      kinds: [CUSTOM_KIND.SIGNING_REQUEST],
+      '#r': [rid],
+      limit: 5,
+    });
 
-    let foundEvent: NostrEvent | null = null;
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value) {
-        foundEvent = result.value;
-        break;
-      }
-    }
+    const foundEvent = events.sort((a, b) => b.created_at - a.created_at)[0] ?? null;
 
     if (!foundEvent) {
       setError('Signing request not found on relays');
@@ -137,106 +132,47 @@ export function SignPage() {
     setLoading(false);
   }
 
-  function fetchRequestFromRelay(relayUrl: string, rid: string): Promise<NostrEvent | null> {
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => { ws.close(); resolve(null); }, 10000);
-
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(relayUrl);
-      } catch {
-        clearTimeout(timeout);
-        resolve(null);
-        return;
-      }
-
-      const subId = `sign_${Math.random().toString(36).slice(2, 8)}`;
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify(['REQ', subId, {
-          kinds: [CUSTOM_KIND.SIGNING_REQUEST],
-          '#r': [rid],
-          limit: 1,
-        }]));
-      };
-
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          if (data[0] === 'EVENT' && data[1] === subId && data[2]) {
-            clearTimeout(timeout);
-            ws.close();
-            resolve(data[2] as NostrEvent);
-          } else if (data[0] === 'EOSE') {
-            clearTimeout(timeout);
-            ws.close();
-            resolve(null);
-          }
-        } catch { /* ignore */ }
-      };
-
-      ws.onerror = () => { clearTimeout(timeout); resolve(null); };
-    });
-  }
-
-  function subscribeToResponses(rid: string, req: SigningRequestContent, _event: NostrEvent) {
+  function subscribeToResponses(rid: string, req: SigningRequestContent, event: NostrEvent) {
     const seenIds = new Set<string>();
     const collected: SignerInfo[] = [];
     const psbts: string[] = [];
 
-    const connections: { ws: WebSocket; subId: string }[] = [];
-
-    for (const url of RELAYS) {
-      const subId = `resp_${Math.random().toString(36).slice(2, 10)}`;
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(url);
-      } catch { continue; }
-      connections.push({ ws, subId });
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify(['REQ', subId, {
-          kinds: [CUSTOM_KIND.SIGNING_RESPONSE],
-          '#r': [rid],
-          limit: 50,
-        }]));
-      };
-
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          if (data[0] === 'EVENT' && data[1] === subId) {
-            const evt = data[2];
-            if (seenIds.has(evt.id)) return;
-            seenIds.add(evt.id);
-            try {
-              const content: SigningResponseContent = JSON.parse(evt.content);
-              if (content.round_id === rid && content.accepted) {
-                const existing = collected.find((s) => s.pubkey === evt.pubkey);
-                if (!existing) {
-                  collected.push({ pubkey: evt.pubkey, signed: true, psbtHex: content.psbt_hex });
-                  if (content.psbt_hex) psbts.push(content.psbt_hex);
-                  setSigners([...collected]);
-                  setSignedPsbts([...psbts]);
-                }
-              }
-            } catch { /* malformed */ }
-          }
-        } catch { /* ignore */ }
-      };
+    // Mark initiator as signed if signed_count > 0
+    if (req.signed_count > 0) {
+      collected.push({ pubkey: event.pubkey, signed: true, psbtHex: req.psbt_hex });
     }
 
-    responseCleanupRef.current = () => {
-      for (const conn of connections) {
+    let cancelled = false;
+
+    (async () => {
+      const responseEvents = await queryPublicEvents({
+        kinds: [CUSTOM_KIND.SIGNING_RESPONSE],
+        '#r': [rid],
+        limit: 50,
+      });
+
+      if (cancelled) return;
+
+      for (const evt of responseEvents) {
+        if (seenIds.has(evt.id)) continue;
+        seenIds.add(evt.id);
         try {
-          if (conn.ws.readyState === WebSocket.OPEN) {
-            conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+          const content: SigningResponseContent = JSON.parse(evt.content);
+          if (content.round_id === rid && content.accepted) {
+            const existing = collected.find((s) => s.pubkey === evt.pubkey);
+            if (!existing) {
+              collected.push({ pubkey: evt.pubkey, signed: true, psbtHex: content.psbt_hex });
+              if (content.psbt_hex) psbts.push(content.psbt_hex);
+            }
           }
-          conn.ws.close();
-        } catch { /* ignore */ }
+        } catch { /* malformed */ }
       }
-      connections.length = 0;
-    };
+
+      setSigners([...collected]);
+      setSignedPsbts([...psbts]);
+    })();
+
+    responseCleanupRef.current = () => { cancelled = true; };
   }
 
   async function handleConnect() {
@@ -272,20 +208,48 @@ export function SignPage() {
 
     setSigning(true);
     try {
-      const nostr = (window as any).nostr;
-      if (!nostr) throw new Error('NIP-07 extension not found');
+      const nostr = (window as { nostr?: { getPublicKey?: () => Promise<string>; signEvent?: (e: unknown) => Promise<unknown> } }).nostr;
+      if (!nostr) throw new Error('NIP-07 extension not found — install and unlock Nostr Onchain Signer');
+
+      if (!nostr?.signEvent) {
+        throw new Error('NIP-07 signEvent not available — unlock the extension');
+      }
 
       let pubkey = userPubkey;
       if (!pubkey) {
-        pubkey = await nostr.getPublicKey();
+        pubkey = await nostr.getPublicKey?.() ?? '';
         setUserPubkey(pubkey);
+      }
+
+      let signedPsbt = request.psbt_hex;
+      const bitcoin = (window as { bitcoin?: { signPsbtPartial?: (h: string) => Promise<{ psbtHex?: string } | string> } }).bitcoin;
+
+      if (bitcoin?.signPsbtPartial) {
+        const result = await bitcoin.signPsbtPartial(request.psbt_hex);
+        signedPsbt = typeof result === 'string' ? result : (result.psbtHex || signedPsbt);
+      } else if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+        const partialResp = await chrome.runtime.sendMessage({
+          type: 'btc:signPsbtPartial',
+          payload: { psbtHex: request.psbt_hex },
+          id: `${Date.now()}_sign`,
+        });
+        if (partialResp?.error) {
+          throw new Error(partialResp.error);
+        }
+        if (partialResp?.result?.psbtHex) {
+          signedPsbt = partialResp.result.psbtHex;
+        }
+      } else if (signedPsbt === request.psbt_hex) {
+        throw new Error(
+          'Bitcoin PSBT signing requires the Nostr Onchain extension with your vault unlocked. Install the extension, unlock your vault, then revisit this page.',
+        );
       }
 
       const responseEvent = {
         kind: CUSTOM_KIND.SIGNING_RESPONSE,
         content: JSON.stringify({
           round_id: request.round_id,
-          psbt_hex: request.psbt_hex,
+          psbt_hex: signedPsbt,
           accepted: true,
           message: 'Signed via public signing page',
         } satisfies SigningResponseContent),
@@ -297,35 +261,39 @@ export function SignPage() {
         created_at: Math.floor(Date.now() / 1000),
       };
 
-      const signedEvent = await nostr.signEvent(responseEvent);
-      if (!signedEvent) throw new Error('Signing was cancelled');
+      const signedEvent = (await nostr.signEvent(responseEvent)) as NostrEvent;
+      if (!signedEvent?.id) throw new Error('Signing was cancelled');
 
-      await publishToRelays(signedEvent);
+      const pubResult = await publishPublicEvent(signedEvent);
+      if (!pubResult.ok) throw new Error(pubResult.error || 'Failed to publish signature');
       setSigned(true);
+
+      // If this signature meets threshold, DM the initiator with broadcast link
+      const newSignedCount = signedCount + 1;
+      if (request && newSignedCount >= (request.threshold ?? 2) && pubkey !== requestEvent.pubkey) {
+        try {
+          const signingUrl = `${window.location.origin}/sign/${roundId}`;
+          const dmText = `Your multisig transaction (round ${request.round_id.slice(0, 8)}...) has collected ${request.threshold} signatures and is ready to broadcast! Open it here: ${signingUrl}`;
+          if ((nostr as any)?.nip04?.encrypt) {
+            const encrypted = await (nostr as any).nip04.encrypt(requestEvent.pubkey, dmText);
+            const dmEvent = {
+              kind: 4,
+              content: encrypted,
+              tags: [['p', requestEvent.pubkey]],
+              created_at: Math.floor(Date.now() / 1000),
+            };
+            const signedDm = await (nostr as any).signEvent(dmEvent);
+            if (signedDm) await publishPublicEvent(signedDm);
+          }
+        } catch {
+          // Non-critical — threshold DM is best-effort
+        }
+      }
     } catch (err) {
       alert(`Signing failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setSigning(false);
     }
-  }
-
-  async function publishToRelays(event: NostrEvent): Promise<void> {
-    const promises = RELAYS.map((relayUrl) =>
-      new Promise<void>((resolve) => {
-        const timer = setTimeout(() => { ws.close(); resolve(); }, 8000);
-        let ws: WebSocket;
-        try { ws = new WebSocket(relayUrl); } catch { clearTimeout(timer); resolve(); return; }
-        ws.onopen = () => { ws.send(JSON.stringify(['EVENT', event])); };
-        ws.onmessage = (msg) => {
-          try {
-            const data = JSON.parse(msg.data);
-            if (data[0] === 'OK') { clearTimeout(timer); ws.close(); resolve(); }
-          } catch { /* ignore */ }
-        };
-        ws.onerror = () => { clearTimeout(timer); resolve(); };
-      })
-    );
-    await Promise.allSettled(promises);
   }
 
   function copyToClipboard(text: string, label: string) {
@@ -354,12 +322,12 @@ export function SignPage() {
     URL.revokeObjectURL(url);
   }
 
-  const signingUrl = `${VERCEL_URL}/sign/${roundId}`;
+  const signingUrl = `${appOrigin()}/sign/${roundId}`;
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(signingUrl)}`;
-  const signedCount = signers.filter((s) => s.signed).length + (request?.signed_count ?? 0);
+  const signedCount = signers.filter((s) => s.signed).length;
   const threshold = request?.threshold ?? 0;
   const isReady = threshold > 0 && signedCount >= threshold;
-  const isExpired = request?.expires_at ? request.expires_at < Math.floor(Date.now() / 1000) : false;
+  const isExpired = request?.expires_at ? isSigningExpired(request.expires_at) : false;
   const eligibility = getSignEligibility();
 
   // Build co-signer display list merging p-tag pubkeys with response data
@@ -397,7 +365,16 @@ export function SignPage() {
     );
   }
 
-  if (!request || !requestEvent) return null;
+  if (!request || !requestEvent) {
+    return (
+      <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-bitcoin mx-auto mb-3" />
+          <p className="text-gray-400 text-sm">Loading signing request...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">

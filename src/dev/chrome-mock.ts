@@ -7,6 +7,7 @@
 
 import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
 import { generateKeyPair, keyPairFromPrivateKey } from '@/lib/nostr/keys';
+import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
 
 const STORAGE_PREFIX = 'nostr_onchain_';
 
@@ -225,12 +226,106 @@ const mockChrome = {
           return { id, error: 'No private key and no NIP-07 signSchnorr available' };
         }
 
+        case 'nip07:nip04:encrypt': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
+          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+            return { id, error: 'No private key for DM encryption' };
+          }
+          try {
+            const encrypted = await encryptNip04(key.privateKeyHex, pubkey, plaintext);
+            return { id, result: encrypted };
+          } catch (err: any) {
+            return { id, error: err?.message || 'NIP-04 encrypt failed' };
+          }
+        }
+
+        case 'nip07:nip04:decrypt': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
+          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+            return { id, error: 'No private key for DM decryption' };
+          }
+          try {
+            const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
+            return { id, result: decrypted };
+          } catch (err: any) {
+            return { id, error: err?.message || 'NIP-04 decrypt failed' };
+          }
+        }
+
+        case 'nip07:nip44:encrypt': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
+          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+            return { id, error: 'No private key for DM encryption' };
+          }
+          try {
+            const encrypted = encryptNip44(key.privateKeyHex, pubkey, plaintext);
+            return { id, result: encrypted };
+          } catch (err: any) {
+            return { id, error: err?.message || 'NIP-44 encrypt failed' };
+          }
+        }
+
+        case 'nip07:nip44:decrypt': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
+          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+            return { id, error: 'No private key for DM decryption' };
+          }
+          try {
+            const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
+            return { id, result: decrypted };
+          } catch (err: any) {
+            return { id, error: err?.message || 'NIP-44 decrypt failed' };
+          }
+        }
+
         case 'btc:getAddress': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };
           const idx = getActiveIndex();
           const { pubkeyToTaprootAddress } = await import('@/lib/bitcoin/address');
           return { id, result: pubkeyToTaprootAddress(session[idx].publicKeyHex) };
+        }
+
+        case 'btc:signPsbtPartial': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          const { psbtHex } = (payload || {}) as { psbtHex: string };
+          if (!psbtHex) return { id, error: 'Missing psbtHex' };
+
+          const hasValidKey =
+            typeof key.privateKeyHex === 'string' &&
+            key.privateKeyHex.length === 64 &&
+            /^[0-9a-f]+$/i.test(key.privateKeyHex);
+
+          if (!hasValidKey) {
+            return { id, error: 'No private key in vault — import nsec or switch account' };
+          }
+
+          try {
+            const { signMultisigPsbtPartial } = await import('@/lib/bitcoin/multisig-psbt');
+            const signed = signMultisigPsbtPartial(psbtHex, key.privateKeyHex);
+            return { id, result: { psbtHex: signed } };
+          } catch (err: any) {
+            return { id, error: err?.message || 'Failed to partial-sign PSBT' };
+          }
         }
 
         case 'btc:signPsbt': {
@@ -265,6 +360,25 @@ const mockChrome = {
             return { id, error: err?.message || 'Extension signing failed' };
           }
         }
+
+        case 'approval:get': {
+          const { approvalId } = (payload || {}) as { approvalId: string };
+          const pending = sessionGet(`pending_${approvalId}`) as any;
+          if (!pending) return { id, error: 'Request not found' };
+          return {
+            id,
+            result: {
+              origin: pending.origin,
+              type: pending.type,
+              preview: pending.preview,
+              pubkey: pending.pubkey,
+            },
+          };
+        }
+
+        case 'approval:confirm':
+        case 'approval:reject':
+          return { id, result: { ok: true } };
 
         case 'dual:signAndBroadcast': {
           const session = sessionGet('session_keys') as any[];

@@ -78,22 +78,25 @@ export async function requestZapInvoice(
  */
 export function createZapRequestEvent(
   recipientPubkey: string,
-  eventId: string,
+  eventId: string | undefined,
   senderPubkey: string,
   amountMsats: number,
   relays: string[],
   comment?: string,
 ) {
+  const tags: string[][] = [
+    ['p', recipientPubkey],
+    ['amount', amountMsats.toString()],
+    ['relays', ...relays],
+  ];
+  if (eventId) {
+    tags.splice(1, 0, ['e', eventId]);
+  }
   return {
     kind: 9734,
     pubkey: senderPubkey,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [
-      ['p', recipientPubkey],
-      ['e', eventId],
-      ['amount', amountMsats.toString()],
-      ['relays', ...relays],
-    ],
+    tags,
     content: comment || '',
   };
 }

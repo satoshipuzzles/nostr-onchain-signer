@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useSearchParams } from 'react-router-dom';
 import { Landing } from './pages/Landing';
 import { Unlock } from './pages/Unlock';
 import { Setup } from './pages/Setup';
@@ -25,10 +25,12 @@ import { SignedEventsLog } from './pages/SignedEventsLog';
 import { SignedEventDetail } from './pages/SignedEventDetail';
 import { InvoicePage } from './pages/InvoicePage';
 import { SignPage } from './pages/SignPage';
+import { ApproveSign } from './pages/ApproveSign';
 import { SocialUnlocks } from './pages/SocialUnlocks';
 import { SocialUnlockPage } from './pages/SocialUnlockPage';
 import { LightOps } from './pages/LightOps';
 import { OnchainExplorer } from './pages/OnchainExplorer';
+import MoreMenu from './pages/MoreMenu';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ProfilePopupProvider } from './context/ProfilePopupContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
@@ -43,8 +45,50 @@ function SigningOverlay() {
 
 type AppStatus = 'loading' | 'landing' | 'setup' | 'unlock' | 'authenticated';
 
+interface AuthGateProps {
+  status: AppStatus;
+  credentials: { publicKey: string; password: string };
+  onGetStarted: () => void;
+  onUnlocked: (publicKey: string, password: string) => void;
+  onCreated: (publicKey: string, password: string) => void;
+  onReset: () => void;
+}
+
+/** Blocks child routes until vault is ready; renders Outlet when authenticated. */
+function AuthGate({ status, credentials, onGetStarted, onUnlocked, onCreated, onReset }: AuthGateProps) {
+  if (status === 'loading') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-surface-900">
+        <div className="animate-pulse text-bitcoin text-lg">Loading...</div>
+      </div>
+    );
+  }
+
+  if (status === 'landing') {
+    return <Landing onGetStarted={onGetStarted} />;
+  }
+
+  if (status === 'setup') {
+    return <Setup onCreated={onCreated} />;
+  }
+
+  if (status === 'unlock') {
+    return <Unlock onUnlocked={onUnlocked} onReset={onReset} />;
+  }
+
+  return (
+    <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
+      <ProfilePopupProvider>
+        <SigningOverlay />
+        <Outlet />
+      </ProfilePopupProvider>
+    </AuthProvider>
+  );
+}
+
 export function App() {
-  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const approvalId = searchParams.get('approval');
   const [status, setStatus] = useState<AppStatus>('loading');
   const [credentials, setCredentials] = useState<{ publicKey: string; password: string }>({ publicKey: '', password: '' });
 
@@ -90,47 +134,49 @@ export function App() {
     setStatus('authenticated');
   }
 
-  // Public routes — accessible without authentication
-  const publicRoutes = ['/sign/', '/invoice/', '/unlock/'];
-  const isPublicRoute = publicRoutes.some((r) => location.pathname.startsWith(r));
-
-  if (isPublicRoute) {
-    return (
-      <ProfilePopupProvider>
-        <Routes>
-          <Route path="sign/:roundId" element={<SignPage />} />
-          <Route path="invoice/:eventId" element={<InvoicePage />} />
-          <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
-        </Routes>
-      </ProfilePopupProvider>
-    );
+  if (approvalId) {
+    return <ApproveSign />;
   }
 
-  if (status === 'loading') {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="animate-pulse text-bitcoin text-lg">Loading...</div>
-      </div>
-    );
-  }
-
-  if (status === 'landing') {
-    return <Landing onGetStarted={() => setStatus('setup')} />;
-  }
-
-  if (status === 'setup') {
-    return <Setup onCreated={handleCreated} />;
-  }
-
-  if (status === 'unlock') {
-    return <Unlock onUnlocked={handleUnlocked} onReset={() => setStatus('setup')} />;
-  }
+  const gateProps = {
+    status,
+    credentials,
+    onGetStarted: () => setStatus('setup'),
+    onUnlocked: handleUnlocked,
+    onCreated: handleCreated,
+    onReset: () => setStatus('setup'),
+  };
 
   return (
-    <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
-      <ProfilePopupProvider>
-      <SigningOverlay />
-      <Routes>
+    <Routes>
+      {/* Public pages — no vault required */}
+      <Route
+        path="/sign/:roundId"
+        element={
+          <ProfilePopupProvider>
+            <SignPage />
+          </ProfilePopupProvider>
+        }
+      />
+      <Route
+        path="/unlock/:eventId"
+        element={
+          <ProfilePopupProvider>
+            <SocialUnlockPage />
+          </ProfilePopupProvider>
+        }
+      />
+      <Route
+        path="/invoice/:eventId"
+        element={
+          <ProfilePopupProvider>
+            <InvoicePage />
+          </ProfilePopupProvider>
+        }
+      />
+
+      {/* App routes — gated by vault status */}
+      <Route element={<AuthGate {...gateProps} />}>
         <Route element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="feed" element={<FeedPage />} />
@@ -154,12 +200,11 @@ export function App() {
           <Route path="settings/events" element={<SignedEventsLog />} />
           <Route path="settings/events/:eventId" element={<SignedEventDetail />} />
           <Route path="unlocks" element={<SocialUnlocks />} />
-          <Route path="unlock/:eventId" element={<SocialUnlockPage />} />
-          <Route path="invoice/:eventId" element={<InvoicePage />} />
+          <Route path="more" element={<MoreMenu />} />
         </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-      </ProfilePopupProvider>
-    </AuthProvider>
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

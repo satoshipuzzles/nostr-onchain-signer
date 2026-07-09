@@ -165,7 +165,7 @@ export function Setup({ onCreated }: Props) {
 
   if (step === 'choose') {
     return (
-      <div className="h-full overflow-y-auto">
+      <div className="min-h-screen overflow-y-auto">
         {/* Hero Section */}
         <div className="flex flex-col items-center justify-center p-6 pt-12 pb-8">
           <img src="/logo.svg" alt="Nostr Onchain" className="w-16 h-16 mb-5" />
@@ -299,7 +299,7 @@ export function Setup({ onCreated }: Props) {
 
   if (step === 'import-file') {
     return (
-      <div className="h-full flex flex-col p-6">
+      <div className="min-h-screen flex flex-col p-6">
         <h2 className="text-lg font-bold mb-2">Restore from Backup</h2>
         <p className="text-gray-400 text-sm mb-6">
           Upload the backup .txt file you downloaded earlier. All accounts in the file will be restored.
@@ -339,7 +339,7 @@ export function Setup({ onCreated }: Props) {
 
   if (step === 'import') {
     return (
-      <div className="h-full flex flex-col p-6">
+      <div className="min-h-screen flex flex-col p-6">
         <h2 className="text-lg font-bold mb-4">Import Key</h2>
         <form onSubmit={handleImportSubmit} className="space-y-4 flex-1">
           <div>
@@ -368,7 +368,7 @@ export function Setup({ onCreated }: Props) {
   // ─── SET PASSWORD STEP ──────────────────────────────────────
 
   return (
-    <div className="h-full flex flex-col p-6">
+    <div className="min-h-screen flex flex-col p-6">
       <h2 className="text-lg font-bold mb-2">Set Password</h2>
       <p className="text-gray-400 text-sm mb-4">
         {keysToImport.length > 1

@@ -51,8 +51,10 @@
     }
   });
 
-  // NIP-07 interface
+  // NIP-07 interface — takes priority when our extension is installed
   window.nostr = {
+    _nostrOnchainSigner: true,
+
     async getPublicKey() {
       return sendRequest('nip07:getPublicKey');
     },
@@ -90,12 +92,18 @@
 
   // Bitcoin signing API (experimental extension to NIP-07 concept)
   window.bitcoin = {
+    _nostrOnchainSigner: true,
+
     async getAddress() {
       return sendRequest('btc:getAddress');
     },
 
     async signPsbt(psbtHex, options) {
       return sendRequest('btc:signPsbt', { psbtHex, ...options });
+    },
+
+    async signPsbtPartial(psbtHex) {
+      return sendRequest('btc:signPsbtPartial', { psbtHex });
     },
 
     async getMultisigAddress(pubkeys, threshold, network) {
@@ -107,7 +115,8 @@
     },
   };
 
-  // Signal that the provider is available
+  // Standard events Nostr clients listen for
+  window.dispatchEvent(new Event('nostr:init'));
   window.dispatchEvent(new Event('nostr-provider-loaded'));
   window.dispatchEvent(new Event('bitcoin-provider-loaded'));
 

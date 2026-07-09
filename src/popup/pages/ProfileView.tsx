@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, Copy, Check, ExternalLink, BadgeCheck, Zap, Globe, Loader2 } from 'lucide-react';
+import { ArrowLeft, Copy, Check, ExternalLink, BadgeCheck, Zap, Globe, Loader2, MessageCircle } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
 import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
@@ -7,6 +7,9 @@ import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { NoteCard } from '@/popup/components/NoteCard';
+import { NoteThread } from '@/popup/components/NoteThread';
+import { ComposeNote } from '@/popup/components/ComposeNote';
+import { ZapDialog } from '@/popup/components/ZapDialog';
 import { safeImageUrl } from '@/lib/utils';
 import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
@@ -67,6 +70,8 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   const [zapTotal, setZapTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
+  const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
+  const [showZapDialog, setShowZapDialog] = useState(false);
   const cleanupRef = useRef<(() => void)[]>([]);
 
   const npub = pubkeyToNpub(user.pubkey);
@@ -359,17 +364,39 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
           </div>
         </div>
 
-        {/* Follow/Unfollow */}
-        <button
-          onClick={isFollowing ? onUnfollow : onFollow}
-          className={`w-full py-2.5 rounded-lg font-medium text-sm transition-colors ${
-            isFollowing
-              ? 'bg-surface-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
-              : 'btn-nostr'
-          }`}
-        >
-          {isFollowing ? 'Unfollow' : 'Follow'}
-        </button>
+        {/* Follow + Zap */}
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={isFollowing ? onUnfollow : onFollow}
+            className={`flex-1 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+              isFollowing
+                ? 'bg-surface-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
+                : 'btn-nostr'
+            }`}
+          >
+            {isFollowing ? 'Unfollow' : 'Follow'}
+          </button>
+          {profile?.lud16 && (
+            <button
+              onClick={() => setShowZapDialog(true)}
+              className="px-4 py-2.5 rounded-lg font-medium text-sm bg-bitcoin/15 text-bitcoin hover:bg-bitcoin/25 transition-colors flex items-center gap-1.5"
+            >
+              <Zap className="w-4 h-4" /> Zap
+            </button>
+          )}
+        </div>
+
+        {/* Comment on profile */}
+        <div className="mb-4">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+            <MessageCircle className="w-3 h-3" /> Comment
+          </p>
+          <ComposeNote
+            mentionPubkey={user.pubkey}
+            placeholder={`Comment on ${profile?.displayName || profile?.name || 'this profile'}...`}
+            onPublished={() => setActiveTab('notes')}
+          />
+        </div>
       </div>
 
       {/* Profile Tabs */}
@@ -413,8 +440,9 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                 <NoteCard
                   key={note.id}
                   note={note}
-                  profile={user.profile}
+                  profile={profiles.get(note.pubkey) || user.profile}
                   onViewProfile={viewProfile}
+                  onSelectNote={setSelectedNote}
                 />
               ))
             )}
@@ -431,8 +459,9 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                 <NoteCard
                   key={note.id}
                   note={note}
-                  profile={user.profile}
+                  profile={profiles.get(note.pubkey) || user.profile}
                   onViewProfile={viewProfile}
+                  onSelectNote={setSelectedNote}
                 />
               ))
             )}
@@ -517,6 +546,23 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
           </div>
         )}
       </div>
+
+      {selectedNote && (
+        <NoteThread
+          note={selectedNote}
+          profiles={profiles}
+          onClose={() => setSelectedNote(null)}
+          onViewProfile={viewProfile}
+        />
+      )}
+
+      {showZapDialog && (
+        <ZapDialog
+          recipientPubkey={user.pubkey}
+          profile={profile}
+          onClose={() => setShowZapDialog(false)}
+        />
+      )}
     </div>
   );
 }

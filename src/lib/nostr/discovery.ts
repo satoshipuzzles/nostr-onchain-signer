@@ -6,7 +6,8 @@
 
 import { KIND, type UnsignedEvent, type SignedEvent, signEvent, computeEventId } from './events';
 import { type ProfileMetadata } from './social';
-import { getReadRelays, getWriteRelays, loadRelayList } from './relays';
+import { getReadRelays, loadRelayList } from './relays';
+export { publishEvent, formatPublishResult, type PublishResult } from './publish';
 
 export interface DiscoveredUser {
   pubkey: string;
@@ -273,86 +274,6 @@ export function createProfileEvent(
     created_at: Math.floor(Date.now() / 1000),
     pubkey: myPubkey,
   };
-}
-
-/**
- * Publish an event to write relays.
- * Retries failed relays once after a short delay.
- */
-export async function publishEvent(event: SignedEvent): Promise<{ success: string[]; failed: string[] }> {
-  const relayList = await loadRelayList();
-  const writeRelays = getWriteRelays(relayList);
-
-  if (writeRelays.length === 0) {
-    // Fall back to defaults if no write relays configured
-    writeRelays.push('wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social');
-  }
-
-  const success: string[] = [];
-  const failed: string[] = [];
-
-  const promises = writeRelays.map((relayUrl) =>
-    publishToRelay(relayUrl, event)
-      .then((ok) => { if (ok) success.push(relayUrl); else failed.push(relayUrl); })
-      .catch(() => { failed.push(relayUrl); })
-  );
-
-  await Promise.allSettled(promises);
-
-  // Retry failed relays once
-  if (failed.length > 0 && success.length === 0) {
-    await new Promise((r) => setTimeout(r, 1000));
-    const retryPromises = failed.splice(0).map((relayUrl) =>
-      publishToRelay(relayUrl, event)
-        .then((ok) => { if (ok) success.push(relayUrl); else failed.push(relayUrl); })
-        .catch(() => { failed.push(relayUrl); })
-    );
-    await Promise.allSettled(retryPromises);
-  }
-
-  return { success, failed };
-}
-
-async function publishToRelay(relayUrl: string, event: SignedEvent): Promise<boolean> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => { ws.close(); resolve(false); }, 8000);
-
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(relayUrl);
-    } catch {
-      clearTimeout(timer);
-      resolve(false);
-      return;
-    }
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify(['EVENT', event]));
-    };
-
-    ws.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        if (data[0] === 'OK') {
-          clearTimeout(timer);
-          ws.close();
-          resolve(data[2] === true);
-        } else if (data[0] === 'NOTICE') {
-          // Some relays send NOTICE before OK
-          console.warn(`Relay ${relayUrl} notice:`, data[1]);
-        }
-      } catch {}
-    };
-
-    ws.onerror = () => {
-      clearTimeout(timer);
-      resolve(false);
-    };
-
-    ws.onclose = () => {
-      clearTimeout(timer);
-    };
-  });
 }
 
 /**

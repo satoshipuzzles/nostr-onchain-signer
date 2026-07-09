@@ -66,7 +66,7 @@ export function Unlock({ onUnlocked, onReset }: Props) {
 
   if (showReset) {
     return (
-      <div className="h-full flex flex-col items-center justify-center p-6">
+      <div className="min-h-screen flex flex-col items-center justify-center p-6">
         <div className="w-14 h-14 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
           <AlertTriangle className="w-7 h-7 text-red-400" />
         </div>
@@ -106,7 +106,7 @@ export function Unlock({ onUnlocked, onReset }: Props) {
   }
 
   return (
-    <div className="h-full flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="w-16 h-16 rounded-full bg-bitcoin/20 flex items-center justify-center mb-6">
         <Lock className="w-8 h-8 text-bitcoin" />
       </div>

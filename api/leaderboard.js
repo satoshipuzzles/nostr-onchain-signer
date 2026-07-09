@@ -101,10 +101,13 @@ export default async function handler(req, res) {
 
   try {
     const pubkeys = await getRecentPubkeys();
-    return res.status(200).json({
+    const payload = {
       pubkeys: pubkeys.slice(0, 200),
       message: 'Send POST with {addresses: [{pubkey, address}]} to scan',
-    });
+    };
+    cachedResult = payload;
+    cacheTime = Date.now();
+    return res.status(200).json(payload);
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

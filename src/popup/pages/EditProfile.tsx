@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ArrowLeft, Save, Loader2, Upload, CheckCircle, AlertCircle, Image } from 'lucide-react';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { createProfileEvent, publishEvent } from '@/lib/nostr/discovery';
+import { createProfileEvent } from '@/lib/nostr/discovery';
+import { formatPublishResult, publishEvent } from '@/lib/nostr/publish';
 import { signEvent } from '@/lib/nostr/events';
 import { uploadFile, validateFile } from '@/lib/nostr/upload';
 import { createMessageId } from '@/shared/messages';
@@ -153,7 +154,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
         setPublishDetails(`${result.success.length} ok, ${result.failed.length} failed`);
       } else {
         setPublishStatus('failed');
-        setPublishDetails('Could not reach any relay. Saved locally.');
+        setPublishDetails(formatPublishResult(result));
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save');

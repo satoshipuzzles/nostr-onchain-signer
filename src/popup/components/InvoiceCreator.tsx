@@ -1,7 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { createMessageId } from '@/shared/messages';
 import { createOnchainInvoice } from '@/lib/nostr/kinds';
-import { publishEvent } from '@/lib/nostr/discovery';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { npubToPubkey, pubkeyToNpub, isValidHexPubkey } from '@/lib/nostr/keys';
 import { ArrowLeft, Loader2, Send, ImageIcon, X, Repeat, Copy, Check, Search } from 'lucide-react';
@@ -10,8 +8,12 @@ import { encryptDM } from '@/lib/nostr/dm';
 import { resolveNip05 } from '@/lib/nostr/nip05';
 import { encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
 import type { ProfileMetadata } from '@/lib/nostr/social';
+import { useAuth } from '@/popup/context/AuthContext';
+import { publishWithFeedback } from '@/lib/ui/publish-feedback';
+import { toast } from 'sonner';
 
 const INVOICE_BASE_URL = 'https://nostr-onchain-signer.vercel.app/invoice';
+const SEND_BASE_PATH = '/send';
 
 const EXPIRATION_OPTIONS = [
   { label: '1 hour', seconds: 60 * 60 },
@@ -38,6 +40,7 @@ interface SearchResult {
 }
 
 export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
+  const { confirmAndSign } = useAuth();
   const [recipients, setRecipients] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -292,20 +295,14 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
           invoiceEvent.tags.push(['op_return', 'true']);
         }
 
-        const signResponse = await chrome.runtime.sendMessage({
-          type: 'nip07:signEvent',
-          payload: { event: invoiceEvent },
-          id: createMessageId(),
-        });
-        if (signResponse.error) throw new Error(signResponse.error);
+        const signed = await confirmAndSign(invoiceEvent);
+        await publishWithFeedback(signed, 'Invoice published!');
 
-        await publishEvent(signResponse.result);
-
-        const eventId = signResponse.result.id as string;
+        const eventId = signed.id;
+        const opReturn = opReturnEnabled ? encodeInvoiceOpReturn(eventId) : null;
 
         // Generate OP_RETURN if enabled (use the last event's ID for display)
-        if (opReturnEnabled) {
-          const opReturn = encodeInvoiceOpReturn(eventId);
+        if (opReturn) {
           setOpReturnHex(opReturn.scriptHex);
           setCreatedEventId(eventId);
         } else {
@@ -313,6 +310,19 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
         }
 
         const invoiceLink = `${INVOICE_BASE_URL}/${eventId}`;
+        const payUrl = new URL(SEND_BASE_PATH, window.location.origin);
+        payUrl.searchParams.set('invoice', eventId);
+        payUrl.searchParams.set('to', address.trim());
+        if (amount) payUrl.searchParams.set('amount', String(amount));
+
+        const machinePayload = {
+          type: 'nostr-onchain-invoice',
+          invoice_event_id: eventId,
+          address: address.trim(),
+          amount_sats: amount ?? null,
+          op_return_hex: opReturn?.scriptHex ?? null,
+          pay_url: payUrl.toString(),
+        };
 
         const dmContent = [
           `📄 Onchain Invoice`,
@@ -322,43 +332,52 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
           memo.trim() ? `Memo: ${memo.trim()}` : '',
           ``,
           `View & Pay: ${invoiceLink}`,
+          opReturn ? `\nOP_RETURN proof (auto-included when paying in-app):\n${opReturn.scriptHex}` : '',
+          `\nPay in-app: ${payUrl.toString()}`,
           ``,
           `Pay via Nostr Onchain Signer or any Bitcoin wallet.`,
+          `---`,
+          JSON.stringify(machinePayload),
         ].filter(Boolean).join('\n');
 
-        let encryptedDmContent = dmContent;
-        let dmKind = 4;
+        let encryptedDmContent: string;
+        let dmKind: number;
         try {
           const result = await encryptDM(recipientHex, dmContent);
           encryptedDmContent = result.content;
           dmKind = result.kind;
-        } catch {
-          console.warn('DM encryption failed — sending as plaintext');
+        } catch (encryptErr) {
+          const msg = encryptErr instanceof Error ? encryptErr.message : 'DM encryption failed';
+          throw new Error(`${msg}. Unlock your vault to send encrypted invoice DMs.`);
+        }
+
+        const dmTags: string[][] = [
+          ['p', recipientHex],
+          ['e', eventId, '', 'mention'],
+        ];
+        if (opReturn) {
+          dmTags.push(['op_return', opReturn.scriptHex]);
         }
 
         const dmEvent = {
           kind: dmKind,
           content: encryptedDmContent,
-          tags: [['p', recipientHex]],
+          tags: dmTags,
           created_at: Math.floor(Date.now() / 1000),
           pubkey: publicKey,
         };
 
-        const dmSignResponse = await chrome.runtime.sendMessage({
-          type: 'nip07:signEvent',
-          payload: { event: dmEvent },
-          id: createMessageId(),
-        });
-        if (!dmSignResponse.error && dmSignResponse.result) {
-          await publishEvent(dmSignResponse.result);
-        }
+        const signedDm = await confirmAndSign(dmEvent);
+        await publishWithFeedback(signedDm, 'Invoice DM sent!');
       }
 
       if (!opReturnEnabled) {
         onCreated();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create invoice');
+      const message = err instanceof Error ? err.message : 'Failed to create invoice';
+      setError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -446,7 +465,7 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
         <h1>Create Invoice</h1>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-4 pb-24 space-y-4">
+      <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-4 pb-safe space-y-4" style={{ paddingBottom: 'calc(6rem + var(--safe-bottom))' }}>
         {/* Recipient search */}
         <div>
           <label className="text-xs text-gray-400 mb-1 block">Recipients</label>

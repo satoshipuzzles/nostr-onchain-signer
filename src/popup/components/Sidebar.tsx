@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
 import { ClickableAvatar } from './ClickableAvatar';
 import { createMessageId } from '@/shared/messages';
+import { pubkeyToNpub } from '@/lib/nostr/keys';
 
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
@@ -30,7 +31,9 @@ const settingsNav = [
 
 export function Sidebar() {
   const { myProfile, publicKey, accounts, activeAccountIndex, handleSwitchAccount, handleAddAccount, handleBackupKeys } = useAuth();
-  const displayName = myProfile?.displayName || myProfile?.name || 'Anonymous';
+  const activeAccount = accounts[activeAccountIndex];
+  const displayName = myProfile?.displayName || myProfile?.name || activeAccount?.displayName || activeAccount?.label || 'Anonymous';
+  const npub = activeAccount?.npub || pubkeyToNpub(publicKey);
 
   async function handleLock() {
     await chrome.runtime.sendMessage({ type: 'vault:lock', id: createMessageId() });
@@ -52,15 +55,16 @@ export function Sidebar() {
       <div className="px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-2.5">
           <ClickableAvatar
+            key={publicKey}
             pubkey={publicKey}
-            picture={myProfile?.picture}
+            picture={myProfile?.picture || activeAccount?.picture}
             name={displayName}
             size="md"
           />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">{displayName}</p>
-            <p className="text-[10px] text-gray-500 truncate">
-              {publicKey.slice(0, 8)}...{publicKey.slice(-4)}
+            <p className="text-[10px] text-gray-500 truncate font-mono" title={npub}>
+              {npub.slice(0, 14)}...{npub.slice(-6)}
             </p>
           </div>
         </div>

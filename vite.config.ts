@@ -29,11 +29,14 @@ function copyExtensionFiles() {
       const srcIcons = resolve(__dirname, 'public/icons');
       if (existsSync(srcIcons)) {
         for (const size of ['16', '48', '128']) {
-          const file = `icon-${size}.png`;
-          const src = resolve(srcIcons, file);
-          if (existsSync(src)) copyFileSync(src, resolve(iconsDir, file));
+          const png = resolve(srcIcons, `icon-${size}.png`);
+          if (existsSync(png)) copyFileSync(png, resolve(iconsDir, `icon-${size}.png`));
+          const svg = resolve(srcIcons, `icon-${size}.svg`);
+          if (existsSync(svg)) copyFileSync(svg, resolve(iconsDir, `icon-${size}.svg`));
         }
       }
+      const logo = resolve(__dirname, 'public/logo.svg');
+      if (existsSync(logo)) copyFileSync(logo, resolve(dist, 'logo.svg'));
     },
   };
 }

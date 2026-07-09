@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { subscribeFeed, subscribeEvents, type FeedNote, type NostrEvent, type FeedMode, type FeedFilter } from '@/lib/nostr/feed';
+import { DEFAULT_READ_RELAYS } from '@/lib/nostr/relay-subscribe';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
-import { ArrowLeft, Globe, Users, Image, Bitcoin, Hash, Layers, Loader2, Inbox } from 'lucide-react';
+import { Globe, Users, Image, Bitcoin, Hash, Layers, Loader2, Inbox } from 'lucide-react';
 
 interface Props {
   publicKey: string;
   followingPubkeys: Set<string>;
-  onBack: () => void;
+  onBack?: () => void;
   onViewProfile?: (pubkey: string) => void;
 }
 
@@ -30,7 +31,7 @@ export interface Engagement {
   zapSats: number;
 }
 
-export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Props) {
+export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
   const [activeMode, setActiveMode] = useState<FeedMode>('global');
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -61,9 +62,13 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
 
     const relayList = await loadRelayList();
     const relays = getReadRelays(relayList);
-    const relayUrls = relays.length > 0
-      ? relays
-      : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
+    const relayUrls = [...new Set([...relays, ...DEFAULT_READ_RELAYS])].slice(0, 8);
+
+    if (mode === 'following' && followingPubkeys.size === 0) {
+      setNotes([]);
+      setLoading(false);
+      return;
+    }
 
     const filter: FeedFilter = {
       mode,
@@ -71,7 +76,7 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
     };
 
     if (mode === 'following') {
-      filter.pubkeys = Array.from(followingPubkeys);
+      filter.pubkeys = [...new Set([publicKey, ...Array.from(followingPubkeys)])];
     }
 
     if (mode === 'hashtag') {
@@ -121,12 +126,9 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
     );
 
     cleanupRef.current = cleanup;
+  }, [followingPubkeys, hashtagSubmitted, kindSubmitted, publicKey]);
 
-    setTimeout(() => {
-      setLoading(false);
-      setLoadingMore(false);
-    }, 15000);
-  }, [followingPubkeys, hashtagSubmitted, kindSubmitted, notes]);
+  const followingKey = Array.from(followingPubkeys).sort().join(',');
 
   const profileFetchingRef = useRef<Set<string>>(new Set());
 
@@ -165,15 +167,13 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
   useEffect(() => {
     loadFeed(activeMode);
     return () => {
-      if (cleanupRef.current) {
-        cleanupRef.current();
-      }
+      if (cleanupRef.current) cleanupRef.current();
     };
-  }, [activeMode, hashtagSubmitted, kindSubmitted]);
+  }, [activeMode, hashtagSubmitted, kindSubmitted, followingKey, loadFeed]);
 
-  // Batch fetch engagement (replies, reposts, reactions, zaps) for visible notes
+  // Fetch engagement after initial feed load settles
   useEffect(() => {
-    if (notes.length === 0) return;
+    if (notes.length === 0 || loading) return;
 
     if (engagementCleanupRef.current) {
       engagementCleanupRef.current();
@@ -249,7 +249,7 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
         engagementCleanupRef.current = null;
       }
     };
-  }, [notes.length > 0 ? notes.map(n => n.id).join(',') : '']);
+  }, [loading, notes.map((n) => n.id).join(',')]);
 
   function handleTabChange(mode: FeedMode) {
     setActiveMode(mode);
@@ -282,26 +282,18 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
                      (activeMode === 'kind' && kindSubmitted === null);
 
   return (
-    <div className="h-full flex flex-col pb-20 md:pb-0">
-      {/* Header */}
-      <div className="page-header px-4">
-        <button onClick={onBack} className="btn-back">
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <h1>Feed</h1>
-      </div>
-
-      {/* Tabs */}
-      <div className="px-4 pb-2">
-        <div className="flex gap-1 overflow-x-auto scrollbar-none pb-1">
+    <div className="flex flex-col min-h-full">
+      {/* Sticky tab bar */}
+      <div className="sticky top-0 z-20 bg-black/90 backdrop-blur-md border-b border-white/5">
+        <div className="flex gap-1 overflow-x-auto scrollbar-none px-3 py-2">
           {TABS.map(({ mode, label, icon: Icon }) => (
             <button
               key={mode}
               onClick={() => handleTabChange(mode)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
                 activeMode === mode
-                  ? 'bg-nostr/20 text-nostr border border-nostr/30'
-                  : 'bg-surface-800 text-gray-400 border border-surface-200/10 hover:text-white'
+                  ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -309,112 +301,114 @@ export function Feed({ publicKey, followingPubkeys, onBack, onViewProfile }: Pro
             </button>
           ))}
         </div>
+
+        {/* Hashtag Input */}
+        {activeMode === 'hashtag' && (
+          <form onSubmit={handleHashtagSubmit} className="px-3 pb-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={hashtag}
+                onChange={(e) => setHashtag(e.target.value)}
+                placeholder="Enter hashtag (e.g. bitcoin)"
+                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm outline-none focus:border-purple-500/50"
+              />
+              <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-xs font-medium">
+                Search
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Kind Input */}
+        {activeMode === 'kind' && (
+          <form onSubmit={handleKindSubmit} className="px-3 pb-2">
+            <div className="flex gap-2">
+              <input
+                type="number"
+                value={kindInput}
+                onChange={(e) => setKindInput(e.target.value)}
+                placeholder="Kind number (e.g. 30023)"
+                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm outline-none focus:border-purple-500/50"
+                min="0"
+              />
+              <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-xs font-medium">
+                Search
+              </button>
+            </div>
+          </form>
+        )}
       </div>
 
-      {/* Hashtag Input */}
-      {activeMode === 'hashtag' && (
-        <form onSubmit={handleHashtagSubmit} className="px-4 pb-3">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={hashtag}
-              onChange={(e) => setHashtag(e.target.value)}
-              placeholder="Enter hashtag (e.g. bitcoin)"
-              className="input-field flex-1 !py-2 !min-h-[40px] text-sm"
-            />
-            <button type="submit" className="btn-nostr !px-3 !py-2 !min-h-[40px] text-sm">
-              Search
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Kind Input */}
-      {activeMode === 'kind' && (
-        <form onSubmit={handleKindSubmit} className="px-4 pb-3">
-          <div className="flex gap-2">
-            <input
-              type="number"
-              value={kindInput}
-              onChange={(e) => setKindInput(e.target.value)}
-              placeholder="Kind number (e.g. 30023)"
-              className="input-field flex-1 !py-2 !min-h-[40px] text-sm"
-              min="0"
-            />
-            <button type="submit" className="btn-nostr !px-3 !py-2 !min-h-[40px] text-sm">
-              Search
-            </button>
-          </div>
-        </form>
-      )}
-
       {/* Feed Content */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 pb-24">
-        {/* Loading — only show spinner when no notes have arrived yet */}
+      <div ref={scrollRef}>
         {loading && notes.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="w-8 h-8 text-nostr animate-spin mb-3" />
+          <div className="flex flex-col items-center justify-center py-16">
+            <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-3" />
             <p className="text-sm text-gray-400">Loading notes...</p>
           </div>
         )}
 
-        {/* Empty: needs input */}
         {!loading && needsInput && (
-          <div className="flex flex-col items-center justify-center py-12">
+          <div className="flex flex-col items-center justify-center py-16">
             {activeMode === 'hashtag' ? (
               <>
-                <Hash className="w-10 h-10 text-gray-600 mb-3" />
-                <p className="text-sm text-gray-400 text-center">Enter a hashtag to search for notes</p>
+                <Hash className="w-12 h-12 text-gray-700 mb-3" />
+                <p className="text-sm text-gray-400 text-center">Enter a hashtag to search</p>
               </>
             ) : (
               <>
-                <Layers className="w-10 h-10 text-gray-600 mb-3" />
-                <p className="text-sm text-gray-400 text-center">Enter a kind number to search</p>
+                <Layers className="w-12 h-12 text-gray-700 mb-3" />
+                <p className="text-sm text-gray-400 text-center">Enter a kind number</p>
               </>
             )}
           </div>
         )}
 
-        {/* Empty: no results */}
         {showEmptyState && !needsInput && (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Inbox className="w-10 h-10 text-gray-600 mb-3" />
+          <div className="flex flex-col items-center justify-center py-16">
+            <Inbox className="w-12 h-12 text-gray-700 mb-3" />
             <p className="text-sm text-gray-400 text-center">
               {activeMode === 'following' && followingPubkeys.size === 0
                 ? 'Follow some people to see their notes here'
-                : 'No notes found for this feed'}
+                : 'No notes found'}
             </p>
           </div>
         )}
 
-        {/* Notes */}
-        {notes.map((note) => (
-          <NoteCard
-            key={note.id}
-            note={note}
-            profile={profiles.get(note.pubkey)}
-            engagement={engagement.get(note.id)}
-            onSelectNote={setSelectedNote}
-            onViewProfile={onViewProfile}
-          />
-        ))}
+        {/* Notes — full-width cards */}
+        <div className="divide-y divide-white/5">
+          {notes.map((note) => (
+            <div key={note.id} className="px-4 py-3">
+              <NoteCard
+                note={note}
+                profile={profiles.get(note.pubkey)}
+                engagement={engagement.get(note.id)}
+                onSelectNote={setSelectedNote}
+                onViewProfile={onViewProfile}
+              />
+            </div>
+          ))}
+        </div>
 
         {/* Load More */}
         {!loading && notes.length > 0 && (
-          <button
-            onClick={handleLoadMore}
-            disabled={loadingMore}
-            className="btn-secondary w-full flex items-center justify-center gap-2 mt-2"
-          >
-            {loadingMore ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Loading...
-              </>
-            ) : (
-              'Load more'
-            )}
-          </button>
+          <div className="px-4 py-4">
+            <button
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-medium text-gray-300 transition-colors flex items-center justify-center gap-2"
+            >
+              {loadingMore ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                'Load more'
+              )}
+            </button>
+          </div>
         )}
       </div>
 

@@ -12,6 +12,7 @@ import { decryptVault, loadVault } from '@/lib/crypto/vault';
 import { pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 import { createMessageId } from '@/shared/messages';
 import { type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
+import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 
@@ -98,21 +99,41 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   const [signingRequest, setSigningRequest] = useState<SigningRequest | null>(null);
   const followingRef = useRef(following);
   followingRef.current = following;
+  const activePubkeyRef = useRef(initialPublicKey);
+  const profileLoadGenRef = useRef(0);
+
+  function accountToProfile(acct: Account): ProfileMetadata {
+    return {
+      pubkey: acct.publicKeyHex,
+      name: acct.displayName || acct.label,
+      displayName: acct.displayName || acct.label,
+      picture: acct.picture,
+    };
+  }
+
+  function mergeAccountMeta(
+    list: Account[],
+    pubkey: string,
+    meta: { picture?: string; displayName?: string }
+  ): Account[] {
+    return list.map((a) =>
+      a.publicKeyHex === pubkey
+        ? {
+            ...a,
+            picture: meta.picture ?? a.picture,
+            displayName: meta.displayName ?? a.displayName,
+          }
+        : a
+    );
+  }
+
+  function isActivePubkey(pubkey: string): boolean {
+    return activePubkeyRef.current === pubkey;
+  }
 
   useEffect(() => {
-    loadProfileAndFollows(initialPublicKey);
     loadAccountsOnMount(initialPassword);
-    migrateUnownedWallets(initialPublicKey).catch(() => {});
     preloadAppData();
-
-    // Derive and store wallet sync key, then restore wallets from relays
-    if (initialPassword && initialPublicKey) {
-      const syncKey = bytesToHex(
-        sha256(new TextEncoder().encode(`wallet-sync-${initialPassword}-${initialPublicKey}`)),
-      );
-      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
-      restoreWalletsFromRelay(initialPublicKey, syncKey).catch(() => {});
-    }
   }, []);
 
   async function preloadAppData() {
@@ -144,64 +165,150 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }
 
   async function loadAccountsOnMount(password: string) {
+    let accts: Account[] = [];
+    let vaultData: any[] | null = null;
     try {
       if (password) {
         const vault = await loadVault();
         if (vault) {
-          const vaultData = await decryptVault(vault, password);
-          const accts = getAccountsFromVault(vaultData);
-          for (const acct of accts) {
-            const meta = await loadAccountMeta(acct.publicKeyHex);
-            if (meta.picture) acct.picture = meta.picture;
-            if (meta.displayName) acct.displayName = meta.displayName;
-          }
-          setAccounts(accts);
-          await chrome.storage.local.set({ cached_accounts: accts });
-          const idx = await loadActiveAccountIndex();
-          const safeIdx = Math.min(idx, accts.length - 1);
-          setActiveAccountIndex(safeIdx);
-          // Sync publicKey to match active account index
-          if (accts[safeIdx] && accts[safeIdx].publicKeyHex !== initialPublicKey) {
-            setPublicKey(accts[safeIdx].publicKeyHex);
-            await chrome.runtime.sendMessage({
-              type: 'vault:switchAccount',
-              payload: { index: safeIdx },
-              id: createMessageId(),
-            });
-          }
-          return;
+          vaultData = await decryptVault(vault, password);
+          accts = getAccountsFromVault(vaultData);
+          // Persist decrypted keys to sessionStorage for DM crypto access
+          try {
+            sessionStorage.setItem('nostr_onchain_session_keys', JSON.stringify(vaultData));
+          } catch {}
         }
       }
 
-      const stored = await chrome.storage.local.get('cached_accounts');
-      if (Array.isArray(stored.cached_accounts) && stored.cached_accounts.length > 0) {
-        setAccounts(stored.cached_accounts);
-        const idx = await loadActiveAccountIndex();
-        setActiveAccountIndex(idx);
-      } else {
-        setAccounts([{
+      if (accts.length === 0) {
+        const stored = await chrome.storage.local.get('cached_accounts');
+        if (Array.isArray(stored.cached_accounts) && stored.cached_accounts.length > 0) {
+          accts = stored.cached_accounts as Account[];
+        }
+      }
+
+      if (accts.length === 0) {
+        accts = [{
           publicKeyHex: initialPublicKey,
           npub: pubkeyToNpub(initialPublicKey),
           label: 'Primary Key',
           createdAt: Date.now(),
           canSignOnchain: true,
-        }]);
+        }];
       }
+
+      for (const acct of accts) {
+        const meta = await loadAccountMeta(acct.publicKeyHex);
+        if (meta.picture) acct.picture = meta.picture;
+        if (meta.displayName) acct.displayName = meta.displayName;
+      }
+
+      const idx = await loadActiveAccountIndex();
+      const safeIdx = Math.min(Math.max(0, idx), accts.length - 1);
+      await activateAccount(safeIdx, accts, { password, forceUnlock: !!password });
     } catch {
-      setAccounts([{
+      const fallback: Account[] = [{
         publicKeyHex: initialPublicKey,
         npub: pubkeyToNpub(initialPublicKey),
         label: 'Primary Key',
         createdAt: Date.now(),
         canSignOnchain: true,
-      }]);
+      }];
+      await activateAccount(0, fallback, { forceUnlock: false });
     }
+  }
+
+  async function applyCachedProfileForAccount(acct: Account) {
+    const cached = await chrome.storage.local.get([
+      `profile_${acct.publicKeyHex}`,
+      `following_${acct.publicKeyHex}`,
+    ]);
+    const cachedProfile = cached[`profile_${acct.publicKeyHex}`] as ProfileMetadata | undefined;
+    const cachedFollowing = cached[`following_${acct.publicKeyHex}`];
+
+    if (!isActivePubkey(acct.publicKeyHex)) return;
+
+    if (cachedProfile && typeof cachedProfile === 'object' && Object.keys(cachedProfile).length > 0) {
+      setMyProfile(cachedProfile);
+    } else if (acct.picture || acct.displayName) {
+      setMyProfile(accountToProfile(acct));
+    } else {
+      setMyProfile(null);
+    }
+
+    setFollowing(Array.isArray(cachedFollowing) ? new Set(cachedFollowing) : new Set());
+  }
+
+  async function activateAccount(
+    index: number,
+    accountsList: Account[],
+    options?: { password?: string; forceUnlock?: boolean }
+  ): Promise<boolean> {
+    if (index < 0 || index >= accountsList.length) return false;
+    const acct = accountsList[index];
+    const password = options?.password || vaultPassword;
+
+    if (options?.forceUnlock !== false) {
+      let switchResponse = await chrome.runtime.sendMessage({
+        type: 'vault:switchAccount',
+        payload: { index },
+        id: createMessageId(),
+      });
+
+      if (switchResponse.error && password) {
+        await chrome.runtime.sendMessage({
+          type: 'vault:unlock',
+          payload: { password },
+          id: createMessageId(),
+        });
+        switchResponse = await chrome.runtime.sendMessage({
+          type: 'vault:switchAccount',
+          payload: { index },
+          id: createMessageId(),
+        });
+      }
+
+      if (switchResponse.error) {
+        if (password) {
+          throw new Error(`Could not switch vault account: ${switchResponse.error}`);
+        }
+        console.warn('Vault account switch:', switchResponse.error);
+      }
+    }
+
+    activePubkeyRef.current = acct.publicKeyHex;
+    await saveActiveAccountIndex(index);
+    setActiveAccountIndex(index);
+    setPublicKey(acct.publicKeyHex);
+    setAccounts(accountsList);
+    await chrome.storage.local.set({ cached_accounts: accountsList });
+    // Keep sessionStorage in sync so DM crypto can find the active key
+    try {
+      sessionStorage.setItem('nostr_onchain_active_index', JSON.stringify(index));
+    } catch {}
+
+    await applyCachedProfileForAccount(acct);
+
+    if (password) {
+      const syncKey = bytesToHex(
+        sha256(new TextEncoder().encode(`wallet-sync-${password}-${acct.publicKeyHex}`)),
+      );
+      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
+      restoreWalletsFromRelay(acct.publicKeyHex, syncKey).catch(() => {});
+    }
+
+    migrateUnownedWallets(acct.publicKeyHex).catch(() => {});
+    loadProfileAndFollows(acct.publicKeyHex);
+    return true;
   }
 
   async function loadProfileAndFollows(pubkey: string) {
     if (!pubkey) return;
+    const gen = ++profileLoadGenRef.current;
 
     const stored = await chrome.storage.local.get([`profile_${pubkey}`, `following_${pubkey}`]);
+    if (!isActivePubkey(pubkey)) return;
+
     if (stored[`profile_${pubkey}`]) {
       setMyProfile(stored[`profile_${pubkey}`]);
     }
@@ -213,13 +320,26 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }
 
     const profile = await fetchMyProfile(pubkey);
+    if (!isActivePubkey(pubkey) || gen !== profileLoadGenRef.current) return;
+
     if (profile) {
       setMyProfile(profile);
       await chrome.storage.local.set({ [`profile_${pubkey}`]: profile });
-      await updateAccountMeta(pubkey, { picture: profile.picture, displayName: profile.displayName || profile.name });
+      const displayName = profile.displayName || profile.name;
+      await updateAccountMeta(pubkey, { picture: profile.picture, displayName });
+      setAccounts((prev) => {
+        const updated = mergeAccountMeta(prev, pubkey, {
+          picture: profile.picture,
+          displayName,
+        });
+        chrome.storage.local.set({ cached_accounts: updated });
+        return updated;
+      });
     }
 
     const contacts = await fetchFollowingList(pubkey);
+    if (!isActivePubkey(pubkey) || gen !== profileLoadGenRef.current) return;
+
     if (Array.isArray(contacts) && contacts.length > 0) {
       setFollowing(new Set(contacts.map((c) => c.pubkey)));
       await chrome.storage.local.set({ [`following_${pubkey}`]: contacts.map((c) => c.pubkey) });
@@ -258,48 +378,12 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }, [publicKey]);
 
   async function handleSwitchAccount(index: number) {
-    if (index < 0 || index >= accounts.length) return;
-    const acct = accounts[index];
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'vault:switchAccount',
-      payload: { index },
-      id: createMessageId(),
-    });
-
-    if (response.error) {
-      console.error('Failed to switch account in vault:', response.error);
-      return;
+    try {
+      await activateAccount(index, accounts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Account switch failed';
+      alert(msg);
     }
-
-    await saveActiveAccountIndex(index);
-    setActiveAccountIndex(index);
-    setPublicKey(acct.publicKeyHex);
-
-    // Immediately load the new account's cached data instead of clearing to
-    // null — this prevents a flash of empty state and ensures data keyed by
-    // the old pubkey is never wiped.
-    const cached = await chrome.storage.local.get([
-      `profile_${acct.publicKeyHex}`,
-      `following_${acct.publicKeyHex}`,
-    ]);
-    const cachedProfile = cached[`profile_${acct.publicKeyHex}`];
-    const cachedFollowing = cached[`following_${acct.publicKeyHex}`];
-
-    setMyProfile(cachedProfile ?? null);
-    setFollowing(Array.isArray(cachedFollowing) ? new Set(cachedFollowing) : new Set());
-
-    // Rotate wallet sync key for new account
-    if (vaultPassword) {
-      const syncKey = bytesToHex(
-        sha256(new TextEncoder().encode(`wallet-sync-${vaultPassword}-${acct.publicKeyHex}`)),
-      );
-      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
-      restoreWalletsFromRelay(acct.publicKeyHex, syncKey).catch(() => {});
-    }
-
-    // Then refresh from relays in the background
-    loadProfileAndFollows(acct.publicKeyHex);
   }
 
   async function handleAddAccount(mode: 'generated' | 'nip07' | 'nsec' = 'generated') {
@@ -335,7 +419,14 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
 
       setAccounts(newAccounts);
       await chrome.storage.local.set({ cached_accounts: newAccounts });
-      await handleSwitchAccount(newIndex);
+
+      await chrome.runtime.sendMessage({
+        type: 'vault:unlock',
+        payload: { password: pw },
+        id: createMessageId(),
+      });
+
+      await activateAccount(newIndex, newAccounts, { password: pw, forceUnlock: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to add account';
       alert(msg);
@@ -387,17 +478,9 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
         event: { ...event, pubkey: publicKey },
         onConfirm: () => {
           setSigningRequest(null);
-          chrome.runtime.sendMessage({
-            type: 'nip07:signEvent',
-            payload: { event },
-            id: createMessageId(),
-          }).then((response: { result?: SignedEvent; error?: string }) => {
-            if (response.error) {
-              reject(new Error(response.error));
-            } else {
-              resolve(response.result!);
-            }
-          }).catch(reject);
+          signEventWithFallback(event, publicKey)
+            .then(resolve)
+            .catch(reject);
         },
         onCancel: () => {
           setSigningRequest(null);
@@ -411,11 +494,13 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     if (!vaultPassword) throw new Error('Unlock your vault first');
     const updated = await upgradeAccountWithNsec(vaultPassword, publicKey, nsec);
     setAccounts(updated);
+    await chrome.storage.local.set({ cached_accounts: updated });
     await chrome.runtime.sendMessage({
       type: 'vault:unlock',
       payload: { password: vaultPassword },
       id: createMessageId(),
     });
+    await activateAccount(activeAccountIndex, updated, { password: vaultPassword, forceUnlock: true });
   }
 
   const canSignOnchain = accounts[activeAccountIndex]?.canSignOnchain ?? false;

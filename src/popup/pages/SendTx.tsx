@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createMessageId } from '@/shared/messages';
 import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle } from 'lucide-react';
 import { fetchBalance, fetchFeeEstimates, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction } from '@/lib/bitcoin/mempool';
@@ -8,6 +9,7 @@ import { encodePlainMemoOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/op
 import { loadBitcoinNodeConfig } from '@/lib/bitcoin/node';
 import { detectBitcoinSigners, tryExternalPsbtSign, promptExtensionAccess, type BitcoinSignerSource } from '@/lib/bitcoin/psbt-external-sign';
 import { useAuth } from '../context/AuthContext';
+import { RecipientPicker } from '../components/RecipientPicker';
 
 interface Props {
   publicKey: string;
@@ -22,6 +24,7 @@ interface FeeEstimate {
 }
 
 export function SendTx({ publicKey, onBack }: Props) {
+  const [searchParams] = useSearchParams();
   const { canSignOnchain, handleUpgradeWithNsec, vaultPassword } = useAuth();
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
@@ -39,6 +42,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState('');
   const [invoiceEventId, setInvoiceEventId] = useState('');
+  const [prefilledFromInvoice, setPrefilledFromInvoice] = useState(false);
   const [showNsecUpgrade, setShowNsecUpgrade] = useState(false);
   const [nsecInput, setNsecInput] = useState('');
   const [upgrading, setUpgrading] = useState(false);
@@ -145,7 +149,17 @@ export function SendTx({ publicKey, onBack }: Props) {
     loadBalanceAndFees();
     const info = detectBitcoinSigners();
     setSignerInfo(info.label);
-  }, []);
+
+    const invoice = searchParams.get('invoice');
+    const to = searchParams.get('to');
+    const amount = searchParams.get('amount');
+    if (invoice || to || amount) {
+      if (invoice) setInvoiceEventId(invoice);
+      if (to) setRecipient(to);
+      if (amount) setAmountSats(amount);
+      setPrefilledFromInvoice(true);
+    }
+  }, [searchParams]);
 
   async function loadBalanceAndFees() {
     setLoadingBalance(true);
@@ -178,14 +192,12 @@ export function SendTx({ publicKey, onBack }: Props) {
 
       let opReturnData: Uint8Array | undefined;
 
-      if (memo.trim()) {
-        const memoOpReturn = encodePlainMemoOpReturn(memo.trim());
-        opReturnData = memoOpReturn.script.slice(2);
-      }
-
-      if (!opReturnData && invoiceEventId.trim()) {
+      if (invoiceEventId.trim()) {
         const invoiceOpReturn = encodeInvoiceOpReturn(invoiceEventId.trim());
         opReturnData = invoiceOpReturn.script.slice(2);
+      } else if (memo.trim()) {
+        const memoOpReturn = encodePlainMemoOpReturn(memo.trim());
+        opReturnData = memoOpReturn.script.slice(2);
       }
 
       const result = await buildPsbt({
@@ -410,7 +422,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   // ─── BUILD FORM ──────────────────────────────────────────────
 
   return (
-    <div className="h-full flex flex-col p-4 overflow-y-auto pb-24 md:pb-4">
+    <div className="h-full flex flex-col p-4 overflow-y-auto pb-safe" style={{ paddingBottom: 'calc(6rem + var(--safe-bottom))' }}>
       <div className="page-header">
         <button onClick={onBack} className="btn-back">
           <ArrowLeft className="w-5 h-5" />
@@ -422,6 +434,15 @@ export function SendTx({ publicKey, onBack }: Props) {
           <span className="text-xs text-bitcoin font-medium">{formatSats(balance)}</span>
         )}
       </div>
+
+      {prefilledFromInvoice && (
+        <div className="card mb-3 border-nostr/30 bg-nostr/5">
+          <p className="text-xs text-nostr font-medium">Pre-filled from invoice</p>
+          <p className="text-[10px] text-gray-400 mt-1">
+            OP_RETURN proof will be included automatically when you send.
+          </p>
+        </div>
+      )}
 
       {/* From address */}
       <div className="card mb-3 flex items-center gap-2">
@@ -450,12 +471,13 @@ export function SendTx({ publicKey, onBack }: Props) {
       <form onSubmit={handleSendTransaction} className="flex-1 flex flex-col space-y-3">
         {/* Recipient */}
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Recipient Address</label>
-          <input
+          <label className="text-xs text-gray-400 mb-1 block">Recipient</label>
+          <RecipientPicker
+            publicKey={publicKey}
             value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-            placeholder="bc1p... or bc1q..."
-            className="input-field text-sm font-mono"
+            onChange={setRecipient}
+            onAmountSuggestion={setAmountSats}
+            onInvoiceSelect={setInvoiceEventId}
           />
         </div>
 
@@ -476,6 +498,24 @@ export function SendTx({ publicKey, onBack }: Props) {
             placeholder="10000"
             className="input-field text-sm"
           />
+          {balance > 0 && (
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {[
+                { label: '25%', value: Math.floor(balance * 0.25) },
+                { label: '50%', value: Math.floor(balance * 0.5) },
+                { label: '75%', value: Math.floor(balance * 0.75) },
+              ].map(({ label, value }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setAmountSats(String(value))}
+                  className="text-[10px] px-2.5 py-1.5 rounded-lg font-medium bg-surface-700 text-gray-400 hover:bg-surface-600 min-h-[36px]"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Fee rate */}
@@ -542,11 +582,11 @@ export function SendTx({ publicKey, onBack }: Props) {
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
 
-        <div className="mt-auto pt-3">
+        <div className="mt-auto pt-3 pb-safe">
           <button
             type="submit"
             disabled={!recipient || !amountSats || loading}
-            className="btn-primary w-full flex items-center justify-center gap-2"
+            className="btn-primary w-full flex items-center justify-center gap-2 min-h-[48px]"
           >
             {loading ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Sending...</>
