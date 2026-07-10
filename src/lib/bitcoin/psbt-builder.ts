@@ -19,6 +19,7 @@ export interface PsbtBuildParams {
   changeAddress?: string;
   internalPubkeyHex?: string;
   opReturnData?: Uint8Array;
+  selectedUtxos?: MempoolUTXO[];
 }
 
 export interface PsbtResult {
@@ -65,9 +66,11 @@ function addressToScriptPubKey(address: string): Uint8Array {
  * Fetches UTXOs from mempool.space and does coin selection.
  */
 export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
-  const { fromAddress, toAddress, amountSats, feeRate, changeAddress, internalPubkeyHex, opReturnData } = params;
+  const { fromAddress, toAddress, amountSats, feeRate, changeAddress, internalPubkeyHex, opReturnData, selectedUtxos } = params;
 
-  const utxos = await fetchUTXOs(fromAddress);
+  const utxos = selectedUtxos && selectedUtxos.length > 0
+    ? selectedUtxos
+    : await fetchUTXOs(fromAddress);
   if (utxos.length === 0) {
     throw new Error('No UTXOs available. Fund this address first.');
   }
@@ -80,21 +83,30 @@ export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
 
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
   const hasOpReturn = !!opReturnData && opReturnData.length <= 80;
+  const useAllSelected = selectedUtxos && selectedUtxos.length > 0;
 
-  // Coin selection (largest first)
+  // Coin selection (largest first, or use all pre-selected)
   const selected: MempoolUTXO[] = [];
   let totalInput = 0;
   let fee = 0;
 
-  for (const utxo of sorted) {
-    selected.push(utxo);
-    totalInput += utxo.value;
-
-    const numOutputs = 1 + (hasOpReturn ? 1 : 0) + 1; // recipient + op_return? + change
+  if (useAllSelected) {
+    selected.push(...sorted);
+    totalInput = sorted.reduce((sum, u) => sum + u.value, 0);
+    const numOutputs = 1 + (hasOpReturn ? 1 : 0) + 1;
     const vsize = estimateVsize(selected.length, numOutputs, hasOpReturn);
     fee = Math.ceil(vsize * actualFeeRate);
+  } else {
+    for (const utxo of sorted) {
+      selected.push(utxo);
+      totalInput += utxo.value;
 
-    if (totalInput >= amountSats + fee + 546) break;
+      const numOutputs = 1 + (hasOpReturn ? 1 : 0) + 1;
+      const vsize = estimateVsize(selected.length, numOutputs, hasOpReturn);
+      fee = Math.ceil(vsize * actualFeeRate);
+
+      if (totalInput >= amountSats + fee + 546) break;
+    }
   }
 
   const numOutputs = 1 + (hasOpReturn ? 1 : 0) + (totalInput - amountSats - fee >= 546 ? 1 : 0);

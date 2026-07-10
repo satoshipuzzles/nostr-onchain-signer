@@ -1,13 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { createMessageId } from '@/shared/messages';
-import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle } from 'lucide-react';
-import { fetchBalance, fetchFeeEstimates, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction } from '@/lib/bitcoin/mempool';
+import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle, ChevronDown, ChevronUp, DollarSign, Coins } from 'lucide-react';
+import { fetchBalance, fetchFeeEstimates, fetchUTXOs, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction, type UTXO } from '@/lib/bitcoin/mempool';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { buildPsbt, downloadPsbtFile, downloadPsbtText, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
 import { encodePlainMemoOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
 import { loadBitcoinNodeConfig } from '@/lib/bitcoin/node';
 import { detectBitcoinSigners, tryExternalPsbtSign, promptExtensionAccess, type BitcoinSignerSource } from '@/lib/bitcoin/psbt-external-sign';
+import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
 import { useAuth } from '../context/AuthContext';
 import { RecipientPicker } from '../components/RecipientPicker';
 
@@ -22,6 +23,8 @@ interface FeeEstimate {
   hour: number;
   economy: number;
 }
+
+const BTC_PRICE_API = 'https://mempool.space/api/v1/prices';
 
 export function SendTx({ publicKey, onBack }: Props) {
   const [searchParams] = useSearchParams();
@@ -47,10 +50,48 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [nsecInput, setNsecInput] = useState('');
   const [upgrading, setUpgrading] = useState(false);
 
-  const address = pubkeyToTaprootAddress(publicKey);
+  // Coin control state
+  const [utxos, setUtxos] = useState<UTXO[]>([]);
+  const [selectedUtxos, setSelectedUtxos] = useState<Set<string>>(new Set());
+  const [showCoinControl, setShowCoinControl] = useState(false);
+  const [loadingUtxos, setLoadingUtxos] = useState(false);
+
+  // Sender picker state
+  const [senderSource, setSenderSource] = useState<'personal' | string>('personal');
+  const [multisigWallets, setMultisigWallets] = useState<ArchivedMultisig[]>([]);
+  const [showSenderPicker, setShowSenderPicker] = useState(false);
+
+  // BTC price for USD estimate
+  const [btcPriceUsd, setBtcPriceUsd] = useState<number>(0);
+
+  const personalAddress = pubkeyToTaprootAddress(publicKey);
+
+  const activeAddress = useMemo(() => {
+    if (senderSource === 'personal') return personalAddress;
+    const ms = multisigWallets.find(w => w.id === senderSource);
+    return ms?.wallet?.address || personalAddress;
+  }, [senderSource, multisigWallets, personalAddress]);
+
+  // Fee + size estimate
+  const estimatedVsize = useMemo(() => {
+    const inputCount = selectedUtxos.size > 0 ? selectedUtxos.size : Math.max(1, Math.ceil((parseInt(amountSats) || 10000) / 50000));
+    return 10.5 + inputCount * 57.5 + 2 * 43;
+  }, [selectedUtxos, amountSats]);
+
+  const estimatedFeeUsd = useMemo(() => {
+    if (!btcPriceUsd || !feeRate) return null;
+    const feeSats = Math.ceil(estimatedVsize * parseFloat(feeRate));
+    return (feeSats / 1e8) * btcPriceUsd;
+  }, [btcPriceUsd, feeRate, estimatedVsize]);
+
+  const totalSelectedSats = useMemo(() => {
+    if (selectedUtxos.size === 0) return 0;
+    return utxos
+      .filter(u => selectedUtxos.has(`${u.txid}:${u.vout}`))
+      .reduce((sum, u) => sum + u.value, 0);
+  }, [selectedUtxos, utxos]);
 
   async function signAndBroadcast(psbtHex: string): Promise<{ txid: string; via: 'node' | 'esplora' }> {
-    // NIP-07 / extension signers (signSchnorr, WebBTC, window.bitcoin) — works in PWA
     if (!canSignOnchain) {
       await promptExtensionAccess();
       const external = await tryExternalPsbtSign(psbtHex, publicKey);
@@ -71,7 +112,6 @@ export function SendTx({ publicKey, onBack }: Props) {
       );
     }
 
-    // Vault key: try NIP-07 signSchnorr first (extension popup), then local vault
     await promptExtensionAccess();
     const nip07 = await tryExternalPsbtSign(psbtHex, publicKey);
     if (nip07) {
@@ -147,6 +187,8 @@ export function SendTx({ publicKey, onBack }: Props) {
 
   useEffect(() => {
     loadBalanceAndFees();
+    loadWallets();
+    fetchBtcPrice();
     const info = detectBitcoinSigners();
     setSignerInfo(info.label);
 
@@ -161,11 +203,56 @@ export function SendTx({ publicKey, onBack }: Props) {
     }
   }, [searchParams]);
 
+  useEffect(() => {
+    if (activeAddress) {
+      loadBalanceForAddress(activeAddress);
+      loadUtxosForAddress(activeAddress);
+    }
+  }, [activeAddress]);
+
+  async function fetchBtcPrice() {
+    try {
+      const res = await fetch(BTC_PRICE_API);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.USD) setBtcPriceUsd(data.USD);
+      }
+    } catch {}
+  }
+
+  async function loadWallets() {
+    try {
+      const wallets = await loadMultisigWallets();
+      setMultisigWallets(wallets);
+    } catch {}
+  }
+
+  async function loadBalanceForAddress(addr: string) {
+    setLoadingBalance(true);
+    try {
+      const bal = await fetchBalance(addr);
+      setBalance(bal.total);
+    } catch {} finally {
+      setLoadingBalance(false);
+    }
+  }
+
+  async function loadUtxosForAddress(addr: string) {
+    setLoadingUtxos(true);
+    try {
+      const fetched = await fetchUTXOs(addr);
+      setUtxos(fetched);
+      setSelectedUtxos(new Set());
+    } catch {} finally {
+      setLoadingUtxos(false);
+    }
+  }
+
   async function loadBalanceAndFees() {
     setLoadingBalance(true);
     try {
       const [bal, fees] = await Promise.allSettled([
-        fetchBalance(address),
+        fetchBalance(activeAddress),
         fetchFeeEstimates(),
       ]);
       if (bal.status === 'fulfilled') setBalance(bal.value.total);
@@ -176,6 +263,23 @@ export function SendTx({ publicKey, onBack }: Props) {
     } catch {} finally {
       setLoadingBalance(false);
     }
+  }
+
+  function toggleUtxo(id: string) {
+    setSelectedUtxos(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllUtxos() {
+    setSelectedUtxos(new Set(utxos.map(u => `${u.txid}:${u.vout}`)));
+  }
+
+  function clearUtxoSelection() {
+    setSelectedUtxos(new Set());
   }
 
   async function handleSendTransaction(e: React.FormEvent) {
@@ -200,13 +304,18 @@ export function SendTx({ publicKey, onBack }: Props) {
         opReturnData = memoOpReturn.script.slice(2);
       }
 
+      const preSelected = selectedUtxos.size > 0
+        ? utxos.filter(u => selectedUtxos.has(`${u.txid}:${u.vout}`))
+        : undefined;
+
       const result = await buildPsbt({
-        fromAddress: address,
+        fromAddress: activeAddress,
         toAddress: recipient,
         amountSats: amount,
         feeRate: parseFloat(feeRate) || undefined,
         internalPubkeyHex: publicKey,
         opReturnData,
+        selectedUtxos: preSelected,
       });
 
       setPsbtResult(result);
@@ -283,7 +392,14 @@ export function SendTx({ publicKey, onBack }: Props) {
             </div>
             <div className="flex justify-between">
               <span className="text-gray-500">Fee</span>
-              <span className="text-gray-300">{formatSats(psbtResult.fee)} ({feeRate} sat/vB)</span>
+              <span className="text-gray-300">
+                {formatSats(psbtResult.fee)} ({feeRate} sat/vB)
+                {btcPriceUsd > 0 && (
+                  <span className="text-gray-500 ml-1">
+                    ≈ ${((psbtResult.fee / 1e8) * btcPriceUsd).toFixed(2)}
+                  </span>
+                )}
+              </span>
             </div>
             {psbtResult.changeSats > 0 && (
               <div className="flex justify-between">
@@ -444,15 +560,61 @@ export function SendTx({ publicKey, onBack }: Props) {
         </div>
       )}
 
-      {/* From address */}
-      <div className="card mb-3 flex items-center gap-2">
-        <div className="flex-1 min-w-0">
-          <p className="text-[10px] text-gray-500">From (your Taproot address)</p>
-          <p className="text-xs font-mono text-gray-300 truncate">{address}</p>
-        </div>
-        <a href={getMempoolAddressUrl(address)} target="_blank" rel="noopener" className="btn-icon flex-shrink-0">
-          <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
-        </a>
+      {/* ─── SENDER PICKER ─── */}
+      <div className="card mb-3">
+        <button
+          type="button"
+          onClick={() => setShowSenderPicker(!showSenderPicker)}
+          className="w-full flex items-center justify-between"
+        >
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-gray-500 text-left">
+              {senderSource === 'personal' ? 'From (your Taproot address)' : 'From (Multisig wallet)'}
+            </p>
+            <p className="text-xs font-mono text-gray-300 truncate text-left">{activeAddress}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <a
+              href={getMempoolAddressUrl(activeAddress)}
+              target="_blank"
+              rel="noopener"
+              className="btn-icon"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-gray-500" />
+            </a>
+            {multisigWallets.length > 0 && (
+              showSenderPicker ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />
+            )}
+          </div>
+        </button>
+
+        {showSenderPicker && (
+          <div className="mt-3 border-t border-white/5 pt-3 space-y-2">
+            <button
+              type="button"
+              onClick={() => { setSenderSource('personal'); setShowSenderPicker(false); }}
+              className={`w-full text-left p-2 rounded-lg transition-colors ${senderSource === 'personal' ? 'bg-purple-500/10 border border-purple-500/30' : 'hover:bg-surface-700'}`}
+            >
+              <p className="text-xs font-medium text-gray-200">Personal Taproot</p>
+              <p className="text-[10px] font-mono text-gray-500 truncate">{personalAddress}</p>
+            </button>
+            {multisigWallets.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                onClick={() => { setSenderSource(w.id); setShowSenderPicker(false); }}
+                className={`w-full text-left p-2 rounded-lg transition-colors ${senderSource === w.id ? 'bg-purple-500/10 border border-purple-500/30' : 'hover:bg-surface-700'}`}
+              >
+                <p className="text-xs font-medium text-gray-200">{w.name || 'Multisig'}</p>
+                <p className="text-[10px] text-gray-500">
+                  {w.wallet.config.threshold}-of-{w.wallet.config.pubkeys.length}
+                </p>
+                <p className="text-[10px] font-mono text-gray-500 truncate">{w.wallet.address}</p>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {!canSignOnchain && (
@@ -498,62 +660,185 @@ export function SendTx({ publicKey, onBack }: Props) {
             placeholder="10000"
             className="input-field text-sm"
           />
-          {balance > 0 && (
-            <div className="flex gap-2 mt-2 flex-wrap">
-              {[
-                { label: '25%', value: Math.floor(balance * 0.25) },
-                { label: '50%', value: Math.floor(balance * 0.5) },
-                { label: '75%', value: Math.floor(balance * 0.75) },
-              ].map(({ label, value }) => (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => setAmountSats(String(value))}
-                  className="text-[10px] px-2.5 py-1.5 rounded-lg font-medium bg-surface-700 text-gray-400 hover:bg-surface-600 min-h-[36px]"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="flex items-center justify-between mt-1">
+            {balance > 0 && (
+              <div className="flex gap-2 mt-1 flex-wrap">
+                {[
+                  { label: '25%', value: Math.floor(balance * 0.25) },
+                  { label: '50%', value: Math.floor(balance * 0.5) },
+                  { label: '75%', value: Math.floor(balance * 0.75) },
+                ].map(({ label, value }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => setAmountSats(String(value))}
+                    className="text-[10px] px-2.5 py-1.5 rounded-lg font-medium bg-surface-700 text-gray-400 hover:bg-surface-600 min-h-[28px]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {btcPriceUsd > 0 && amountSats && (
+              <p className="text-[10px] text-gray-500 flex items-center gap-1">
+                <DollarSign className="w-3 h-3" />
+                ≈ ${((parseInt(amountSats) / 1e8) * btcPriceUsd).toFixed(2)} USD
+              </p>
+            )}
+          </div>
         </div>
 
-        {/* Fee rate */}
+        {/* Fee rate with sub-sat support */}
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Fee Rate (sat/vB)</label>
+          <label className="text-xs text-gray-400 mb-1 flex items-center justify-between">
+            <span>Fee Rate (sat/vB)</span>
+            {estimatedFeeUsd !== null && (
+              <span className="text-[10px] text-gray-500 flex items-center gap-1">
+                <DollarSign className="w-3 h-3" />
+                ≈ ${estimatedFeeUsd.toFixed(2)} fee
+              </span>
+            )}
+          </label>
           <input
             type="number"
+            step="0.1"
+            min="0.1"
             value={feeRate}
             onChange={(e) => setFeeRate(e.target.value)}
             placeholder="5"
             className="input-field text-sm"
           />
           {feeEstimates && (
-            <div className="flex gap-2 mt-2 flex-wrap">
+            <div className="flex gap-1.5 mt-2 flex-wrap">
               {[
-                { label: '⚡', rate: feeEstimates.fastest, color: 'red' },
+                { label: '⚡ Fast', rate: feeEstimates.fastest, color: 'red' },
                 { label: '30m', rate: feeEstimates.halfHour, color: 'bitcoin' },
                 { label: '1h', rate: feeEstimates.hour, color: 'green' },
                 { label: 'Eco', rate: feeEstimates.economy, color: 'blue' },
+                { label: '0.5', rate: 0.5, color: 'purple' },
+                { label: '0.1', rate: 0.1, color: 'purple' },
               ].map(({ label, rate, color }) => (
                 <button
                   key={label}
                   type="button"
                   onClick={() => setFeeRate(String(rate))}
-                  className={`text-[10px] px-2.5 py-1.5 rounded-lg font-medium ${
-                    feeRate === String(rate)
+                  className={`text-[10px] px-2 py-1.5 rounded-lg font-medium transition-colors ${
+                    parseFloat(feeRate) === rate
                       ? `bg-${color}-500/20 text-${color}-400 border border-${color}-500/40`
-                      : 'bg-surface-700 text-gray-400'
+                      : 'bg-surface-700 text-gray-400 hover:bg-surface-600'
                   }`}
                 >
-                  {label}: {rate}
+                  {label}{typeof rate === 'number' && rate >= 1 ? `: ${rate}` : rate < 1 ? ' sat/vB' : ''}
                 </button>
               ))}
             </div>
           )}
+          <p className="text-[10px] text-gray-600 mt-1">
+            Sub-sat rates (0.5, 0.1) may take longer to confirm but save fees
+          </p>
         </div>
 
-        {/* Optional on-chain memo — plain text, no Nostr signing */}
+        {/* ─── COIN CONTROL ─── */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowCoinControl(!showCoinControl)}
+            className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
+          >
+            <Coins className="w-3.5 h-3.5" />
+            <span>Coin Control (UTXOs)</span>
+            {selectedUtxos.size > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-400">
+                {selectedUtxos.size} selected
+              </span>
+            )}
+            {showCoinControl ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+
+          {showCoinControl && (
+            <div className="mt-2 rounded-xl bg-surface-800/50 border border-white/5 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] text-gray-500">
+                  {utxos.length} UTXO{utxos.length !== 1 ? 's' : ''} available
+                  {totalSelectedSats > 0 && (
+                    <span className="ml-2 text-purple-400">
+                      Selected: {formatSats(totalSelectedSats)}
+                    </span>
+                  )}
+                </p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={selectAllUtxos} className="text-[10px] text-purple-400 hover:underline">
+                    All
+                  </button>
+                  <button type="button" onClick={clearUtxoSelection} className="text-[10px] text-gray-500 hover:underline">
+                    None
+                  </button>
+                </div>
+              </div>
+
+              {loadingUtxos ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-4 h-4 animate-spin text-gray-500" />
+                </div>
+              ) : utxos.length === 0 ? (
+                <p className="text-[10px] text-gray-600 text-center py-3">No UTXOs found</p>
+              ) : (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {utxos.map((utxo) => {
+                    const id = `${utxo.txid}:${utxo.vout}`;
+                    const isSelected = selectedUtxos.has(id);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => toggleUtxo(id)}
+                        className={`w-full text-left p-2 rounded-lg transition-all ${
+                          isSelected
+                            ? 'bg-purple-500/10 border border-purple-500/30'
+                            : 'bg-surface-700/50 border border-transparent hover:border-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className={`w-3 h-3 rounded-sm border flex items-center justify-center ${
+                              isSelected ? 'bg-purple-500 border-purple-500' : 'border-gray-600'
+                            }`}>
+                              {isSelected && <Check className="w-2 h-2 text-white" />}
+                            </div>
+                            <span className="text-[10px] font-mono text-gray-500 truncate">
+                              {utxo.txid.slice(0, 8)}…:{utxo.vout}
+                            </span>
+                          </div>
+                          <div className="text-right flex-shrink-0 ml-2">
+                            <span className="text-xs font-medium text-gray-200">
+                              {formatSats(utxo.value)}
+                            </span>
+                            {btcPriceUsd > 0 && (
+                              <span className="text-[9px] text-gray-500 ml-1">
+                                (${((utxo.value / 1e8) * btcPriceUsd).toFixed(2)})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 ml-5">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                            utxo.status.confirmed
+                              ? 'bg-green-500/10 text-green-400'
+                              : 'bg-amber-500/10 text-amber-400'
+                          }`}>
+                            {utxo.status.confirmed ? 'confirmed' : 'unconfirmed'}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Optional on-chain memo */}
         <div>
           <label className="text-xs text-gray-400 mb-1 block">Memo (optional, plain text on-chain)</label>
           <input
@@ -581,6 +866,36 @@ export function SendTx({ publicKey, onBack }: Props) {
         </div>
 
         {error && <p className="text-red-400 text-sm">{error}</p>}
+
+        {/* Transaction cost summary */}
+        {feeRate && amountSats && (
+          <div className="rounded-xl bg-surface-800/30 border border-white/5 p-3">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-gray-500">Est. tx size</span>
+              <span className="text-gray-300">~{Math.round(estimatedVsize)} vB</span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] mt-1">
+              <span className="text-gray-500">Est. fee</span>
+              <span className="text-gray-300">
+                {formatSats(Math.ceil(estimatedVsize * parseFloat(feeRate)))}
+                {estimatedFeeUsd !== null && (
+                  <span className="text-gray-500 ml-1">≈ ${estimatedFeeUsd.toFixed(2)}</span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] mt-1">
+              <span className="text-gray-500">Total cost</span>
+              <span className="text-bitcoin font-medium">
+                {formatSats(parseInt(amountSats) + Math.ceil(estimatedVsize * parseFloat(feeRate)))}
+                {btcPriceUsd > 0 && (
+                  <span className="text-gray-500 ml-1">
+                    ≈ ${(((parseInt(amountSats) + Math.ceil(estimatedVsize * parseFloat(feeRate))) / 1e8) * btcPriceUsd).toFixed(2)}
+                  </span>
+                )}
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className="mt-auto pt-3 pb-safe">
           <button
