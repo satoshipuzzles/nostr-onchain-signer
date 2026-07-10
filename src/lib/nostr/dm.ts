@@ -2,8 +2,13 @@ import { createMessageId } from '@/shared/messages';
 import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
 import { createGiftWrap, unwrapGiftWrap, type Rumor } from '@/lib/nostr/gift-wrap';
 
+let cachedPrivateKey: string | null = null;
+
 async function getSessionPrivateKey(): Promise<string | null> {
-  // Try sessionStorage directly (works in both PWA and extension popup)
+  // Return cached key if available (avoids repeated lookups)
+  if (cachedPrivateKey) return cachedPrivateKey;
+
+  // Try sessionStorage directly (works in PWA mode / extension popup)
   try {
     const raw = sessionStorage.getItem('nostr_onchain_session_keys');
     if (raw) {
@@ -11,22 +16,45 @@ async function getSessionPrivateKey(): Promise<string | null> {
       const idxRaw = sessionStorage.getItem('nostr_onchain_active_index');
       const activeIdx = idxRaw ? JSON.parse(idxRaw) : 0;
       const privateKey = session[activeIdx]?.privateKeyHex;
-      if (privateKey && privateKey.length === 64) return privateKey;
+      if (privateKey && privateKey.length === 64) {
+        cachedPrivateKey = privateKey;
+        return privateKey;
+      }
     }
   } catch {}
 
-  // Fallback: ask the runtime for the key (chrome-mock stores under prefixed key)
+  // Try chrome.storage.session (used by chrome-mock in PWA)
   try {
     const sessionData = await chrome.storage?.session?.get?.(['session_keys', 'active_index']);
     if (sessionData?.session_keys) {
       const keys = sessionData.session_keys as any[];
       const idx = (sessionData.active_index as number) ?? 0;
       const pk = keys[idx]?.privateKeyHex;
-      if (pk && pk.length === 64) return pk;
+      if (pk && pk.length === 64) {
+        cachedPrivateKey = pk;
+        return pk;
+      }
+    }
+  } catch {}
+
+  // Try getting key via background (extension context)
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'vault:getPrivateKey',
+      id: createMessageId(),
+    });
+    if (res?.result && typeof res.result === 'string' && res.result.length === 64) {
+      cachedPrivateKey = res.result;
+      return res.result;
     }
   } catch {}
 
   return null;
+}
+
+// Clear cached key on account switch
+export function clearDMKeyCache() {
+  cachedPrivateKey = null;
 }
 
 export interface GiftWrapDMResult {
@@ -36,7 +64,6 @@ export interface GiftWrapDMResult {
 
 /**
  * Encrypt a DM using NIP-17 gift wrap (preferred) or fall back to NIP-44/NIP-04.
- * Returns either a gift wrap event to publish directly, or encrypted content + kind for legacy.
  */
 export async function encryptDM(
   recipientPubkey: string,
@@ -54,7 +81,17 @@ export async function encryptDM(
     }
   }
 
-  // Fallback: NIP-44 (kind 14) via extension
+  // Try local NIP-44 encryption with local key
+  if (privateKey) {
+    try {
+      return { content: encryptNip44(privateKey, recipientPubkey, plaintext), kind: 14 };
+    } catch {}
+    try {
+      return { content: await encryptNip04(privateKey, recipientPubkey, plaintext), kind: 4 };
+    } catch {}
+  }
+
+  // Extension runtime fallback
   try {
     const nip44Res = await chrome.runtime.sendMessage({
       type: 'nip07:nip44:encrypt',
@@ -62,11 +99,8 @@ export async function encryptDM(
       id: createMessageId(),
     });
     if (nip44Res?.result) return { content: nip44Res.result, kind: 14 };
-  } catch (err) {
-    console.warn('NIP-44 encrypt via runtime failed:', err);
-  }
+  } catch {}
 
-  // Fallback: NIP-04 (kind 4)
   try {
     const nip04Res = await chrome.runtime.sendMessage({
       type: 'nip07:nip04:encrypt',
@@ -74,42 +108,26 @@ export async function encryptDM(
       id: createMessageId(),
     });
     if (nip04Res?.result) return { content: nip04Res.result, kind: 4 };
-  } catch (err) {
-    console.warn('NIP-04 encrypt via runtime failed:', err);
-  }
+  } catch {}
 
   // window.nostr fallbacks
   const nostr = (window as any).nostr;
   if (typeof nostr?.nip44?.encrypt === 'function') {
     try {
-      const encrypted = await nostr.nip44.encrypt(recipientPubkey, plaintext);
-      return { content: encrypted, kind: 14 };
+      return { content: await nostr.nip44.encrypt(recipientPubkey, plaintext), kind: 14 };
     } catch {}
   }
   if (typeof nostr?.nip04?.encrypt === 'function') {
     try {
-      const encrypted = await nostr.nip04.encrypt(recipientPubkey, plaintext);
-      return { content: encrypted, kind: 4 };
+      return { content: await nostr.nip04.encrypt(recipientPubkey, plaintext), kind: 4 };
     } catch {}
-  }
-
-  // Local key fallback
-  if (privateKey) {
-    try {
-      return { content: encryptNip44(privateKey, recipientPubkey, plaintext), kind: 14 };
-    } catch {
-      try {
-        return { content: await encryptNip04(privateKey, recipientPubkey, plaintext), kind: 4 };
-      } catch {}
-    }
   }
 
   throw new Error('DM encryption failed — unlock your vault or install a Nostr signer');
 }
 
 /**
- * Decrypt a DM event. Handles NIP-17 gift wrap (1059), NIP-44 (kind 14), and NIP-04 (kind 4).
- * Prioritizes local key decryption (silent) over extension messaging (prompts user).
+ * Decrypt a DM event. Prioritizes local key (silent) over extension messaging.
  */
 export async function decryptDM(
   senderPubkey: string,
@@ -117,7 +135,6 @@ export async function decryptDM(
   kind: number,
   fullEvent?: { pubkey: string; content: string; kind: number; tags?: string[][] },
 ): Promise<string> {
-  // NIP-17 gift wrap — unwrap the layers
   if (kind === 1059 && fullEvent) {
     const privateKey = await getSessionPrivateKey();
     if (privateKey) {
@@ -127,18 +144,16 @@ export async function decryptDM(
     return '(unable to decrypt gift wrap)';
   }
 
-  // Try local key first — this decrypts silently without prompting the user
+  // Try local key first (silent, no prompts)
   const privateKey = await getSessionPrivateKey();
   if (privateKey) {
     try {
       if (kind === 14) return decryptNip44(privateKey, senderPubkey, content);
       return await decryptNip04(privateKey, senderPubkey, content);
-    } catch {
-      // Local key failed — fall through to extension
-    }
+    } catch {}
   }
 
-  // Extension fallback (may prompt user) — only used when local key unavailable
+  // Extension fallback
   try {
     if (kind === 14) {
       const nip44Res = await chrome.runtime.sendMessage({
@@ -148,16 +163,13 @@ export async function decryptDM(
       });
       if (nip44Res?.result) return nip44Res.result;
     }
-
     const nip04Res = await chrome.runtime.sendMessage({
       type: 'nip07:nip04:decrypt',
       payload: { pubkey: senderPubkey, ciphertext: content },
       id: createMessageId(),
     });
     if (nip04Res?.result) return nip04Res.result;
-  } catch (err) {
-    console.warn('DM decrypt via runtime failed:', err);
-  }
+  } catch {}
 
   // window.nostr fallbacks
   const nostr = (window as any).nostr;
@@ -178,7 +190,7 @@ export async function decryptDM(
 }
 
 /**
- * Extract sender pubkey from a gift-wrapped event using our private key.
+ * Extract sender pubkey from a gift-wrapped event.
  */
 export async function getGiftWrapSender(
   event: { pubkey: string; content: string; kind: number; tags?: string[][] },

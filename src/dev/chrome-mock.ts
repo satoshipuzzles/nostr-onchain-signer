@@ -151,6 +151,17 @@ const mockChrome = {
           return { id, result: { publicKey: newKey.publicKeyHex, index } };
         }
 
+        case 'vault:getPrivateKey': {
+          const session = sessionGet('session_keys') as any[];
+          if (!session) return { id, error: 'Vault is locked' };
+          const idx = getActiveIndex();
+          const key = session[idx];
+          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+            return { id, error: 'No private key available' };
+          }
+          return { id, result: key.privateKeyHex };
+        }
+
         case 'nip07:getPublicKey': {
           const session = sessionGet('session_keys') as any[];
           if (!session) return { id, error: 'Vault is locked' };

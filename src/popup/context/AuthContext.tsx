@@ -379,6 +379,9 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
 
   async function handleSwitchAccount(index: number) {
     try {
+      // Clear DM key cache so it picks up the new account's key
+      const { clearDMKeyCache } = await import('@/lib/nostr/dm');
+      clearDMKeyCache();
       await activateAccount(index, accounts);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Account switch failed';

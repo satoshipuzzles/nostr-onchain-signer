@@ -4,6 +4,7 @@ import { type UnsignedEvent, type SignedEvent } from './events';
 /**
  * Sign a Nostr event via vault/background, falling back to window.nostr for
  * linked NIP-07 accounts (pubkey-only in vault).
+ * IMPORTANT: Verifies the signed event pubkey matches the expected pubkey.
  */
 export async function signEventWithFallback(
   event: Omit<UnsignedEvent, 'pubkey'>,
@@ -16,22 +17,41 @@ export async function signEventWithFallback(
   });
 
   if (!response?.error && response?.result) {
-    return response.result as SignedEvent;
+    const signed = response.result as SignedEvent;
+    // Verify pubkey matches — prevent signing with wrong keypair
+    if (signed.pubkey && signed.pubkey !== pubkey) {
+      throw new Error(
+        `Signing mismatch: your vault signed with a different key (${signed.pubkey.slice(0, 8)}...) than expected (${pubkey.slice(0, 8)}...). Switch your signer extension to match, or import nsec for this account.`
+      );
+    }
+    return signed;
   }
 
   const err = (response?.error as string) || 'Signing failed';
   const needsExternal =
     err.includes('External signer') ||
     err.includes('no key') ||
-    err.includes('no private key');
+    err.includes('no private key') ||
+    err.includes('No private key') ||
+    err.includes('NIP-07');
 
   if (needsExternal) {
     const nostr = (window as { nostr?: { signEvent?: (e: UnsignedEvent) => Promise<SignedEvent> } }).nostr;
     if (typeof nostr?.signEvent === 'function') {
       try {
-        return await nostr.signEvent({ ...event, pubkey });
+        const signed = await nostr.signEvent({ ...event, pubkey });
+        // Verify the external signer used the correct key
+        if (signed.pubkey && signed.pubkey !== pubkey) {
+          throw new Error(
+            `Your signer extension is logged into a different account (${signed.pubkey.slice(0, 8)}...). Expected: ${pubkey.slice(0, 8)}.... Switch your extension to the correct account or import nsec in Settings.`
+          );
+        }
+        return signed;
       } catch (extErr) {
         const msg = extErr instanceof Error ? extErr.message : String(extErr);
+        if (msg.includes('mismatch') || msg.includes('different account')) {
+          throw extErr;
+        }
         throw new Error(
           `NIP-07 signing failed: ${msg}. Unlock your signer extension (Alby/nos2x) or import nsec for this account.`,
         );

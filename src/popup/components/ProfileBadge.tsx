@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { getCachedProfile, getOrFetchProfile } from '@/lib/nostr/cache';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 import { ClickableAvatar } from './ClickableAvatar';
@@ -18,7 +18,21 @@ export function ProfileBadge({ pubkey, size = 'md', showNip05 = true, showNpub =
   const [profile, setProfile] = useState<ProfileMetadata | null>(null);
 
   useEffect(() => {
-    getCachedProfile(pubkey).then(p => { if (p) setProfile(p); });
+    let cancelled = false;
+    async function load() {
+      // Try cache first
+      const cached = await getCachedProfile(pubkey);
+      if (cached && !cancelled) { setProfile(cached); return; }
+      // Trigger background fetch and re-check after a delay
+      getOrFetchProfile(pubkey);
+      setTimeout(async () => {
+        if (cancelled) return;
+        const fetched = await getCachedProfile(pubkey);
+        if (fetched && !cancelled) setProfile(fetched);
+      }, 3000);
+    }
+    load();
+    return () => { cancelled = true; };
   }, [pubkey]);
 
   const name = (typeof profile?.displayName === 'string' && profile.displayName)

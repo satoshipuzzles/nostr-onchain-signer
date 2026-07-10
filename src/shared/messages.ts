@@ -28,6 +28,7 @@ export type MessageType =
   | 'vault:status'
   | 'vault:create'
   | 'vault:switchAccount'
+  | 'vault:getPrivateKey'
   // Dual-sign messages
   | 'dual:signAndBroadcast';
 

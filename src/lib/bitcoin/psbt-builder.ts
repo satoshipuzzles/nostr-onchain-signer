@@ -109,7 +109,7 @@ export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
 
   // Build PSBT
   const fromScript = addressToScriptPubKey(fromAddress);
-  const tx = new Transaction();
+  const tx = new Transaction({ allowUnknownOutputs: true, allowUnknownInputs: true });
 
   for (const utxo of selected) {
     const inputData: Record<string, unknown> = {
@@ -178,7 +178,7 @@ export function signAndFinalizePsbt(
   psbtHex: string,
   privateKeyHex: string
 ): { txHex: string; txid: string } {
-  const tx = Transaction.fromPSBT(hex.decode(psbtHex));
+  const tx = Transaction.fromPSBT(hex.decode(psbtHex), { allowUnknownOutputs: true, allowUnknownInputs: true });
   const privKey = hex.decode(privateKeyHex);
   tx.sign(privKey);
   tx.finalize();

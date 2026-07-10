@@ -69,6 +69,30 @@ export async function getCachedProfile(pubkey: string): Promise<ProfileMetadata 
   return entry.profile;
 }
 
+const fetchingProfiles = new Set<string>();
+
+/**
+ * Get profile from cache, or fetch from relays if missing.
+ * Non-blocking — returns null immediately if not cached, fetches in background.
+ */
+export async function getOrFetchProfile(pubkey: string, relays?: string[]): Promise<ProfileMetadata | null> {
+  const cached = await getCachedProfile(pubkey);
+  if (cached) return cached;
+
+  // Don't duplicate in-flight fetches
+  if (fetchingProfiles.has(pubkey)) return null;
+  fetchingProfiles.add(pubkey);
+
+  // Fetch in background
+  const defaultRelays = relays || ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://nos.lol'];
+  resolveProfiles([pubkey], defaultRelays).then((resolved) => {
+    fetchingProfiles.delete(pubkey);
+    return resolved.get(pubkey) || null;
+  }).catch(() => { fetchingProfiles.delete(pubkey); });
+
+  return null;
+}
+
 export async function getCachedProfiles(pubkeys: string[]): Promise<{
   cached: Map<string, ProfileMetadata>;
   missing: string[];

@@ -144,6 +144,14 @@ async function handleMessage(
       return { id, result: { publicKey: session[index].publicKeyHex } };
     }
 
+    case 'vault:getPrivateKey': {
+      const key = await getActiveKey();
+      if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
+        return { id, error: 'No private key available' };
+      }
+      return { id, result: key.privateKeyHex };
+    }
+
     case 'approval:get': {
       const { approvalId } = payload as { approvalId: string };
       const pending = await getPendingApproval(approvalId);
