@@ -9,6 +9,8 @@
   ],
   "host_permissions": [
     "https://nostr-onchain-signer.vercel.app/*",
+    "https://nostrfreaks.com/*",
+    "https://www.nostrfreaks.com/*",
     "https://mempool.space/*",
     "https://blockstream.info/*",
     "https://mempool.emzy.de/*"

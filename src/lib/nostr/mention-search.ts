@@ -1,5 +1,6 @@
 import { npubToPubkey, isValidHexPubkey } from '@/lib/nostr/keys';
 import { resolveNip05 } from '@/lib/nostr/nip05';
+import { searchProfilesNip50 } from '@/lib/nostr/cache';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 
 export interface MentionSearchResult {
@@ -35,8 +36,14 @@ export async function searchMentions(
       }
     }
 
-    if (query.includes('@') || (query.includes('.') && !query.startsWith('npub'))) {
-      const nip05Result = await resolveNip05(query.includes('@') ? query : `_@${query}`);
+    // Only attempt a NIP-05 lookup when the query looks like a complete
+    // identifier (name@domain.tld or domain.tld) — avoids firing an HTTP
+    // request on every partially-typed query containing a dot
+    const looksLikeNip05 = /^[\w.+-]+@[\w-]+(\.[\w-]+)+$/.test(query);
+    const looksLikeDomain = !query.includes('@') && !query.startsWith('npub') &&
+      /^[\w-]+(\.[\w-]+)*\.[a-z]{2,}$/i.test(query);
+    if (looksLikeNip05 || looksLikeDomain) {
+      const nip05Result = await resolveNip05(looksLikeNip05 ? query : `_@${query}`);
       if (nip05Result && !seen.has(nip05Result.pubkey)) {
         seen.add(nip05Result.pubkey);
         results.push({ pubkey: nip05Result.pubkey, nip05: query });
@@ -105,7 +112,26 @@ export async function searchMentions(
     // Search failed silently
   }
 
-  return results.slice(0, 8);
+  // If local caches produced few results, fall through to the same NIP-50
+  // relay search that powers Discover — finds anyone on the network
+  const isDirectLookup = query.startsWith('npub1') || isValidHexPubkey(query);
+  if (results.length < 5 && query.trim().length >= 2 && !isDirectLookup) {
+    try {
+      const relayResults = await searchProfilesNip50(query.trim(), 10);
+      for (const p of relayResults) {
+        if (seen.has(p.pubkey)) continue;
+        seen.add(p.pubkey);
+        results.push({
+          pubkey: p.pubkey,
+          displayName: p.displayName || p.name,
+          picture: p.picture,
+          nip05: p.nip05,
+        });
+      }
+    } catch { /* relay search unavailable */ }
+  }
+
+  return results.slice(0, 10);
 }
 
 export function mentionLabel(result: MentionSearchResult): string {

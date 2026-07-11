@@ -75,19 +75,15 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
       let psbtHex = psbtResult.psbtHex;
       let initiatorSigned = false;
 
-      // Partial-sign as initiator when vault holds our key
+      // Partial-sign as initiator: vault key, or the user's NIP-07 signer
+      // (signSchnorr) — same signer that signs their Nostr events
       try {
-        const signResp = await chrome.runtime.sendMessage({
-          type: 'btc:signPsbtPartial',
-          payload: { psbtHex },
-          id: createMessageId(),
-        });
-        if (!signResp.error && signResp.result?.psbtHex) {
-          psbtHex = signResp.result.psbtHex as string;
-          initiatorSigned = true;
-        }
+        const { partialSignPsbt } = await import('@/lib/bitcoin/psbt-partial-sign');
+        const signed = await partialSignPsbt(psbtHex, publicKey);
+        psbtHex = signed.psbtHex;
+        initiatorSigned = true;
       } catch {
-        /* initiator may use external signer only */
+        /* initiator can still create the round unsigned and sign later */
       }
 
       const signerPubkeys = wallet.keyHolders.map((h) => h.pubkey);

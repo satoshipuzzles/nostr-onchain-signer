@@ -42,6 +42,8 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
   const autoSave = useCallback(() => {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(async () => {
+      // Don't race a manual Publish that's in flight
+      if (publishing) return;
       const newProfile: ProfileMetadata = {
         pubkey: publicKey,
         name: name || undefined,
@@ -58,7 +60,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
       setAutoSaved(true);
       setTimeout(() => setAutoSaved(false), 2000);
     }, AUTOSAVE_DELAY);
-  }, [name, displayName, picture, banner, about, nip05, lud16, website, publicKey, onSaved]);
+  }, [name, displayName, picture, banner, about, nip05, lud16, website, publicKey, onSaved, publishing]);
 
   useEffect(() => {
     autoSave();

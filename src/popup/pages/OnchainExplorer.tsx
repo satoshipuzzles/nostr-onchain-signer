@@ -7,11 +7,19 @@ import {
 } from '@/lib/bitcoin/opreturn';
 import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/ticker';
 import { fetchMempoolApi, getCachedBlocks, setCachedBlocks, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
+import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
+import { resolveProfiles } from '@/lib/nostr/cache';
+import { queryPublicEvents } from '@/lib/nostr/public-relay';
+import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
+import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { useAuth } from '@/popup/context/AuthContext';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
   Copy, Check, RefreshCw, Clock, ArrowRight, ArrowLeft,
   Layers, ArrowDownRight, ArrowUpRight,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, MessageSquare, Receipt,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -119,7 +127,7 @@ type ProtocolMatch =
   | { protocol: 'NINV'; hash: string }
   | { protocol: 'LOPS'; hash: string };
 
-type Tab = 'overview' | 'transaction' | 'address';
+type Tab = 'overview' | 'transaction' | 'address' | 'opreturn' | 'invoices';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,6 +199,36 @@ function detectProtocol(scriptHex: string): ProtocolMatch | null {
 
 function isOpReturn(vout: TxVout): boolean {
   return vout.scriptpubkey_type === 'op_return' || vout.scriptpubkey.startsWith('6a');
+}
+
+function hexToBytesLocal(hexStr: string): Uint8Array {
+  const bytes = new Uint8Array(hexStr.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hexStr.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/** Try decoding an OP_RETURN payload as human-readable UTF-8 text. */
+function decodeOpReturnText(scriptHex: string): string | null {
+  try {
+    const script = hexToBytesLocal(scriptHex);
+    if (script[0] !== 0x6a || script.length < 3) return null;
+    let payload: Uint8Array;
+    if (script[1] === 0x4c) {
+      payload = script.slice(3, 3 + script[2]); // OP_PUSHDATA1
+    } else {
+      payload = script.slice(2, 2 + script[1]);
+    }
+    if (payload.length === 0) return null;
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(payload);
+    // Require mostly printable characters to treat it as a message
+    const printable = text.replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, '');
+    if (printable.length < text.length * 0.8) return null;
+    return text;
+  } catch {
+    return null;
+  }
 }
 
 function useLiveTimer(timestamp: number | undefined): string {
@@ -284,6 +322,7 @@ function StatsBar({
 
 export function OnchainExplorer() {
   const navigate = useNavigate();
+  const { publicKey } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const initialTab = (searchParams.get('tab') as Tab) || 'overview';
@@ -507,6 +546,8 @@ export function OnchainExplorer() {
     { id: 'overview', label: 'Overview' },
     { id: 'transaction', label: 'Transaction' },
     { id: 'address', label: 'Address' },
+    { id: 'opreturn', label: 'OP_RETURN' },
+    { id: 'invoices', label: 'Invoices' },
   ];
 
   const latestBlockTime = blocks[0]?.timestamp;
@@ -529,12 +570,12 @@ export function OnchainExplorer() {
       <StatsBar status={status} difficulty={difficulty} hashrate={hashrate} latestBlockTime={latestBlockTime} />
 
       {/* Tab bar */}
-      <div className="flex border-b border-white/10 px-4">
+      <div className="flex border-b border-white/10 px-4 overflow-x-auto scrollbar-hide">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => switchTab(t.id)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${
               activeTab === t.id
                 ? 'text-white border-bitcoin'
                 : 'text-gray-500 border-transparent hover:text-gray-300'
@@ -587,6 +628,12 @@ export function OnchainExplorer() {
             onViewTx={navigateToTx}
             currentHeight={status?.blockHeight ?? 0}
           />
+        )}
+        {activeTab === 'opreturn' && (
+          <OpReturnTab publicKey={publicKey} onViewTx={navigateToTx} onViewAddr={navigateToAddr} />
+        )}
+        {activeTab === 'invoices' && (
+          <InvoicesTab publicKey={publicKey} onViewAddr={navigateToAddr} />
         )}
       </div>
     </div>
@@ -1272,6 +1319,489 @@ function AddressTab({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// OP_RETURN TAB — messages sent/received on the user's onchain address
+// ===========================================================================
+
+interface OpReturnItem {
+  txid: string;
+  isSend: boolean;
+  counterAddr?: string;
+  sats: number;
+  time?: number;
+  confirmed: boolean;
+  scriptHex: string;
+  proto: ProtocolMatch | null;
+  text: string | null;
+}
+
+const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://nos.lol'];
+
+function OpReturnTab({
+  publicKey,
+  onViewTx,
+  onViewAddr,
+}: {
+  publicKey: string;
+  onViewTx: (txid: string) => void;
+  onViewAddr: (addr: string) => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [items, setItems] = useState<OpReturnItem[]>([]);
+  const [profiles, setProfiles] = useState<Record<string, ProfileMetadata>>({});
+  const [addrToPubkey, setAddrToPubkey] = useState<Record<string, string>>({});
+  const [myAddress, setMyAddress] = useState('');
+  const loadedFor = useRef('');
+
+  useEffect(() => {
+    if (publicKey && loadedFor.current !== publicKey) {
+      loadedFor.current = publicKey;
+      load();
+    }
+  }, [publicKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      const myAddr = pubkeyToTaprootAddress(publicKey);
+      setMyAddress(myAddr);
+
+      // Build address → nostr pubkey map from follows + self so we can show
+      // profile pictures for counterparties
+      const map: Record<string, string> = { [myAddr]: publicKey };
+      try {
+        const contacts = await fetchFollowingList(publicKey);
+        for (const c of contacts.slice(0, 500)) {
+          try { map[pubkeyToTaprootAddress(c.pubkey)] = c.pubkey; } catch { /* invalid */ }
+        }
+      } catch { /* no follows */ }
+      setAddrToPubkey(map);
+
+      const res = await fetchMempoolApi(`/address/${myAddr}/txs`);
+      if (!res.ok) throw new Error('Could not load address transactions');
+      const txs: TxData[] = await res.json();
+
+      const found: OpReturnItem[] = [];
+      for (const tx of txs) {
+        const ops = tx.vout.filter(isOpReturn);
+        if (ops.length === 0) continue;
+        const isSend = tx.vin.some((v) => v.prevout?.scriptpubkey_address === myAddr);
+        const counterAddr = isSend
+          ? tx.vout.find((v) => !isOpReturn(v) && v.scriptpubkey_address && v.scriptpubkey_address !== myAddr)?.scriptpubkey_address
+          : tx.vin.find((v) => v.prevout?.scriptpubkey_address && v.prevout.scriptpubkey_address !== myAddr)?.prevout?.scriptpubkey_address;
+        const sats = isSend
+          ? tx.vout.filter((v) => !isOpReturn(v) && v.scriptpubkey_address !== myAddr).reduce((s, v) => s + v.value, 0)
+          : tx.vout.filter((v) => v.scriptpubkey_address === myAddr).reduce((s, v) => s + v.value, 0);
+
+        for (const op of ops) {
+          found.push({
+            txid: tx.txid,
+            isSend,
+            counterAddr,
+            sats,
+            time: tx.status.block_time,
+            confirmed: tx.status.confirmed,
+            scriptHex: op.scriptpubkey,
+            proto: detectProtocol(op.scriptpubkey),
+            text: decodeOpReturnText(op.scriptpubkey),
+          });
+        }
+      }
+      setItems(found);
+
+      // Resolve profiles for matched counterparties (Discover mechanism)
+      const pks = [...new Set(
+        found.map((f) => (f.counterAddr ? map[f.counterAddr] : undefined)).filter(Boolean),
+      )] as string[];
+      pks.push(publicKey);
+      const resolved = await resolveProfiles(pks, PROFILE_RELAYS);
+      const p: Record<string, ProfileMetadata> = {};
+      resolved.forEach((v, k) => { p[k] = v; });
+      setProfiles(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load OP_RETURN history');
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+          <MessageSquare className="w-4 h-4 text-purple-400" />
+          OP_RETURN Messages
+        </h2>
+        <button
+          onClick={load}
+          className="p-1.5 rounded-lg hover:bg-surface-700 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className={`w-4 h-4 text-gray-400 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      {myAddress && (
+        <p className="text-[10px] text-gray-500 font-mono break-all">
+          Your address: {myAddress}
+        </p>
+      )}
+
+      {loading && (
+        <div className="flex flex-col items-center py-12">
+          <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-3" />
+          <p className="text-sm text-gray-400">Scanning your transactions for OP_RETURN data...</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="card border-red-500/20">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && items.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16">
+          <MessageSquare className="w-10 h-10 text-gray-600 mb-3" />
+          <p className="text-sm text-gray-400 text-center mb-1">No OP_RETURN messages yet</p>
+          <p className="text-xs text-gray-600 text-center max-w-[280px]">
+            Send a transaction with a memo from the Transaction Builder and it will show up here
+          </p>
+        </div>
+      )}
+
+      {items.map((item, i) => {
+        const counterPubkey = item.counterAddr ? addrToPubkey[item.counterAddr] : undefined;
+        const counterProfile = counterPubkey ? profiles[counterPubkey] : undefined;
+        const counterName = counterProfile?.displayName || counterProfile?.name
+          || (item.counterAddr ? truncateHash(item.counterAddr, 8) : 'Unknown');
+
+        return (
+          <div key={`${item.txid}-${i}`} className="card border-purple-500/10">
+            {/* Header: direction + counterparty */}
+            <div className="flex items-center gap-2.5 mb-2.5">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                item.isSend ? 'bg-red-500/15' : 'bg-green-500/15'
+              }`}>
+                {item.isSend
+                  ? <ArrowUpRight className="w-4 h-4 text-red-400" />
+                  : <ArrowDownRight className="w-4 h-4 text-green-400" />}
+              </div>
+              {counterPubkey ? (
+                <ClickableAvatar
+                  pubkey={counterPubkey}
+                  picture={counterProfile?.picture}
+                  name={counterName}
+                  size="sm"
+                />
+              ) : null}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">
+                  {item.isSend ? 'To' : 'From'} {counterName}
+                </p>
+                <p className="text-[10px] text-gray-500">
+                  {item.time ? timeAgo(item.time) : item.confirmed ? 'Confirmed' : 'Pending'}
+                </p>
+              </div>
+              <span className={`text-sm font-mono font-semibold flex-shrink-0 ${item.isSend ? 'text-red-400' : 'text-green-400'}`}>
+                {item.isSend ? '-' : '+'}{formatSats(item.sats)}
+              </span>
+            </div>
+
+            {/* Message content */}
+            {item.text ? (
+              <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg px-3 py-2 mb-2">
+                <p className="text-[10px] text-purple-300/80 uppercase tracking-wide mb-0.5">Message</p>
+                <p className="text-sm text-white break-words select-text">{item.text}</p>
+              </div>
+            ) : item.proto ? (
+              <div className="bg-surface-700 rounded-lg px-3 py-2 mb-2 flex items-center gap-2">
+                <ProtocolBadge match={item.proto} />
+                <p className="text-[11px] text-gray-400 font-mono break-all">
+                  {item.proto.protocol === 'NSTR'
+                    ? `Nostr event ${truncateHash(item.proto.eventId, 8)} (kind ${item.proto.kind})`
+                    : `Proof hash ${truncateHash(item.proto.hash, 8)}`}
+                </p>
+              </div>
+            ) : (
+              <div className="bg-surface-700 rounded-lg px-3 py-2 mb-2">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-0.5">Raw data</p>
+                <code className="text-[10px] text-gray-400 font-mono break-all">{item.scriptHex.slice(0, 120)}</code>
+              </div>
+            )}
+
+            {/* Footer actions */}
+            <div className="flex items-center gap-3 text-[10px]">
+              <button onClick={() => onViewTx(item.txid)} className="text-bitcoin hover:text-bitcoin/80 font-mono">
+                {truncateHash(item.txid, 8)}
+              </button>
+              {item.counterAddr && (
+                <button onClick={() => onViewAddr(item.counterAddr!)} className="text-gray-500 hover:text-gray-300">
+                  View address
+                </button>
+              )}
+              <a
+                href={getMempoolTxUrl(item.txid)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto flex items-center gap-1 text-gray-500 hover:text-gray-300"
+              >
+                mempool.space <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===========================================================================
+// INVOICES TAB — onchain invoices (kind 9733) sent & received
+// ===========================================================================
+
+interface InvoiceItem {
+  id: string;
+  isSent: boolean; // I created this invoice (asking to be paid)
+  counterPubkey: string;
+  invoice: OnchainInvoiceContent;
+  createdAt: number;
+  status?: InvoiceStatus;
+  paidSats?: number;
+}
+
+function InvoicesTab({
+  publicKey,
+  onViewAddr,
+}: {
+  publicKey: string;
+  onViewAddr: (addr: string) => void;
+}) {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
+  const [profiles, setProfiles] = useState<Record<string, ProfileMetadata>>({});
+  const [filter, setFilter] = useState<'all' | 'sent' | 'received'>('all');
+  const loadedFor = useRef('');
+
+  useEffect(() => {
+    if (publicKey && loadedFor.current !== publicKey) {
+      loadedFor.current = publicKey;
+      load();
+    }
+  }, [publicKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      const [sentEvents, receivedEvents] = await Promise.all([
+        queryPublicEvents({ kinds: [CUSTOM_KIND.ONCHAIN_INVOICE], authors: [publicKey], limit: 50 }, 8000),
+        queryPublicEvents({ kinds: [CUSTOM_KIND.ONCHAIN_INVOICE], '#p': [publicKey], limit: 50 }, 8000),
+      ]);
+
+      const seen = new Set<string>();
+      const items: InvoiceItem[] = [];
+
+      for (const evt of [...sentEvents, ...receivedEvents]) {
+        if (seen.has(evt.id)) continue;
+        seen.add(evt.id);
+        const invoice = parseOnchainInvoice(evt.content);
+        if (!invoice?.address) continue;
+        const isSent = evt.pubkey === publicKey;
+        const counterPubkey = isSent
+          ? (evt.tags.find((t) => t[0] === 'p')?.[1] ?? '')
+          : evt.pubkey;
+        items.push({
+          id: evt.id,
+          isSent,
+          counterPubkey,
+          invoice,
+          createdAt: evt.created_at,
+        });
+      }
+      items.sort((a, b) => b.createdAt - a.createdAt);
+      setInvoices(items);
+
+      // Resolve counterparty profiles
+      const pks = [...new Set(items.map((i) => i.counterPubkey).filter(Boolean))];
+      if (pks.length > 0) {
+        resolveProfiles(pks, PROFILE_RELAYS).then((resolved) => {
+          const p: Record<string, ProfileMetadata> = {};
+          resolved.forEach((v, k) => { p[k] = v; });
+          setProfiles(p);
+        }).catch(() => {});
+      }
+
+      // Check payment status for the most recent invoices
+      items.slice(0, 8).forEach(async (item) => {
+        try {
+          const result = await checkInvoiceStatus(item.invoice.address, item.invoice.amount_sats, item.invoice.expires_at);
+          setInvoices((prev) => prev.map((inv) =>
+            inv.id === item.id
+              ? { ...inv, status: result.status, paidSats: result.confirmedSats + result.unconfirmedSats }
+              : inv,
+          ));
+        } catch { /* status unavailable */ }
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load invoices');
+    }
+    setLoading(false);
+  }
+
+  const filtered = invoices.filter((i) =>
+    filter === 'all' ? true : filter === 'sent' ? i.isSent : !i.isSent,
+  );
+
+  const statusColors: Record<InvoiceStatus, string> = {
+    paid: 'bg-green-500/15 text-green-400 border-green-500/30',
+    partially_paid: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+    pending: 'bg-gray-500/15 text-gray-400 border-gray-500/30',
+    expired: 'bg-red-500/15 text-red-400 border-red-500/30',
+  };
+
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+          <Receipt className="w-4 h-4 text-bitcoin" />
+          Onchain Invoices
+        </h2>
+        <button
+          onClick={load}
+          className="p-1.5 rounded-lg hover:bg-surface-700 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className={`w-4 h-4 text-gray-400 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {/* Filter pills */}
+      <div className="flex gap-1.5">
+        {(['all', 'sent', 'received'] as const).map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
+              filter === f ? 'bg-bitcoin/20 text-bitcoin' : 'text-gray-500 hover:bg-white/5'
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+
+      {loading && (
+        <div className="flex flex-col items-center py-12">
+          <Loader2 className="w-8 h-8 text-bitcoin animate-spin mb-3" />
+          <p className="text-sm text-gray-400">Loading invoices from relays...</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="card border-red-500/20">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && filtered.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16">
+          <Receipt className="w-10 h-10 text-gray-600 mb-3" />
+          <p className="text-sm text-gray-400 text-center mb-1">No invoices found</p>
+          <p className="text-xs text-gray-600 text-center max-w-[280px]">
+            Create invoices from the Signing Inbox — sent and received invoices will show up here
+          </p>
+        </div>
+      )}
+
+      {filtered.map((item) => {
+        const profile = profiles[item.counterPubkey];
+        const name = profile?.displayName || profile?.name
+          || (item.counterPubkey ? item.counterPubkey.slice(0, 10) + '...' : 'Unknown');
+        const isExpired = item.invoice.expires_at && item.invoice.expires_at < Math.floor(Date.now() / 1000);
+        const status = item.status ?? (isExpired ? 'expired' : undefined);
+
+        return (
+          <div key={item.id} className="card">
+            <div className="flex items-center gap-2.5 mb-2.5">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                item.isSent ? 'bg-bitcoin/15' : 'bg-purple-500/15'
+              }`}>
+                {item.isSent
+                  ? <ArrowUpRight className="w-4 h-4 text-bitcoin" />
+                  : <ArrowDownRight className="w-4 h-4 text-purple-400" />}
+              </div>
+              {item.counterPubkey && (
+                <ClickableAvatar
+                  pubkey={item.counterPubkey}
+                  picture={profile?.picture}
+                  name={name}
+                  size="sm"
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">
+                  {item.isSent ? `Sent to ${name}` : `From ${name}`}
+                </p>
+                <p className="text-[10px] text-gray-500">{timeAgo(item.createdAt)}</p>
+              </div>
+              <div className="text-right flex-shrink-0">
+                {item.invoice.amount_sats ? (
+                  <p className="text-sm font-mono font-semibold text-bitcoin">
+                    {formatSats(item.invoice.amount_sats)}
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-500">Any amount</p>
+                )}
+                {status && (
+                  <span className={`inline-block mt-1 px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${statusColors[status]}`}>
+                    {status.replace('_', ' ')}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {item.invoice.memo && (
+              <p className="text-xs text-gray-300 bg-surface-700 rounded-lg px-3 py-2 mb-2 break-words select-text">
+                {item.invoice.memo}
+              </p>
+            )}
+
+            <div className="flex items-center gap-2 text-[10px]">
+              <button
+                onClick={() => onViewAddr(item.invoice.address)}
+                className="text-gray-400 hover:text-white font-mono truncate"
+              >
+                {truncateHash(item.invoice.address, 10)}
+              </button>
+              <CopyButton text={item.invoice.address} />
+              {item.paidSats !== undefined && item.paidSats > 0 && (
+                <span className="text-green-400 font-mono">{formatSats(item.paidSats)} paid</span>
+              )}
+              {!item.isSent && status !== 'paid' && !isExpired && (
+                <button
+                  onClick={() => navigate(`/send?to=${encodeURIComponent(item.invoice.address)}${item.invoice.amount_sats ? `&amount=${item.invoice.amount_sats}` : ''}`)}
+                  className="ml-auto px-2.5 py-1 bg-bitcoin/90 hover:bg-bitcoin text-white rounded-lg text-[10px] font-semibold transition-colors"
+                >
+                  Pay
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

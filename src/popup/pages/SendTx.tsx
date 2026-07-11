@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { createMessageId } from '@/shared/messages';
 import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle, ChevronDown, ChevronUp, DollarSign, Coins } from 'lucide-react';
 import { fetchBalance, fetchFeeEstimates, fetchUTXOs, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction, type UTXO } from '@/lib/bitcoin/mempool';
@@ -113,6 +114,23 @@ export function SendTx({ publicKey, onBack }: Props) {
       );
     }
 
+    // Vault key is available — sign locally first (most reliable), and only
+    // fall back to an external NIP-07 signer if the vault sign fails
+    const signResponse = await chrome.runtime.sendMessage({
+      type: 'btc:signPsbt',
+      payload: { psbtHex },
+      id: createMessageId(),
+    });
+    if (!signResponse.error && signResponse.result?.txHex) {
+      setSignSource((signResponse.result.source as BitcoinSignerSource) || 'vault');
+      const nodeCfg = await loadBitcoinNodeConfig();
+      const txid = await broadcastTransaction(signResponse.result.txHex);
+      return {
+        txid,
+        via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
+      };
+    }
+
     await promptExtensionAccess();
     const nip07 = await tryExternalPsbtSign(psbtHex, publicKey);
     if (nip07) {
@@ -125,21 +143,7 @@ export function SendTx({ publicKey, onBack }: Props) {
       };
     }
 
-    const signResponse = await chrome.runtime.sendMessage({
-      type: 'btc:signPsbt',
-      payload: { psbtHex },
-      id: createMessageId(),
-    });
-    if (signResponse.error) {
-      throw new Error(signResponse.error);
-    }
-    setSignSource((signResponse.result.source as BitcoinSignerSource) || 'vault');
-    const nodeCfg = await loadBitcoinNodeConfig();
-    const txid = await broadcastTransaction(signResponse.result.txHex);
-    return {
-      txid,
-      via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
-    };
+    throw new Error(signResponse.error || 'Failed to sign transaction');
   }
 
   async function handleRetrySignAndBroadcast() {
@@ -233,7 +237,9 @@ export function SendTx({ publicKey, onBack }: Props) {
     try {
       const bal = await fetchBalance(addr);
       setBalance(bal.total);
-    } catch {} finally {
+    } catch {
+      toast.error('Failed to fetch balance — check your connection');
+    } finally {
       setLoadingBalance(false);
     }
   }
@@ -244,7 +250,9 @@ export function SendTx({ publicKey, onBack }: Props) {
       const fetched = await fetchUTXOs(addr);
       setUtxos(fetched);
       setSelectedUtxos(new Set());
-    } catch {} finally {
+    } catch {
+      toast.error('Failed to fetch coins for this address');
+    } finally {
       setLoadingUtxos(false);
     }
   }

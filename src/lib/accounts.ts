@@ -88,9 +88,24 @@ export async function addAccountToVault(
     };
   }
 
-  // Check for duplicates
-  if (existingData.some((d) => d.publicKeyHex === newKeyData.publicKeyHex)) {
-    throw new Error('Account already exists in vault');
+  // Duplicate pubkey: upgrade the existing entry with the private key if it
+  // was extension-only, otherwise just switch to it — never a dead-end error
+  const dupIdx = existingData.findIndex((d) => d.publicKeyHex === newKeyData.publicKeyHex);
+  if (dupIdx !== -1) {
+    const existing = existingData[dupIdx];
+    if (!existing.privateKeyHex && newKeyData.privateKeyHex) {
+      const upgraded = [...existingData];
+      upgraded[dupIdx] = {
+        ...existing,
+        privateKeyHex: newKeyData.privateKeyHex,
+        externalSigner: false,
+        signerType: 'imported',
+      };
+      const encrypted = await encryptVault(upgraded, password);
+      await saveVault(encrypted);
+      return { accounts: getAccountsFromVault(upgraded), newIndex: dupIdx };
+    }
+    return { accounts: getAccountsFromVault(existingData), newIndex: dupIdx };
   }
 
   const updatedData = [...existingData, newKeyData];

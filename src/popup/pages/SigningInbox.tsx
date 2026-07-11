@@ -401,6 +401,12 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   }
 
   async function loadInbox() {
+    // Close any previous subscriptions before opening new ones
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    responseCleanupRef.current?.();
+    responseCleanupRef.current = null;
+
     const relayList = await loadRelayList();
     const relays = getReadRelays(relayList);
     const relayUrls = relays.length > 0
@@ -461,6 +467,9 @@ export function SigningInbox({ publicKey, onBack }: Props) {
   }
 
   async function loadInvoices() {
+    invoiceCleanupRef.current?.();
+    invoiceCleanupRef.current = null;
+
     const cached = await loadCachedInvoices(publicKey);
     const statusMap = new Map<string, { status: InvoiceStatus; confirmedSats: number; unconfirmedSats: number }>();
     for (const c of cached) {
@@ -521,26 +530,28 @@ export function SigningInbox({ publicKey, onBack }: Props) {
 
     const newStatuses = new Map(invoiceStatuses);
 
-    for (let i = 0; i < invoices.length; i++) {
-      const inv = invoices[i];
-      try {
-        const result = await checkInvoiceStatus(
-          inv.invoice.address,
-          inv.invoice.amount_sats,
-          inv.invoice.expires_at,
-        );
-        newStatuses.set(inv.eventId, {
-          status: result.status,
-          confirmedSats: result.confirmedSats,
-          unconfirmedSats: result.unconfirmedSats,
-        });
-        setInvoiceStatuses(new Map(newStatuses));
-      } catch { /* skip this one */ }
-
-      if (i < invoices.length - 1) {
-        await new Promise((r) => setTimeout(r, 500));
+    // Check up to 4 invoices concurrently instead of one every 500ms
+    const queue = [...invoices];
+    const worker = async () => {
+      while (queue.length > 0) {
+        const inv = queue.shift();
+        if (!inv) break;
+        try {
+          const result = await checkInvoiceStatus(
+            inv.invoice.address,
+            inv.invoice.amount_sats,
+            inv.invoice.expires_at,
+          );
+          newStatuses.set(inv.eventId, {
+            status: result.status,
+            confirmedSats: result.confirmedSats,
+            unconfirmedSats: result.unconfirmedSats,
+          });
+          setInvoiceStatuses(new Map(newStatuses));
+        } catch { /* skip this one */ }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, invoices.length) }, worker));
 
     setCheckingStatuses(false);
 
@@ -1356,6 +1367,23 @@ function RequestDetail({
     const seenPubkeys = new Set<string>();
     const collected: { pubkey: string; psbtHex?: string }[] = [];
 
+    const connections: { ws: WebSocket; subId: string }[] = [];
+
+    // Assign cleanup synchronously so a fast unmount (before loadRelayList
+    // resolves) still closes any sockets opened afterwards
+    liveCleanupRef.current = () => {
+      mounted = false;
+      for (const conn of connections) {
+        try {
+          if (conn.ws.readyState === WebSocket.OPEN) {
+            conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
+          }
+          conn.ws.close();
+        } catch { /* ignore */ }
+      }
+      connections.length = 0;
+    };
+
     (async () => {
       const relayList = await loadRelayList();
       const relays = getReadRelays(relayList);
@@ -1363,7 +1391,7 @@ function RequestDetail({
         ? relays
         : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
 
-      const connections: { ws: WebSocket; subId: string }[] = [];
+      if (!mounted) return;
 
       for (const url of relayUrls) {
         const subId = `detail_resp_${Math.random().toString(36).slice(2, 10)}`;
@@ -1392,26 +1420,17 @@ function RequestDetail({
                   seenPubkeys.add(evt.pubkey);
                   collected.push({ pubkey: evt.pubkey, psbtHex: content.psbt_hex });
                   setResponders([...collected]);
-                  setLiveSignedCount(request.signed_count + collected.length);
+                  // Count UNIQUE signers — the initiator appears both in
+                  // signed_count and as a 9801 response, so dedupe by pubkey
+                  const unique = new Set(collected.map((c) => c.pubkey));
+                  if (request.signed_count > 0) unique.add(request.senderPubkey);
+                  setLiveSignedCount(unique.size);
                 }
               } catch { /* malformed */ }
             }
           } catch { /* ignore */ }
         };
       }
-
-      liveCleanupRef.current = () => {
-        mounted = false;
-        for (const conn of connections) {
-          try {
-            if (conn.ws.readyState === WebSocket.OPEN) {
-              conn.ws.send(JSON.stringify(['CLOSE', conn.subId]));
-            }
-            conn.ws.close();
-          } catch { /* ignore */ }
-        }
-        connections.length = 0;
-      };
     })();
 
     return () => { liveCleanupRef.current?.(); };
@@ -1444,20 +1463,10 @@ function RequestDetail({
   async function handleSign() {
     setSigning(true);
     try {
-      let signedPsbt = request.psbt_hex;
-
-      const partialResp = await chrome.runtime.sendMessage({
-        type: 'btc:signPsbtPartial',
-        payload: { psbtHex: request.psbt_hex },
-        id: createMessageId(),
-      });
-
-      if (partialResp.error) {
-        throw new Error(partialResp.error);
-      }
-      if (partialResp.result?.psbtHex) {
-        signedPsbt = partialResp.result.psbtHex as string;
-      }
+      // Vault first, then the user's NIP-07 signer (signSchnorr), then any
+      // injected bitcoin provider — same UX as signing a Nostr event
+      const { partialSignPsbt } = await import('@/lib/bitcoin/psbt-partial-sign');
+      const { psbtHex: signedPsbt } = await partialSignPsbt(request.psbt_hex, publicKey);
 
       const responseEvent = {
         kind: 9801,

@@ -15,6 +15,7 @@ import { type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
 import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
+import { toast } from 'sonner';
 
 interface AuthState {
   publicKey: string;
@@ -137,9 +138,14 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }, []);
 
   async function preloadAppData() {
-    import('@/lib/nostr/cache').then(({ fullDiscoverySync }) => {
-      fullDiscoverySync('7d', { maxUsers: 2000 }).catch(() => {});
-    });
+    // Defer discovery sync so it doesn't compete with first paint and the
+    // initial feed/profile fetches. fullDiscoverySync self-gates (skips if a
+    // sync ran recently or is already in flight).
+    setTimeout(() => {
+      import('@/lib/nostr/cache').then(({ fullDiscoverySync }) => {
+        fullDiscoverySync('7d', { maxUsers: 2000 }).catch(() => {});
+      });
+    }, 8000);
   }
 
   async function restoreWalletsFromRelay(pubkey: string, syncKey: string) {
@@ -347,34 +353,48 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }
 
   async function publishFollowList(pubkeys: string[]) {
-    try {
-      await chrome.storage.local.set({ [`following_${publicKey}`]: pubkeys });
-      const unsigned = createFollowListEvent(pubkeys, publicKey);
-      const response = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event: unsigned },
-        id: createMessageId(),
-      });
-      if (!response.error && response.result) {
-        await publishEvent(response.result);
-      }
-    } catch (err) {
-      console.error('Failed to publish follow list:', err);
+    await chrome.storage.local.set({ [`following_${publicKey}`]: pubkeys });
+    const unsigned = createFollowListEvent(pubkeys, publicKey);
+    const response = await chrome.runtime.sendMessage({
+      type: 'nip07:signEvent',
+      payload: { event: unsigned },
+      id: createMessageId(),
+    });
+    if (response.error || !response.result) {
+      throw new Error(response.error || 'Failed to sign follow list');
     }
+    await publishEvent(response.result);
   }
 
   const handleFollow = useCallback(async (pubkey: string) => {
+    const previous = new Set(followingRef.current);
     const newFollowing = new Set(followingRef.current);
     newFollowing.add(pubkey);
     setFollowing(newFollowing);
-    await publishFollowList(Array.from(newFollowing));
+    try {
+      await publishFollowList(Array.from(newFollowing));
+    } catch (err) {
+      // Roll back the optimistic update so the UI doesn't lie
+      console.error('Failed to publish follow list:', err);
+      setFollowing(previous);
+      chrome.storage.local.set({ [`following_${publicKey}`]: Array.from(previous) }).catch(() => {});
+      toast.error('Failed to update follow list');
+    }
   }, [publicKey]);
 
   const handleUnfollow = useCallback(async (pubkey: string) => {
+    const previous = new Set(followingRef.current);
     const newFollowing = new Set(followingRef.current);
     newFollowing.delete(pubkey);
     setFollowing(newFollowing);
-    await publishFollowList(Array.from(newFollowing));
+    try {
+      await publishFollowList(Array.from(newFollowing));
+    } catch (err) {
+      console.error('Failed to publish follow list:', err);
+      setFollowing(previous);
+      chrome.storage.local.set({ [`following_${publicKey}`]: Array.from(previous) }).catch(() => {});
+      toast.error('Failed to update follow list');
+    }
   }, [publicKey]);
 
   async function handleSwitchAccount(index: number) {
@@ -521,7 +541,19 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       setVaultPassword(entered);
     }
 
-    const updated = await upgradeAccountWithNsec(pw, publicKey, nsec);
+    // If the nsec matches the active account, bind it in place. Otherwise
+    // add it as a separate vault account — PSBT signing tries every vault
+    // key, so a co-signer key doesn't need to be the active account.
+    let updated: Account[];
+    try {
+      updated = await upgradeAccountWithNsec(pw, publicKey, nsec);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('does not match')) {
+        ({ accounts: updated } = await addNsecAccountToVault(pw, nsec));
+      } else {
+        throw err;
+      }
+    }
     setAccounts(updated);
     await chrome.storage.local.set({ cached_accounts: updated });
     await chrome.runtime.sendMessage({

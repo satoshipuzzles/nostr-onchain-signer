@@ -2,8 +2,10 @@
  * PSBT build + partial sign for NDTM Tapscript multisig wallets.
  */
 
-import { Transaction, p2tr, p2tr_ms } from '@scure/btc-signer';
+import { Transaction, p2tr, p2tr_ms, Script, SigHash } from '@scure/btc-signer';
+import { tapLeafHash } from '@scure/btc-signer/payment';
 import { hex } from '@scure/base';
+import { concatBytes } from '@noble/hashes/utils';
 import { fetchUTXOs, fetchFeeEstimates } from './mempool';
 import type { MultisigWallet } from './multisig';
 import type { PsbtResult } from './psbt-builder';
@@ -127,6 +129,112 @@ export function signMultisigPsbtPartial(psbtHex: string, privateKeyHex: string):
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
   tx.sign(hex.decode(privateKeyHex));
   return hex.encode(tx.toPSBT());
+}
+
+/**
+ * Try every provided private key against the PSBT and add all signatures
+ * that fit. Lets a vault holding multiple accounts sign regardless of which
+ * account is currently active.
+ */
+export function signMultisigPsbtWithKeys(
+  psbtHex: string,
+  privateKeysHex: string[],
+): { psbtHex: string; signedCount: number } {
+  const tx = Transaction.fromPSBT(hex.decode(psbtHex));
+  let signedCount = 0;
+  let lastError: unknown = null;
+
+  for (const keyHex of privateKeysHex) {
+    try {
+      tx.sign(hex.decode(keyHex));
+      signedCount++;
+    } catch (err) {
+      // Key doesn't match any input — try the next one
+      lastError = err;
+    }
+  }
+
+  if (signedCount === 0) {
+    const msg = lastError instanceof Error ? lastError.message : 'no matching key';
+    throw new Error(
+      `None of your vault keys can sign this PSBT (${msg}). ` +
+      'Make sure the co-signer account (with its nsec) is imported in this vault.',
+    );
+  }
+
+  return { psbtHex: hex.encode(tx.toPSBT()), signedCount };
+}
+
+/**
+ * Partial-sign a Tapscript multisig PSBT using an EXTERNAL Schnorr signer
+ * (NIP-07 `signSchnorr`, e.g. Alby / our extension) — the private key never
+ * touches this app. Mirrors what scure's `tx.sign` does for tapLeafScript
+ * inputs, but delegates the actual Schnorr signature to the signer callback.
+ *
+ * This makes signing a PSBT work exactly like signing a Nostr event: the
+ * user's existing signer produces a signature for a 32-byte hash.
+ */
+export async function signMultisigPsbtViaSchnorr(
+  psbtHex: string,
+  signerPubkeyHex: string,
+  signSchnorr: (hashHex: string) => Promise<string>,
+): Promise<{ psbtHex: string; signedCount: number }> {
+  const tx = Transaction.fromPSBT(hex.decode(psbtHex));
+  const signerPub = hex.decode(signerPubkeyHex);
+  let signedCount = 0;
+
+  // Preimage needs every input's prevout script + amount
+  const prevOutScripts: Uint8Array[] = [];
+  const amounts: bigint[] = [];
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const wu = tx.getInput(i).witnessUtxo;
+    if (!wu) throw new Error('PSBT input missing witnessUtxo — cannot compute sighash');
+    prevOutScripts.push(wu.script as Uint8Array);
+    amounts.push(wu.amount as bigint);
+  }
+
+  for (let idx = 0; idx < tx.inputsLength; idx++) {
+    const input = tx.getInput(idx);
+    if (!input.tapLeafScript) continue;
+    const sighash = input.sighashType ?? SigHash.DEFAULT;
+
+    for (const [, scriptWithVer] of input.tapLeafScript) {
+      const script = scriptWithVer.subarray(0, -1);
+      const ver = scriptWithVer[scriptWithVer.length - 1];
+
+      // Only sign leaves that actually contain this signer's x-only pubkey
+      const decoded = Script.decode(script);
+      const hasKey = decoded.some(
+        (op) => op instanceof Uint8Array && op.length === 32 &&
+          hex.encode(op) === signerPubkeyHex.toLowerCase(),
+      );
+      if (!hasKey) continue;
+
+      const msgHash = tx.preimageWitnessV1(
+        idx, prevOutScripts, sighash, amounts, undefined, script, ver,
+      );
+      const sigHex = await signSchnorr(hex.encode(msgHash));
+      const sigBytes = hex.decode(sigHex.replace(/^0x/, '').trim());
+      if (sigBytes.length !== 64) {
+        throw new Error('Signer returned an invalid Schnorr signature');
+      }
+      const sig = sighash !== SigHash.DEFAULT
+        ? concatBytes(sigBytes, new Uint8Array([sighash]))
+        : sigBytes;
+
+      const leafHash = tapLeafHash(script, ver);
+      tx.updateInput(idx, { tapScriptSig: [[{ pubKey: signerPub, leafHash }, sig]] }, true);
+      signedCount++;
+    }
+  }
+
+  if (signedCount === 0) {
+    throw new Error(
+      'Your connected signer\'s key is not one of the co-signers on this transaction.',
+    );
+  }
+
+  return { psbtHex: hex.encode(tx.toPSBT()), signedCount };
 }
 
 export function isRealPsbtHex(value: string): boolean {

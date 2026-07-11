@@ -30,10 +30,14 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   const [syncProgress, setSyncProgress] = useState('');
   const [activityWindow, setActivityWindow] = useState<ActivityWindow>('7d');
   const [showFilters, setShowFilters] = useState(false);
+  const [syncError, setSyncError] = useState(false);
   const globalSearchTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     init();
+    return () => {
+      if (globalSearchTimer.current) clearTimeout(globalSearchTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -63,13 +67,15 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
     setProfiles(cached.filter((p) => p.profile.pubkey !== publicKey));
   }
 
-  async function syncFromRelays() {
+  async function syncFromRelays(force = false) {
     setSyncing(true);
     setSyncProgress('Starting discovery...');
+    setSyncError(false);
 
     try {
       const results = await fullDiscoverySync(activityWindow, {
         maxUsers: 2000,
+        force,
         onProgress: (phase, count) => {
           setSyncProgress(`${phase} (${count})`);
         },
@@ -80,6 +86,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
       setCacheStats(stats);
     } catch (err) {
       console.error('Discovery sync failed:', err);
+      setSyncError(true);
     } finally {
       setSyncing(false);
       setSyncProgress('');
@@ -194,7 +201,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
           <Filter className="w-4 h-4" />
         </button>
         <button
-          onClick={syncFromRelays}
+          onClick={() => syncFromRelays(true)}
           disabled={syncing}
           className="btn-icon"
           title="Full sync from relays"
@@ -281,10 +288,12 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
           <div className="flex flex-col items-center justify-center py-12">
             <Globe className="w-8 h-8 text-gray-600 mb-2" />
             <p className="text-sm text-gray-500">
-              {searchQuery ? 'No results. Press Enter for global search.' : 'No active users found.'}
+              {syncError
+                ? 'Sync failed — check your connection and try again.'
+                : searchQuery ? 'No results. Press Enter for global search.' : 'No active users found.'}
             </p>
-            <button onClick={syncFromRelays} className="text-xs text-bitcoin mt-2 hover:underline">
-              Sync from relays
+            <button onClick={() => syncFromRelays(true)} className="text-xs text-bitcoin mt-2 hover:underline">
+              {syncError ? 'Retry sync' : 'Sync from relays'}
             </button>
           </div>
         ) : (

@@ -98,9 +98,12 @@ export function subscribeSigningInbox(
   const seenIds = new Set<string>();
   let eoseCount = 0;
   let eoseFired = false;
+  let aborted = false;
   const totalRelays = relayUrls.length;
 
   loadInboxState().then((state) => {
+    // Cleanup may have run while loading state — don't open sockets then
+    if (aborted) return;
     for (const url of relayUrls) {
       const subId = `inbox_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -168,6 +171,7 @@ export function subscribeSigningInbox(
   });
 
   return () => {
+    aborted = true;
     for (const conn of connections) {
       try {
         if (conn.ws.readyState === WebSocket.OPEN) {

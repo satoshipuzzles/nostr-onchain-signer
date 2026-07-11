@@ -15,6 +15,8 @@ interface Props {
   followingPubkeys: Set<string>;
   onBack?: () => void;
   onViewProfile?: (pubkey: string) => void;
+  /** Bump to re-fetch the feed without remounting the component */
+  refreshToken?: number;
 }
 
 const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
@@ -33,7 +35,7 @@ export interface Engagement {
   zapSats: number;
 }
 
-export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
+export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken }: Props) {
   const [activeMode, setActiveMode] = useState<FeedMode>('global');
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -49,6 +51,9 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
   const engagementCleanupRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const mutedRef = useRef<Set<string>>(new Set());
+  // Keep latest notes in a ref so pagination doesn't rely on a stale closure
+  const notesRef = useRef<FeedNote[]>([]);
+  notesRef.current = notes;
 
   useEffect(() => {
     loadMutedPubkeys().then((m) => { mutedRef.current = m; }).catch(() => {});
@@ -102,8 +107,9 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
       filter.kind = kindSubmitted;
     }
 
-    if (append && notes.length > 0) {
-      const oldest = Math.min(...notes.map((n) => n.created_at));
+    const currentNotes = notesRef.current;
+    if (append && currentNotes.length > 0) {
+      const oldest = Math.min(...currentNotes.map((n) => n.created_at));
       filter.until = oldest - 1;
     }
 
@@ -140,44 +146,72 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
 
   const profileFetchingRef = useRef<Set<string>>(new Set());
 
-  const resolveProfile = useCallback(async (pubkey: string) => {
-    if (profiles.has(pubkey) || profileFetchingRef.current.has(pubkey)) return;
+  const profilesRef = useRef<Map<string, ProfileMetadata>>(new Map());
+  profilesRef.current = profiles;
+  const pendingProfileRef = useRef<Set<string>>(new Set());
+  const profileFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Batches unknown pubkeys and resolves them in one relay query instead of
+  // opening a subscription per author.
+  const resolveProfile = useCallback((pubkey: string) => {
+    if (profilesRef.current.has(pubkey) || profileFetchingRef.current.has(pubkey)) return;
     profileFetchingRef.current.add(pubkey);
+    pendingProfileRef.current.add(pubkey);
 
-    const cached = await getCachedProfile(pubkey);
-    if (cached) {
-      setProfiles((prev) => {
-        const next = new Map(prev);
-        next.set(pubkey, cached);
-        return next;
-      });
-      return;
-    }
+    if (profileFlushTimerRef.current) return;
+    profileFlushTimerRef.current = setTimeout(async () => {
+      profileFlushTimerRef.current = null;
+      const batch = Array.from(pendingProfileRef.current);
+      pendingProfileRef.current.clear();
+      if (batch.length === 0) return;
 
-    // Fetch from relays if not in cache
-    const relayList = await loadRelayList();
-    const relays = getReadRelays(relayList);
-    const relayUrls = relays.length > 0
-      ? relays.slice(0, 3)
-      : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://purplepag.es'];
+      try {
+        // Serve cached profiles immediately, then fetch the rest in one query
+        const uncached: string[] = [];
+        const found = new Map<string, ProfileMetadata>();
+        await Promise.all(batch.map(async (pk) => {
+          const cached = await getCachedProfile(pk);
+          if (cached) found.set(pk, cached);
+          else uncached.push(pk);
+        }));
 
-    const resolved = await resolveProfiles([pubkey], relayUrls);
-    const profile = resolved.get(pubkey);
-    if (profile) {
-      setProfiles((prev) => {
-        const next = new Map(prev);
-        next.set(pubkey, profile);
-        return next;
-      });
-    }
-  }, [profiles]);
+        if (uncached.length > 0) {
+          const relayList = await loadRelayList();
+          const relays = getReadRelays(relayList);
+          const relayUrls = relays.length > 0
+            ? relays.slice(0, 3)
+            : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://purplepag.es'];
+          const resolved = await resolveProfiles(uncached, relayUrls);
+          for (const [pk, profile] of resolved) found.set(pk, profile);
+        }
+
+        if (found.size > 0) {
+          setProfiles((prev) => {
+            const next = new Map(prev);
+            for (const [pk, profile] of found) next.set(pk, profile);
+            return next;
+          });
+        }
+        // Allow retry for pubkeys that didn't resolve
+        for (const pk of batch) {
+          if (!found.has(pk)) profileFetchingRef.current.delete(pk);
+        }
+      } catch {
+        for (const pk of batch) profileFetchingRef.current.delete(pk);
+      }
+    }, 250);
+  }, []);
+
+  useEffect(() => () => {
+    if (profileFlushTimerRef.current) clearTimeout(profileFlushTimerRef.current);
+  }, []);
 
   useEffect(() => {
     loadFeed(activeMode);
     return () => {
       if (cleanupRef.current) cleanupRef.current();
     };
-  }, [activeMode, hashtagSubmitted, kindSubmitted, followingKey, loadFeed]);
+  }, [activeMode, hashtagSubmitted, kindSubmitted, followingKey, loadFeed, refreshToken]);
 
   // Fetch engagement after initial feed load settles
   useEffect(() => {
@@ -193,6 +227,17 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
     for (const id of noteIds) {
       engMap.set(id, { replies: 0, reposts: 0, reactions: 0, zapSats: 0 });
     }
+
+    // Throttle engagement re-renders: relays can stream hundreds of
+    // reactions in a burst, and re-rendering the feed per event is slow.
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        setEngagement(new Map(engMap));
+      }, 300);
+    };
 
     async function fetchEngagement() {
       const relayList = await loadRelayList();
@@ -242,7 +287,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
             entry.zapSats += amount;
           }
 
-          setEngagement(new Map(engMap));
+          scheduleFlush();
         },
       );
 
@@ -252,6 +297,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
     fetchEngagement();
 
     return () => {
+      if (flushTimer) clearTimeout(flushTimer);
       if (engagementCleanupRef.current) {
         engagementCleanupRef.current();
         engagementCleanupRef.current = null;

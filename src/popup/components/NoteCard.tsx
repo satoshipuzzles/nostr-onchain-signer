@@ -1,4 +1,5 @@
-import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react';
+import { useState, useMemo, useRef, useEffect, memo, type ReactNode } from 'react';
+import { toast } from 'sonner';
 import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { safeImageUrl } from '@/lib/utils';
@@ -127,7 +128,9 @@ interface ReactionGroup {
   pubkeys: string[];
 }
 
-export function NoteCard({ note, profile, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
+// Memoized: the feed re-renders frequently as engagement counts stream in,
+// and re-rendering every card each time is the main scroll-jank source
+export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
   const { publicKey } = useAuth();
   const { openProfile } = useProfilePopup();
   const viewProfile = (pubkey: string) => {
@@ -372,6 +375,7 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
       setTotalReactions((prev) => prev + 1);
     } catch (err) {
       console.error('Failed to like:', err);
+      toast.error('Failed to publish reaction');
     } finally {
       setActionPending(null);
     }
@@ -405,6 +409,7 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
       setBoosted(true);
     } catch (err) {
       console.error('Failed to repost:', err);
+      toast.error('Failed to publish repost');
     } finally {
       setActionPending(null);
       setShowBoostMenu(false);
@@ -831,4 +836,4 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
       )}
     </div>
   );
-}
+});

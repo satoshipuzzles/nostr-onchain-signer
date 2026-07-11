@@ -134,12 +134,12 @@ export function NoteThread({ note, profiles, onClose, onViewProfile }: Props) {
     <div
       ref={overlayRef}
       onClick={handleOverlayClick}
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm overflow-y-auto"
+      className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm overflow-y-auto"
     >
       <div className="max-w-lg mx-auto p-4 pt-8 pb-24 min-h-full">
         <button
           onClick={onClose}
-          className="fixed top-4 right-4 z-50 p-2 rounded-full bg-surface-800 text-gray-400 hover:text-white hover:bg-surface-700 transition-colors"
+          className="fixed top-4 right-4 z-[71] p-2 rounded-full bg-surface-800 text-gray-400 hover:text-white hover:bg-surface-700 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>

@@ -12,7 +12,11 @@ export function ProfileViewWrapper() {
   const { pubkey: routePubkey } = useParams<{ pubkey: string }>();
   const { viewingUser, following, handleFollow, handleUnfollow, setViewingUser } = useAuth();
   const { openProfile } = useProfilePopup();
-  const [loading, setLoading] = useState(false);
+  // Start in loading state when we still need to resolve the routed pubkey,
+  // otherwise the first render (before the effect runs) would redirect away
+  const [loading, setLoading] = useState(
+    () => !!routePubkey && viewingUser?.pubkey !== routePubkey,
+  );
 
   useEffect(() => {
     if (!routePubkey || viewingUser?.pubkey === routePubkey) return;
@@ -37,22 +41,19 @@ export function ProfileViewWrapper() {
 
   const user = viewingUser?.pubkey === routePubkey ? viewingUser : null;
 
-  if (loading && !user) {
+  // Redirect as an effect, never during render
+  useEffect(() => {
+    if (loading || user) return;
+    if (routePubkey) openProfile(routePubkey);
+    navigate('/discover');
+  }, [loading, user, routePubkey]);
+
+  if (!user) {
     return (
       <div className="h-full flex items-center justify-center">
         <Loader2 className="w-6 h-6 animate-spin text-bitcoin" />
       </div>
     );
-  }
-
-  if (!user) {
-    if (routePubkey) {
-      openProfile(routePubkey);
-      navigate('/discover');
-    } else {
-      navigate('/discover');
-    }
-    return null;
   }
 
   return (

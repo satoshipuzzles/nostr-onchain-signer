@@ -12,6 +12,11 @@ import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { safeImageUrl } from '@/lib/utils';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { useContext } from 'react';
+import { NoteCard } from './NoteCard';
+import { NoteThread } from './NoteThread';
+
+// In-memory cache so reopening a profile shows notes instantly
+const notesCache = new Map<string, FeedNote[]>();
 
 interface Props {
   pubkey: string;
@@ -37,6 +42,8 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   const [loadingNotes, setLoadingNotes] = useState(true);
   const [copied, setCopied] = useState('');
   const [muted, setMuted] = useState(false);
+  const [followBusy, setFollowBusy] = useState(false);
+  const [threadNote, setThreadNote] = useState<FeedNote | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const npub = pubkeyToNpub(pubkey);
@@ -150,8 +157,11 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   useEffect(() => {
     cleanupRef.current?.();
     cleanupRef.current = null;
-    setNotes([]);
-    setLoadingNotes(true);
+
+    // Show cached notes instantly while fresh ones stream in
+    const cached = notesCache.get(pubkey);
+    setNotes(cached ?? []);
+    setLoadingNotes(!cached);
 
     async function loadNotes() {
       const relayList = await loadRelayList();
@@ -160,14 +170,24 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
         ? relays.slice(0, 3)
         : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
 
-      const collected: FeedNote[] = [];
+      const collected = new Map<string, FeedNote>();
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+      // Stream notes in as they arrive instead of waiting for EOSE
+      function flush() {
+        const sorted = Array.from(collected.values()).sort((a, b) => b.created_at - a.created_at);
+        notesCache.set(pubkey, sorted);
+        setNotes(sorted);
+        setLoadingNotes(false);
+      }
+
       const cleanup = subscribeEvents(
         relayUrls,
         { kinds: [1], authors: [pubkey], limit: 30 },
         (event: NostrEvent) => {
           const hasETag = event.tags.some((t) => t[0] === 'e');
-          if (!hasETag) {
-            collected.push({
+          if (!hasETag && !collected.has(event.id)) {
+            collected.set(event.id, {
               id: event.id,
               pubkey: event.pubkey,
               content: event.content,
@@ -175,15 +195,18 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
               tags: event.tags,
               kind: event.kind,
             });
+            if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 250);
           }
         },
         () => {
-          collected.sort((a, b) => b.created_at - a.created_at);
-          setNotes([...collected]);
-          setLoadingNotes(false);
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          flush();
         },
       );
-      cleanupRef.current = cleanup;
+      cleanupRef.current = () => {
+        if (flushTimer) clearTimeout(flushTimer);
+        cleanup();
+      };
     }
 
     loadNotes();
@@ -385,14 +408,22 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
             <div className="flex gap-2 mb-2">
               {auth && !isSelf && (
                 <button
-                  onClick={() => isFollowing ? auth.handleUnfollow(pubkey) : auth.handleFollow(pubkey)}
-                  className={`flex-1 py-2 rounded-lg font-medium text-xs transition-colors ${
+                  disabled={followBusy}
+                  onClick={async () => {
+                    setFollowBusy(true);
+                    try {
+                      await (isFollowing ? auth.handleUnfollow(pubkey) : auth.handleFollow(pubkey));
+                    } finally {
+                      setFollowBusy(false);
+                    }
+                  }}
+                  className={`flex-1 py-2 rounded-lg font-medium text-xs transition-colors disabled:opacity-60 ${
                     isFollowing
                       ? 'bg-surface-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
                       : 'btn-nostr'
                   }`}
                 >
-                  {isFollowing ? 'Unfollow' : 'Follow'}
+                  {followBusy ? '…' : isFollowing ? 'Unfollow' : 'Follow'}
                 </button>
               )}
               <a
@@ -471,10 +502,12 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
               <div className="divide-y divide-surface-200/10">
                 {notes.map((note) => (
                   <div key={note.id} className="px-4 py-3">
-                    <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words">
-                      {note.content.length > 280 ? note.content.slice(0, 280) + '...' : note.content}
-                    </p>
-                    <p className="text-[10px] text-gray-600 mt-1.5">{formatTimeAgo(note.created_at)}</p>
+                    <NoteCard
+                      note={note}
+                      profile={profile}
+                      onSelectNote={(n) => setThreadNote(n)}
+                      compact
+                    />
                   </div>
                 ))}
               </div>
@@ -482,6 +515,15 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Thread modal — full note with replies, react/zap/comment */}
+      {threadNote && (
+        <NoteThread
+          note={threadNote}
+          profiles={new Map(profile ? [[pubkey, profile]] : [])}
+          onClose={() => setThreadNote(null)}
+        />
+      )}
     </div>
   );
 }

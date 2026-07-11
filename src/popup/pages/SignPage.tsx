@@ -275,35 +275,12 @@ export function SignPage() {
         setUserPubkey(pubkey);
       }
 
-      // Partial-sign the PSBT with our Bitcoin key
-      let signedPsbt = request.psbt_hex;
-      let didSign = false;
-
-      const bitcoin = (window as { bitcoin?: { signPsbtPartial?: (h: string) => Promise<{ psbtHex?: string } | string> } }).bitcoin;
-      if (bitcoin?.signPsbtPartial) {
-        const result = await bitcoin.signPsbtPartial(request.psbt_hex);
-        signedPsbt = typeof result === 'string' ? result : (result.psbtHex || signedPsbt);
-        didSign = signedPsbt !== request.psbt_hex;
-      }
-
-      if (!didSign && typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-        const partialResp = await chrome.runtime.sendMessage({
-          type: 'btc:signPsbtPartial',
-          payload: { psbtHex: request.psbt_hex },
-          id: `${Date.now()}_sign`,
-        });
-        if (partialResp?.error) throw new Error(partialResp.error);
-        if (partialResp?.result?.psbtHex) {
-          signedPsbt = partialResp.result.psbtHex;
-          didSign = true;
-        }
-      }
-
-      if (!didSign) {
-        throw new Error(
-          'PSBT signing needs your key. Log into the Nostr Onchain app (with your nsec imported) or use the extension with your vault unlocked, then retry.',
-        );
-      }
+      // Partial-sign the PSBT: app vault first, then the user's existing
+      // NIP-07 signer via signSchnorr (works like signing a Nostr event —
+      // no nsec needed), then any injected window.bitcoin provider.
+      const { partialSignPsbt } = await import('@/lib/bitcoin/psbt-partial-sign');
+      const signResult = await partialSignPsbt(request.psbt_hex, pubkey);
+      const signedPsbt = signResult.psbtHex;
 
       const responseEvent = {
         kind: CUSTOM_KIND.SIGNING_RESPONSE,

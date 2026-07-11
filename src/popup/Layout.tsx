@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
@@ -14,9 +15,18 @@ export function Layout() {
           <Sidebar />
         </aside>
 
-        {/* Main content — single scroll container */}
+        {/* Main content — single scroll container. Suspense here keeps the
+            nav/shell visible while a lazy-loaded page chunk downloads */}
         <main className="flex-1 min-w-0 min-h-0 overflow-y-auto pb-20 md:pb-0">
-          <Outlet />
+          <Suspense
+            fallback={
+              <div className="h-full min-h-[40vh] flex items-center justify-center">
+                <div className="animate-pulse text-gray-500 text-sm">Loading…</div>
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
 
         {/* Mobile bottom nav */}

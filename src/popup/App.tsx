@@ -1,37 +1,49 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, Outlet, useSearchParams } from 'react-router-dom';
 import { Landing } from './pages/Landing';
 import { Unlock } from './pages/Unlock';
 import { Setup } from './pages/Setup';
 import { Layout } from './Layout';
 import { Home } from './pages/Home';
-import { Wallets } from './pages/Wallets';
-import { Leaderboard } from './pages/Leaderboard';
 import { FeedPage } from './pages/FeedPage';
-import { Messages } from './pages/Messages';
-import { SigningInboxWrapper } from './pages/SigningInboxWrapper';
-import { DiscoverWrapper } from './pages/DiscoverWrapper';
-import { ProfileViewWrapper } from './pages/ProfileViewWrapper';
-import { SendTxWrapper } from './pages/SendTxWrapper';
-import { MultiSigWrapper } from './pages/MultiSigWrapper';
-import { MultisigVaultWrapper } from './pages/MultisigVaultWrapper';
-import { RequestSignatureWrapper } from './pages/RequestSignatureWrapper';
-import { WalletViewWrapper } from './pages/WalletViewWrapper';
-import { RelaySettingsWrapper } from './pages/RelaySettingsWrapper';
-import { EditProfileWrapper } from './pages/EditProfileWrapper';
-import { Settings } from './pages/Settings';
-import { ConnectedApps } from './pages/ConnectedApps';
-import { SignedEventsLog } from './pages/SignedEventsLog';
-import { SignedEventDetail } from './pages/SignedEventDetail';
-import { InvoicePage } from './pages/InvoicePage';
-import { SignPage } from './pages/SignPage';
 import { ApproveSign } from './pages/ApproveSign';
-import { SocialUnlocks } from './pages/SocialUnlocks';
-import { SocialUnlockPage } from './pages/SocialUnlockPage';
-import { LightOps } from './pages/LightOps';
-import { OnchainExplorer } from './pages/OnchainExplorer';
-import MoreMenu from './pages/MoreMenu';
 import { AuthProvider, useAuth } from './context/AuthContext';
+
+// Lazy-load everything off the critical path so the initial bundle only
+// carries the auth gate, layout, home, and feed
+const Wallets = lazy(() => import('./pages/Wallets').then((m) => ({ default: m.Wallets })));
+const Leaderboard = lazy(() => import('./pages/Leaderboard').then((m) => ({ default: m.Leaderboard })));
+const Messages = lazy(() => import('./pages/Messages').then((m) => ({ default: m.Messages })));
+const SigningInboxWrapper = lazy(() => import('./pages/SigningInboxWrapper').then((m) => ({ default: m.SigningInboxWrapper })));
+const DiscoverWrapper = lazy(() => import('./pages/DiscoverWrapper').then((m) => ({ default: m.DiscoverWrapper })));
+const ProfileViewWrapper = lazy(() => import('./pages/ProfileViewWrapper').then((m) => ({ default: m.ProfileViewWrapper })));
+const SendTxWrapper = lazy(() => import('./pages/SendTxWrapper').then((m) => ({ default: m.SendTxWrapper })));
+const MultiSigWrapper = lazy(() => import('./pages/MultiSigWrapper').then((m) => ({ default: m.MultiSigWrapper })));
+const MultisigVaultWrapper = lazy(() => import('./pages/MultisigVaultWrapper').then((m) => ({ default: m.MultisigVaultWrapper })));
+const RequestSignatureWrapper = lazy(() => import('./pages/RequestSignatureWrapper').then((m) => ({ default: m.RequestSignatureWrapper })));
+const WalletViewWrapper = lazy(() => import('./pages/WalletViewWrapper').then((m) => ({ default: m.WalletViewWrapper })));
+const RelaySettingsWrapper = lazy(() => import('./pages/RelaySettingsWrapper').then((m) => ({ default: m.RelaySettingsWrapper })));
+const EditProfileWrapper = lazy(() => import('./pages/EditProfileWrapper').then((m) => ({ default: m.EditProfileWrapper })));
+const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
+const ConnectedApps = lazy(() => import('./pages/ConnectedApps').then((m) => ({ default: m.ConnectedApps })));
+const SignedEventsLog = lazy(() => import('./pages/SignedEventsLog').then((m) => ({ default: m.SignedEventsLog })));
+const SignedEventDetail = lazy(() => import('./pages/SignedEventDetail').then((m) => ({ default: m.SignedEventDetail })));
+const InvoicePage = lazy(() => import('./pages/InvoicePage').then((m) => ({ default: m.InvoicePage })));
+const SignPage = lazy(() => import('./pages/SignPage').then((m) => ({ default: m.SignPage })));
+const SocialUnlocks = lazy(() => import('./pages/SocialUnlocks').then((m) => ({ default: m.SocialUnlocks })));
+const SocialUnlockPage = lazy(() => import('./pages/SocialUnlockPage').then((m) => ({ default: m.SocialUnlockPage })));
+const LightOps = lazy(() => import('./pages/LightOps').then((m) => ({ default: m.LightOps })));
+const OnchainExplorer = lazy(() => import('./pages/OnchainExplorer').then((m) => ({ default: m.OnchainExplorer })));
+const MoreMenu = lazy(() => import('./pages/MoreMenu'));
+const OtherStuff = lazy(() => import('./pages/OtherStuff'));
+
+function PageFallback() {
+  return (
+    <div className="h-full min-h-[40vh] flex items-center justify-center">
+      <div className="animate-pulse text-gray-500 text-sm">Loading…</div>
+    </div>
+  );
+}
 import { ProfilePopupProvider } from './context/ProfilePopupContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
@@ -80,7 +92,9 @@ function AuthGate({ status, credentials, onGetStarted, onUnlocked, onCreated, on
     <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
       <ProfilePopupProvider>
         <SigningOverlay />
-        <Outlet />
+        <Suspense fallback={<PageFallback />}>
+          <Outlet />
+        </Suspense>
       </ProfilePopupProvider>
     </AuthProvider>
   );
@@ -154,7 +168,7 @@ export function App() {
         path="/sign/:roundId"
         element={
           <ProfilePopupProvider>
-            <SignPage />
+            <Suspense fallback={<PageFallback />}><SignPage /></Suspense>
           </ProfilePopupProvider>
         }
       />
@@ -162,7 +176,7 @@ export function App() {
         path="/unlock/:eventId"
         element={
           <ProfilePopupProvider>
-            <SocialUnlockPage />
+            <Suspense fallback={<PageFallback />}><SocialUnlockPage /></Suspense>
           </ProfilePopupProvider>
         }
       />
@@ -170,7 +184,7 @@ export function App() {
         path="/invoice/:eventId"
         element={
           <ProfilePopupProvider>
-            <InvoicePage />
+            <Suspense fallback={<PageFallback />}><InvoicePage /></Suspense>
           </ProfilePopupProvider>
         }
       />
@@ -200,6 +214,7 @@ export function App() {
           <Route path="settings/events" element={<SignedEventsLog />} />
           <Route path="settings/events/:eventId" element={<SignedEventDetail />} />
           <Route path="unlocks" element={<SocialUnlocks />} />
+          <Route path="other" element={<OtherStuff />} />
           <Route path="more" element={<MoreMenu />} />
         </Route>
       </Route>

@@ -245,18 +245,18 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   // Resolve zapper profiles once loaded
   useEffect(() => {
     async function resolve() {
-      let changed = false;
-      const updated = [...zaps];
-      for (const z of updated) {
-        if (z.zapperPubkey && !z.zapperProfile) {
-          const p = await getCachedProfile(z.zapperPubkey);
-          if (p) {
-            z.zapperProfile = p;
-            changed = true;
-          }
-        }
-      }
-      if (changed) setZaps([...updated]);
+      const lookups = await Promise.all(
+        zaps
+          .filter((z) => z.zapperPubkey && !z.zapperProfile)
+          .map(async (z) => ({ pubkey: z.zapperPubkey!, profile: await getCachedProfile(z.zapperPubkey!) })),
+      );
+      const found = new Map(lookups.filter((l) => l.profile).map((l) => [l.pubkey, l.profile!]));
+      if (found.size === 0) return;
+      setZaps((prev) => prev.map((z) =>
+        z.zapperPubkey && !z.zapperProfile && found.has(z.zapperPubkey)
+          ? { ...z, zapperProfile: found.get(z.zapperPubkey) }
+          : z,
+      ));
     }
     if (zaps.length > 0) resolve();
   }, [zaps.length]);

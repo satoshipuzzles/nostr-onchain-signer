@@ -23,7 +23,8 @@ import { createMessageId } from '@/shared/messages';
 import { npubToPubkey, pubkeyToNpub, isValidHexPubkey } from '@/lib/nostr/keys';
 import { resolveNip05 } from '@/lib/nostr/nip05';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
+import { PUBLIC_READ_RELAYS } from '@/lib/nostr/public-relay';
 import { safeImageUrl } from '@/lib/utils';
 import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { SignedEvent } from '@/lib/nostr/events';
@@ -104,7 +105,9 @@ export function SocialUnlocks() {
 
       const relayList = await loadRelayList();
       const readRelays = getReadRelays(relayList);
-      const items = await fetchSocialUnlocks(readRelays, publicKey);
+      // Query broadly — unlocks may have been published to public relays
+      const relays = [...new Set([...readRelays, ...PUBLIC_READ_RELAYS])].slice(0, 6);
+      const items = await fetchSocialUnlocks(relays, publicKey);
 
       // Merge: keep relay items as source of truth, but preserve any
       // locally-created items that haven't propagated yet.
@@ -1308,16 +1311,28 @@ function WildView({ publicKey, onBack, onSelectUnlock }: WildViewProps) {
   async function fetchWild() {
     setLoading(true);
     try {
-      const relayList = await loadRelayList();
-      const readRelays = getReadRelays(relayList);
-      const items = await fetchWildUnlocks(readRelays, activeTag || undefined);
+      // Union of the user's read relays and well-known public relays —
+      // unlocks are published broadly, so query broadly too
+      let readRelays: string[] = [];
+      try {
+        const relayList = await loadRelayList();
+        readRelays = getReadRelays(relayList);
+      } catch { /* use public relays only */ }
+      const relays = [...new Set([...readRelays, ...PUBLIC_READ_RELAYS])].slice(0, 6);
+
+      const items = await fetchWildUnlocks(relays, activeTag || undefined);
       setWildUnlocks(items);
 
-      for (const item of items.slice(0, 20)) {
-        const profile = await getCachedProfile(item.pubkey);
-        if (profile) {
-          setProfiles((prev) => ({ ...prev, [item.pubkey]: profile }));
-        }
+      // Batch-resolve creator profiles (fetches missing ones from relays)
+      const pubkeys = [...new Set(items.map((i) => i.pubkey))];
+      if (pubkeys.length > 0) {
+        resolveProfiles(pubkeys, PUBLIC_READ_RELAYS.slice(0, 3)).then((resolved) => {
+          setProfiles((prev) => {
+            const next = { ...prev };
+            resolved.forEach((p, pk) => { next[pk] = p; });
+            return next;
+          });
+        }).catch(() => {});
       }
     } catch (err) {
       console.error('Failed to fetch wild unlocks:', err);
@@ -1471,8 +1486,8 @@ async function fetchWildUnlocks(relayUrls: string[], hashtag?: string): Promise<
       resolve(Array.from(unlockMap.values()).sort((a, b) => b.createdAt - a.createdAt));
     }
 
-    const timeout = setTimeout(finalize, 12000);
-    const relays = relayUrls.slice(0, 4);
+    const timeout = setTimeout(finalize, 6000);
+    const relays = relayUrls.slice(0, 6);
 
     for (const url of relays) {
       let ws: WebSocket;
@@ -1572,9 +1587,9 @@ async function fetchSocialUnlocks(relayUrls: string[], userPubkey: string): Prom
       resolve(items);
     }
 
-    const timeout = setTimeout(finalize, 15000);
+    const timeout = setTimeout(finalize, 7000);
 
-    for (const url of relayUrls.slice(0, 4)) {
+    for (const url of relayUrls.slice(0, 6)) {
       let ws: WebSocket;
       try {
         ws = new WebSocket(url);

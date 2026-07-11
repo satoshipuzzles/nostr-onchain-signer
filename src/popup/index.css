@@ -39,6 +39,14 @@
     font-size: 16px !important; /* Prevents iOS zoom on focus */
   }
 
+  /* Elements explicitly marked selectable (DM bubbles, addresses, code) —
+     re-enable text selection AND iOS long-press copy menu */
+  .select-text, .select-text *, .select-all, code, pre {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    -webkit-touch-callout: default !important;
+  }
+
   /* Dark scrollbars */
   ::-webkit-scrollbar {
     width: 6px;

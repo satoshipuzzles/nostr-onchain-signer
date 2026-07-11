@@ -351,19 +351,25 @@ async function handleMessage(
     }
 
     case 'btc:signPsbtPartial': {
-      const key = await getActiveKey();
-      if (!key) return { id, error: 'Vault is locked' };
-      if (!hasVaultPrivateKey(key)) {
+      const session = await getSession();
+      if (!session || session.length === 0) return { id, error: 'Vault is locked' };
+      const { psbtHex } = payload as { psbtHex: string };
+      if (!psbtHex) return { id, error: 'Missing psbtHex' };
+
+      // Try every full-key account, active one first — the co-signer key
+      // is often not the currently active account
+      const idx = await getActiveIndex();
+      const ordered = [session[Math.min(idx, session.length - 1)], ...session.filter((_, i) => i !== Math.min(idx, session.length - 1))];
+      const keys = ordered.filter(hasVaultPrivateKey).map((k) => k.privateKeyHex);
+      if (keys.length === 0) {
         return {
           id,
           error: 'No private key in vault — import nsec or switch to a full-key account.',
         };
       }
-      const { psbtHex } = payload as { psbtHex: string };
-      if (!psbtHex) return { id, error: 'Missing psbtHex' };
       try {
-        const { signMultisigPsbtPartial } = await import('@/lib/bitcoin/multisig-psbt');
-        const signed = signMultisigPsbtPartial(psbtHex, key.privateKeyHex);
+        const { signMultisigPsbtWithKeys } = await import('@/lib/bitcoin/multisig-psbt');
+        const { psbtHex: signed } = signMultisigPsbtWithKeys(psbtHex, keys);
         return { id, result: { psbtHex: signed } };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Failed to partial-sign PSBT';

@@ -14,10 +14,10 @@ export function FeedPage() {
   return (
     <div className="relative">
       <Feed
-        key={refreshKey}
         publicKey={publicKey}
         followingPubkeys={following}
         onViewProfile={openProfile}
+        refreshToken={refreshKey}
       />
 
       {/* Compose overlay */}

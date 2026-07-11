@@ -183,9 +183,13 @@ export function Home() {
           <p className="text-[10px] text-gray-500 mt-1">Taproot wallet</p>
         </button>
 
-        <button
+        {/* div + role=button instead of <button> so the nested refresh button is valid HTML */}
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => navigate('/signing')}
-          className="card hover:border-nostr/30 transition-colors text-left relative"
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/signing'); } }}
+          className="card hover:border-nostr/30 transition-colors text-left relative cursor-pointer"
         >
           <div className="flex items-center gap-2 mb-2">
             <div className="w-8 h-8 rounded-lg bg-nostr/15 flex items-center justify-center">
@@ -202,7 +206,7 @@ export function Home() {
           </div>
           <p className="text-xl font-bold text-white">{pendingSignatures}</p>
           <p className="text-[10px] text-gray-500 mt-1">Signing rounds</p>
-        </button>
+        </div>
 
         <button
           onClick={() => navigate('/wallets')}

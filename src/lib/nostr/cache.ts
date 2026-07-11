@@ -447,6 +447,11 @@ function fetchProfileBatchByAuthors(
   });
 }
 
+// Dedup concurrent syncs (e.g. AuthContext preload + Discover page mounting
+// at the same time) and skip when a sync completed recently.
+let inFlightSync: Promise<CachedProfile[]> | null = null;
+const MIN_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+
 /**
  * Full discovery pipeline: find active users + resolve their profiles.
  */
@@ -454,8 +459,31 @@ export async function fullDiscoverySync(
   window: ActivityWindow = '7d',
   options: {
     maxUsers?: number;
+    force?: boolean;
     onProgress?: (phase: string, count: number) => void;
   } = {}
+): Promise<CachedProfile[]> {
+  if (inFlightSync) return inFlightSync;
+
+  if (!options.force) {
+    const cache = await loadCache();
+    if (Date.now() - cache.lastFullSync < MIN_SYNC_INTERVAL_MS) {
+      return getAllCachedProfiles(window);
+    }
+  }
+
+  inFlightSync = runDiscoverySync(window, options).finally(() => {
+    inFlightSync = null;
+  });
+  return inFlightSync;
+}
+
+async function runDiscoverySync(
+  window: ActivityWindow,
+  options: {
+    maxUsers?: number;
+    onProgress?: (phase: string, count: number) => void;
+  }
 ): Promise<CachedProfile[]> {
   const relayList = await loadRelayList();
   const relays = getReadRelays(relayList);

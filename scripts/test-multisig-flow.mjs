@@ -155,3 +155,65 @@ try {
 } catch (e) {
   log('CASE E witness inspection', false, e.message);
 }
+
+// ── Case F: external NIP-07 signSchnorr path ───────────────────
+// Same algorithm as signMultisigPsbtViaSchnorr in multisig-psbt.ts:
+// build the tapscript preimage, hand the 32-byte hash to an external
+// Schnorr signer (like Alby / a NIP-07 extension), attach tapScriptSig.
+import { Script, SigHash } from '@scure/btc-signer';
+import { tapLeafHash } from '@scure/btc-signer/payment';
+
+async function signViaExternalSchnorr(psbtHex, signerPubHex, signSchnorr) {
+  const t = Transaction.fromPSBT(hex.decode(psbtHex), { allowUnknownOutputs: true, allowUnknownInputs: true });
+  const prevOutScripts = [];
+  const amounts = [];
+  for (let i = 0; i < t.inputsLength; i++) {
+    const wu = t.getInput(i).witnessUtxo;
+    prevOutScripts.push(wu.script);
+    amounts.push(wu.amount);
+  }
+  let signedCount = 0;
+  for (let idx = 0; idx < t.inputsLength; idx++) {
+    const input = t.getInput(idx);
+    if (!input.tapLeafScript) continue;
+    const sighash = input.sighashType ?? SigHash.DEFAULT;
+    for (const [, scriptWithVer] of input.tapLeafScript) {
+      const script = scriptWithVer.subarray(0, -1);
+      const ver = scriptWithVer[scriptWithVer.length - 1];
+      const decoded = Script.decode(script);
+      const hasKey = decoded.some((op) => op instanceof Uint8Array && op.length === 32 && hex.encode(op) === signerPubHex.toLowerCase());
+      if (!hasKey) continue;
+      const msgHash = t.preimageWitnessV1(idx, prevOutScripts, sighash, amounts, undefined, script, ver);
+      const sigHex = await signSchnorr(hex.encode(msgHash));
+      const sigBytes = hex.decode(sigHex);
+      const sig = sighash !== SigHash.DEFAULT ? new Uint8Array([...sigBytes, sighash]) : sigBytes;
+      const leafHash = tapLeafHash(script, ver);
+      t.updateInput(idx, { tapScriptSig: [[{ pubKey: hex.decode(signerPubHex), leafHash }, sig]] }, true);
+      signedCount++;
+    }
+  }
+  if (signedCount === 0) throw new Error('no matching key');
+  return hex.encode(t.toPSBT());
+}
+
+// Simulated NIP-07 extension: signs any 32-byte hash with key 2's priv
+const fakeNip07 = async (hashHex) => hex.encode(schnorr.sign(hex.decode(hashHex), privs[1]));
+
+try {
+  const sig2viaSchnorr = await signViaExternalSchnorr(sig1Psbt, hex.encode(pubs[1]), fakeNip07);
+  log('CASE F external-schnorr co-sign', countTapSigs(sig2viaSchnorr) === 2, `sig count ${countTapSigs(sig2viaSchnorr)}`);
+  const raw = combineAndExtract([sig1Psbt, sig2viaSchnorr]);
+  log('CASE F combine [vault-sig, schnorr-sig] -> raw tx', true, `${raw.length / 2} bytes`);
+} catch (e) {
+  log('CASE F external-schnorr path', false, e.message);
+}
+
+// Case G: external signer whose key is NOT a co-signer must fail cleanly
+try {
+  const outsiderPriv = sha256(new TextEncoder().encode('outsider'));
+  const outsiderPub = schnorr.getPublicKey(outsiderPriv);
+  await signViaExternalSchnorr(sig1Psbt, hex.encode(outsiderPub), async (h) => hex.encode(schnorr.sign(hex.decode(h), outsiderPriv)));
+  log('CASE G outsider schnorr should FAIL', false, 'signed but should have thrown');
+} catch (e) {
+  log('CASE G outsider schnorr correctly fails', true, e.message);
+}

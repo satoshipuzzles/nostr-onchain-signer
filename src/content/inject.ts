@@ -11,6 +11,8 @@
 
 const OWN_APP_HOSTS = [
   'nostr-onchain-signer.vercel.app',
+  'nostrfreaks.com',
+  'www.nostrfreaks.com',
   'localhost',
   '127.0.0.1',
 ];
