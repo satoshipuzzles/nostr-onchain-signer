@@ -22,7 +22,7 @@ export function combinePsbtsToRawTx(psbtHexList: string[]): string {
     combined = PSBTCombine(unique.map(psbtHexToBytes));
   }
 
-  const tx = Transaction.fromPSBT(combined);
+  const tx = Transaction.fromPSBT(combined, { allowUnknownOutputs: true, allowUnknownInputs: true });
   tx.finalize();
   return hex.encode(tx.extract());
 }

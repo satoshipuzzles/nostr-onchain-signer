@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { ArrowLeft, Send, Users, Loader2, Check, Key, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Send, Users, Loader2, Check, Key, AlertTriangle, Copy, Link as LinkIcon } from 'lucide-react';
+import { QRCode } from '@/popup/components/QRCode';
 import { useAuth } from '../context/AuthContext';
 import { type ArchivedMultisig, savePendingRequest, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
 import { createSigningRound, saveSigningRound } from '@/lib/bitcoin/signing-round';
@@ -34,6 +35,8 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
   const [nsecInput, setNsecInput] = useState('');
   const [importingNsec, setImportingNsec] = useState(false);
   const [nsecImported, setNsecImported] = useState(false);
+  const [signingLink, setSigningLink] = useState('');
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const otherSigners = wallet.keyHolders.filter((h) => !h.isOwnKey);
 
@@ -110,11 +113,16 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         total_signers: signerPubkeys.length,
         memo: round.memo,
         expires_at: round.expiresAt,
+        // Full signer list so the /sign page can verify who's eligible
+        signer_pubkeys: signerPubkeys,
+        amount_sats: amount,
+        recipient,
       };
 
       const signUrl = `${appOrigin()}/sign/${round.id}`;
 
-      // Public anchor event so /sign/:roundId pages can discover the request
+      // Public anchor event so /sign/:roundId pages can discover the request.
+      // This MUST succeed or the signing link won't work.
       let anchorEventId = '';
       const anchorEvent = createPublicSigningRequestEvent(requestContent, publicKey);
       const anchorResp = await chrome.runtime.sendMessage({
@@ -122,10 +130,14 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         payload: { event: anchorEvent },
         id: createMessageId(),
       });
-      if (!anchorResp.error && anchorResp.result) {
-        await publishEvent(anchorResp.result);
-        anchorEventId = anchorResp.result.id;
+      if (anchorResp.error || !anchorResp.result) {
+        throw new Error(`Could not sign the request event: ${anchorResp.error || 'unknown error'}`);
       }
+      const anchorPub = await publishEvent(anchorResp.result);
+      if (anchorPub.success.length === 0) {
+        throw new Error('Could not publish the signing request to any relay. Check your connection and try again.');
+      }
+      anchorEventId = anchorResp.result.id;
 
       // Publish initiator's own 9801 response so progress counts correctly
       if (initiatorSigned && anchorEventId) {
@@ -205,6 +217,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         await savePendingRequest(pendingReq);
       }
 
+      setSigningLink(signUrl);
       setSentTo(sentToPubkeys);
       setSent(true);
     } catch (err: unknown) {
@@ -214,43 +227,76 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
     }
   }
 
+  function copyLink() {
+    navigator.clipboard.writeText(signingLink);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  }
+
   if (sent) {
     return (
-      <div className="h-full flex flex-col p-4 pb-24 md:pb-4 items-center justify-center">
-        <div className="w-14 h-14 rounded-full bg-green-500/20 flex items-center justify-center mb-4">
+      <div className="h-full flex flex-col p-4 pb-24 md:pb-4 items-center overflow-y-auto">
+        <div className="w-14 h-14 rounded-full bg-green-500/20 flex items-center justify-center mb-3 mt-6">
           <Check className="w-7 h-7 text-green-400" />
         </div>
-        <h2 className="text-lg font-bold mb-2">Signature Requests Sent</h2>
+        <h2 className="text-lg font-bold mb-1">Spend Created!</h2>
         <p className="text-sm text-gray-400 text-center mb-4">
-          Sent to {sentTo.length} co-signer{sentTo.length > 1 ? 's' : ''} via Nostr
+          Your signature is in. Now get {wallet.wallet.config.threshold - 1} more.
         </p>
 
-        <div className="card w-full mb-4">
-          <p className="text-xs text-gray-500 mb-2">Sent to:</p>
-          {sentTo.map((pk) => {
-            const holder = wallet.keyHolders.find((h) => h.pubkey === pk);
-            return (
-              <div key={pk} className="flex items-center gap-2 py-1.5">
-                {holder?.profile?.picture ? (
-                  <img src={holder.profile.picture} alt="" className="w-6 h-6 rounded-full object-cover" />
-                ) : (
-                  <div className="w-6 h-6 rounded-full bg-surface-700" />
-                )}
-                <span className="text-sm truncate">
-                  {holder?.profile?.displayName || holder?.profile?.name || pk.slice(0, 12)}
-                </span>
-              </div>
-            );
-          })}
+        {/* THE shareable signing page — this is what co-signers open */}
+        <div className="card w-full mb-4 border-bitcoin/30 bg-bitcoin/5">
+          <p className="text-xs font-semibold text-bitcoin mb-2 flex items-center gap-1.5">
+            <LinkIcon className="w-3.5 h-3.5" /> Signing page — forward this to your co-signers
+          </p>
+          <div className="flex justify-center mb-3">
+            <QRCode data={signingLink} size={150} />
+          </div>
+          <button
+            onClick={copyLink}
+            className="w-full flex items-center gap-2 px-3 py-3 bg-surface-700 rounded-xl hover:bg-surface-600 transition-colors mb-2"
+          >
+            <span className="text-xs text-bitcoin truncate flex-1 font-mono text-left">{signingLink}</span>
+            {linkCopied ? <Check className="w-4 h-4 text-green-400 flex-shrink-0" /> : <Copy className="w-4 h-4 text-gray-400 flex-shrink-0" />}
+          </button>
+          <p className="text-[10px] text-gray-500 leading-relaxed">
+            Anyone with this link can view progress. Co-signers sign right on the page.
+            When all signatures are in, open it and hit <span className="text-green-400 font-medium">Broadcast</span>.
+          </p>
         </div>
 
-        <p className="text-xs text-gray-500 text-center mb-4">
-          Track progress in Signing Rounds. You'll receive signed PSBTs back as kind 9801 events.
-        </p>
+        {sentTo.length > 0 && (
+          <div className="card w-full mb-4">
+            <p className="text-xs text-gray-500 mb-2">Also DM'd the link to:</p>
+            {sentTo.map((pk) => {
+              const holder = wallet.keyHolders.find((h) => h.pubkey === pk);
+              return (
+                <div key={pk} className="flex items-center gap-2 py-1.5">
+                  {holder?.profile?.picture ? (
+                    <img src={holder.profile.picture} alt="" className="w-6 h-6 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-6 h-6 rounded-full bg-surface-700" />
+                  )}
+                  <span className="text-sm truncate">
+                    {holder?.profile?.displayName || holder?.profile?.name || pk.slice(0, 12)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-        <button onClick={onDone} className="btn-primary w-full">
-          Done
-        </button>
+        <div className="flex gap-2 w-full">
+          <a
+            href={signingLink}
+            className="btn-secondary flex-1 text-center text-sm py-3"
+          >
+            Open Signing Page
+          </a>
+          <button onClick={onDone} className="btn-primary flex-1">
+            Done
+          </button>
+        </div>
       </div>
     );
   }

@@ -151,6 +151,10 @@ export interface SigningRequestContent {
   memo?: string;
   op_return_event_id?: string;
   expires_at: number;
+  /** Nostr pubkeys of ALL key holders — lets the sign page verify eligibility */
+  signer_pubkeys?: string[];
+  amount_sats?: number;
+  recipient?: string;
 }
 
 export function createSigningRequestEvent(
