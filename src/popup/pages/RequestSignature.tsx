@@ -17,13 +17,16 @@ interface Props {
   publicKey: string;
   onDone: () => void;
   onBack: () => void;
+  initialRecipient?: string;
+  initialAmount?: string;
+  initialMemo?: string;
 }
 
-export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
+export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRecipient, initialAmount, initialMemo }: Props) {
   const { canSignOnchain, handleUpgradeWithNsec } = useAuth();
-  const [recipient, setRecipient] = useState('');
-  const [amountSats, setAmountSats] = useState('');
-  const [memo, setMemo] = useState('');
+  const [recipient, setRecipient] = useState(initialRecipient || '');
+  const [amountSats, setAmountSats] = useState(initialAmount || '');
+  const [memo, setMemo] = useState(initialMemo || '');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');

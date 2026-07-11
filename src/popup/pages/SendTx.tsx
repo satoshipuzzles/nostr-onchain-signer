@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { createMessageId } from '@/shared/messages';
 import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle, ChevronDown, ChevronUp, DollarSign, Coins } from 'lucide-react';
 import { fetchBalance, fetchFeeEstimates, fetchUTXOs, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction, type UTXO } from '@/lib/bitcoin/mempool';
@@ -28,7 +28,8 @@ const BTC_PRICE_API = 'https://mempool.space/api/v1/prices';
 
 export function SendTx({ publicKey, onBack }: Props) {
   const [searchParams] = useSearchParams();
-  const { canSignOnchain, handleUpgradeWithNsec, vaultPassword } = useAuth();
+  const navigate = useNavigate();
+  const { canSignOnchain, handleUpgradeWithNsec, vaultPassword, setSelectedMultisigWallet } = useAuth();
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
   const [memo, setMemo] = useState('');
@@ -285,6 +286,22 @@ export function SendTx({ publicKey, onBack }: Props) {
   async function handleSendTransaction(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+
+    // Multisig outputs can't be spent with a single key — route to the
+    // signing-round flow where co-signers each sign their share
+    if (senderSource !== 'personal') {
+      const ms = multisigWallets.find(w => w.id === senderSource);
+      if (ms) {
+        setSelectedMultisigWallet(ms);
+        const params = new URLSearchParams();
+        if (recipient) params.set('to', recipient);
+        if (amountSats) params.set('amount', amountSats);
+        if (memo) params.set('memo', memo);
+        navigate(`/wallets/sign?${params.toString()}`);
+        return;
+      }
+    }
+
     setLoading(true);
     setBroadcastTxid('');
     setPsbtResult(null);
@@ -905,12 +922,16 @@ export function SendTx({ publicKey, onBack }: Props) {
           >
             {loading ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Sending...</>
+            ) : senderSource !== 'personal' ? (
+              <><Send className="w-4 h-4" /> Continue to Multisig Signing</>
             ) : (
               <><Send className="w-4 h-4" /> Send Transaction</>
             )}
           </button>
           <p className="text-[10px] text-gray-600 text-center mt-2">
-            Build → sign via extension or vault → broadcast (node or mempool)
+            {senderSource !== 'personal'
+              ? 'Multisig spends collect co-signer signatures before broadcast'
+              : 'Build → sign via extension or vault → broadcast (node or mempool)'}
           </p>
         </div>
       </form>
