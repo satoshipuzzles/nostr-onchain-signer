@@ -31,6 +31,14 @@ export interface GiftWrapResult {
   recipientPubkey: string;
 }
 
+export interface GiftWrapPairResult {
+  /** Wrap addressed to the recipient — publish to THEIR DM inbox relays */
+  recipientWrap: ReturnType<typeof finalizeEvent>;
+  /** Wrap addressed to ourselves — publish to OUR DM inbox relays */
+  selfWrap: ReturnType<typeof finalizeEvent>;
+  recipientPubkey: string;
+}
+
 function randomTimestampWithin2Days(): number {
   const now = Math.floor(Date.now() / 1000);
   const twoDays = 2 * 24 * 60 * 60;
@@ -48,6 +56,37 @@ function nip44Decrypt(receiverPrivHex: string, senderPubHex: string, ciphertext:
 }
 
 /**
+ * Seal a rumor and wrap it for a given receiver pubkey.
+ * The receiver can be the DM recipient OR the sender themselves (self-copy).
+ */
+function sealAndWrap(
+  senderPrivHex: string,
+  receiverPubHex: string,
+  rumor: Rumor,
+): ReturnType<typeof finalizeEvent> {
+  // Seal (kind 13) — signed by sender, content encrypted to receiver.
+  // Timestamps of seal + wrap are randomized (NIP-17); the rumor keeps real time.
+  const sealContent = nip44Encrypt(senderPrivHex, receiverPubHex, JSON.stringify(rumor));
+  const sealEvent = finalizeEvent({
+    kind: 13,
+    created_at: randomTimestampWithin2Days(),
+    content: sealContent,
+    tags: [],
+  }, hexToBytes(senderPrivHex));
+
+  // Gift Wrap (kind 1059) — signed by ephemeral key, content encrypted to receiver
+  const ephemeralPriv = randomBytes(32);
+  const ephemeralPrivHex = bytesToHex(ephemeralPriv);
+  const wrapContent = nip44Encrypt(ephemeralPrivHex, receiverPubHex, JSON.stringify(sealEvent));
+  return finalizeEvent({
+    kind: 1059,
+    created_at: randomTimestampWithin2Days(),
+    content: wrapContent,
+    tags: [['p', receiverPubHex]],
+  }, ephemeralPriv);
+}
+
+/**
  * Create and gift-wrap a DM for a recipient.
  * Returns the kind-1059 event ready to publish.
  */
@@ -58,36 +97,46 @@ export function createGiftWrap(
 ): GiftWrapResult {
   const senderPubHex = getPublicKey(hexToBytes(senderPrivHex));
 
-  // 1. Rumor (kind 14) — NOT signed, no id needed for sealing
+  // Rumor (kind 14) — NOT signed. Per NIP-17 the rumor keeps the REAL
+  // timestamp; only seal + wrap timestamps are randomized. (Randomizing the
+  // rumor made messages appear hours in the past in Amethyst/0xchat.)
   const rumor: Rumor = {
     kind: 14,
-    created_at: randomTimestampWithin2Days(),
+    created_at: Math.floor(Date.now() / 1000),
     content: plaintext,
     tags: [['p', recipientPubHex]],
     pubkey: senderPubHex,
   };
 
-  // 2. Seal (kind 13) — signed by sender, content encrypted to recipient
-  const sealContent = nip44Encrypt(senderPrivHex, recipientPubHex, JSON.stringify(rumor));
-  const sealEvent = finalizeEvent({
-    kind: 13,
-    created_at: randomTimestampWithin2Days(),
-    content: sealContent,
-    tags: [],
-  }, hexToBytes(senderPrivHex));
-
-  // 3. Gift Wrap (kind 1059) — signed by ephemeral key, content encrypted to recipient
-  const ephemeralPriv = randomBytes(32);
-  const ephemeralPrivHex = bytesToHex(ephemeralPriv);
-  const wrapContent = nip44Encrypt(ephemeralPrivHex, recipientPubHex, JSON.stringify(sealEvent));
-  const giftWrap = finalizeEvent({
-    kind: 1059,
-    created_at: randomTimestampWithin2Days(),
-    content: wrapContent,
-    tags: [['p', recipientPubHex]],
-  }, ephemeralPriv);
-
+  const giftWrap = sealAndWrap(senderPrivHex, recipientPubHex, rumor);
   return { giftWrap, recipientPubkey: recipientPubHex };
+}
+
+/**
+ * Create BOTH gift wraps for a DM: one for the recipient and one for
+ * ourselves (so our own sent messages sync across devices/clients).
+ * This is what NIP-17 clients like Amethyst and 0xchat expect.
+ */
+export function createGiftWrapPair(
+  senderPrivHex: string,
+  recipientPubHex: string,
+  plaintext: string,
+): GiftWrapPairResult {
+  const senderPubHex = getPublicKey(hexToBytes(senderPrivHex));
+
+  const rumor: Rumor = {
+    kind: 14,
+    created_at: Math.floor(Date.now() / 1000),
+    content: plaintext,
+    tags: [['p', recipientPubHex]],
+    pubkey: senderPubHex,
+  };
+
+  return {
+    recipientWrap: sealAndWrap(senderPrivHex, recipientPubHex, rumor),
+    selfWrap: sealAndWrap(senderPrivHex, senderPubHex, rumor),
+    recipientPubkey: recipientPubHex,
+  };
 }
 
 /**

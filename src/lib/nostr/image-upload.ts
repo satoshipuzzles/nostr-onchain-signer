@@ -1,19 +1,22 @@
 /**
- * Image upload to nostr.build with NIP-98 auth.
+ * Image upload with NIP-98 auth and multi-server fallback.
  *
- * nostr.build requires a NIP-98 token (signed kind 27235 event in the
- * Authorization header) for all uploads. The signature is obtained from
- * the vault / NIP-07 signer automatically — callers just pass the file.
+ * Order: nostr.build → nostrcheck.me (NIP-96) → nostr.download (NIP-96).
+ * Each server gets its own NIP-98 token (the signed event is bound to the
+ * exact upload URL), so a failure on one server falls through to the next.
  */
 
 import { createNip98AuthEvent, hashFile } from './upload';
 import { createMessageId } from '@/shared/messages';
 
-const NOSTR_BUILD_UPLOAD_URL = 'https://nostr.build/api/v2/upload/files';
+const UPLOAD_SERVERS: Array<{ name: string; url: string; kind: 'nostrbuild' | 'nip96' }> = [
+  { name: 'nostr.build', url: 'https://nostr.build/api/v2/upload/files', kind: 'nostrbuild' },
+  { name: 'nostrcheck.me', url: 'https://nostrcheck.me/api/v2/media', kind: 'nip96' },
+  { name: 'nostr.download', url: 'https://nostr.download/api/v2/media', kind: 'nip96' },
+];
 
-async function getSignedAuthHeader(file: File): Promise<string | null> {
+async function signAuthHeader(uploadUrl: string, fileHash: string): Promise<string | null> {
   try {
-    // Resolve our pubkey from the vault / signer
     const pkResp = await chrome.runtime.sendMessage({
       type: 'nip07:getPublicKey',
       id: createMessageId(),
@@ -21,9 +24,7 @@ async function getSignedAuthHeader(file: File): Promise<string | null> {
     const pubkey = pkResp?.result;
     if (!pubkey || typeof pubkey !== 'string') return null;
 
-    const fileHash = await hashFile(file);
-    const authEvent = createNip98AuthEvent(NOSTR_BUILD_UPLOAD_URL, 'POST', fileHash, pubkey);
-
+    const authEvent = createNip98AuthEvent(uploadUrl, 'POST', fileHash, pubkey);
     const signResp = await chrome.runtime.sendMessage({
       type: 'nip07:signEvent',
       payload: { event: authEvent },
@@ -37,27 +38,37 @@ async function getSignedAuthHeader(file: File): Promise<string | null> {
   }
 }
 
-export async function uploadImageToNostrBuild(file: File): Promise<string> {
-  const formData = new FormData();
-  formData.append('file', file);
+function extractUrl(data: Record<string, unknown>): string | null {
+  // nostr.build v2 format: { data: [{ url }] }
+  const nested = data?.data as Array<{ url?: string }> | undefined;
+  if (nested?.[0]?.url) return nested[0].url;
+  // Flat url
+  if (typeof data?.url === 'string') return data.url;
+  // NIP-96 format: { nip94_event: { tags: [["url", "..."]] } }
+  const nip94 = data?.nip94_event as { tags?: string[][] } | undefined;
+  const urlTag = nip94?.tags?.find((t) => t[0] === 'url');
+  if (urlTag?.[1]) return urlTag[1];
+  return null;
+}
 
-  const authHeader = await getSignedAuthHeader(file);
+async function uploadToServer(
+  server: { name: string; url: string; kind: string },
+  file: File,
+  fileHash: string,
+): Promise<string> {
+  const authHeader = await signAuthHeader(server.url, fileHash);
   if (!authHeader) {
     throw new Error('Upload requires signing — unlock your vault and try again');
   }
 
-  let res: Response;
-  try {
-    res = await fetch(NOSTR_BUILD_UPLOAD_URL, {
-      method: 'POST',
-      headers: { Authorization: authHeader },
-      body: formData,
-    });
-  } catch (err) {
-    throw new Error(
-      `Network error: ${err instanceof Error ? err.message : 'could not connect to nostr.build'}`,
-    );
-  }
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(server.url, {
+    method: 'POST',
+    headers: { Authorization: authHeader },
+    body: formData,
+  });
 
   if (!res.ok) {
     let detail = '';
@@ -65,22 +76,38 @@ export async function uploadImageToNostrBuild(file: File): Promise<string> {
       const text = await res.text();
       if (text) detail = `: ${text.slice(0, 200)}`;
     } catch { /* ignore */ }
-    throw new Error(`Upload failed (HTTP ${res.status})${detail}`);
+    throw new Error(`${server.name} upload failed (HTTP ${res.status})${detail}`);
   }
 
   let data: Record<string, unknown>;
   try {
     data = await res.json();
   } catch {
-    throw new Error('Invalid response from nostr.build');
+    throw new Error(`Invalid response from ${server.name}`);
   }
 
-  const nested = data?.data as Array<{ url?: string }> | undefined;
-  const url = nested?.[0]?.url || (data?.url as string | undefined);
-
-  if (!url || typeof url !== 'string') {
-    throw new Error('No image URL in upload response');
-  }
-
+  const url = extractUrl(data);
+  if (!url) throw new Error(`No image URL in ${server.name} response`);
   return url;
+}
+
+/**
+ * Upload an image, trying each server in order until one succeeds.
+ */
+export async function uploadImageToNostrBuild(file: File): Promise<string> {
+  const fileHash = await hashFile(file);
+  let lastError: Error | null = null;
+
+  for (const server of UPLOAD_SERVERS) {
+    try {
+      return await uploadToServer(server, file, fileHash);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Signing failures won't fix themselves on another server
+      if (lastError.message.includes('unlock your vault')) throw lastError;
+      console.warn(`Upload to ${server.name} failed, trying next:`, lastError.message);
+    }
+  }
+
+  throw lastError ?? new Error('All upload servers failed');
 }

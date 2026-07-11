@@ -7,6 +7,7 @@ import { loadMutedPubkeys } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
+import { SkeletonFeed } from '@/popup/components/Skeleton';
 import { Globe, Users, Image, Bitcoin, Hash, Layers, Loader2, Inbox } from 'lucide-react';
 
 interface Props {
@@ -349,12 +350,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
 
       {/* Feed Content */}
       <div ref={scrollRef}>
-        {loading && notes.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16">
-            <Loader2 className="w-8 h-8 text-purple-400 animate-spin mb-3" />
-            <p className="text-sm text-gray-400">Loading notes...</p>
-          </div>
-        )}
+        {loading && notes.length === 0 && <SkeletonFeed count={7} />}
 
         {!loading && needsInput && (
           <div className="flex flex-col items-center justify-center py-16">

@@ -43,6 +43,11 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   const isFollowing = auth?.following.has(pubkey) ?? false;
   const isSelf = auth?.publicKey === pubkey;
 
+  // Onchain address derived from their Nostr key (same derivation the app
+  // uses for its own wallets) — always available
+  let derivedAddress: string | null = null;
+  try { derivedAddress = pubkeyToTaprootAddress(pubkey); } catch { /* invalid pubkey */ }
+
   const displayName = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
 
   useEffect(() => {
@@ -290,7 +295,7 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
             </div>
 
             {/* Hex pubkey */}
-            <div className="bg-surface-800 rounded-xl p-3 mb-3 border border-surface-200/10">
+            <div className="bg-surface-800 rounded-xl p-3 mb-2 border border-surface-200/10">
               <p className="text-[10px] text-gray-500 mb-1 uppercase tracking-wide">Hex pubkey</p>
               <div className="flex items-center gap-2">
                 <code className="text-[10px] text-gray-400 flex-1 font-mono break-all leading-relaxed select-all">
@@ -307,6 +312,74 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
                 </button>
               </div>
             </div>
+
+            {/* Onchain Bitcoin address (derived from Nostr key) */}
+            {derivedAddress && (
+              <div className="bg-bitcoin/5 rounded-xl p-3 mb-2 border border-bitcoin/20">
+                <p className="text-[10px] text-bitcoin/80 mb-1 uppercase tracking-wide flex items-center gap-1">
+                  <Bitcoin className="w-3 h-3" /> Bitcoin address (taproot)
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="text-[10px] text-gray-300 flex-1 font-mono break-all leading-relaxed select-all">
+                    {derivedAddress}
+                  </code>
+                  <button
+                    onClick={() => copy(derivedAddress!, 'btc')}
+                    className="p-1.5 hover:bg-surface-700 rounded-lg flex-shrink-0 transition-colors"
+                    title="Copy Bitcoin address"
+                  >
+                    {copied === 'btc'
+                      ? <Check className="w-3.5 h-3.5 text-green-400" />
+                      : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+                  </button>
+                </div>
+                <p className="text-[9px] text-gray-600 mt-1">Derived from their Nostr key — spendable with their nsec</p>
+              </div>
+            )}
+
+            {/* Declared Bitcoin address from profile metadata */}
+            {profile?.bitcoinAddress && profile.bitcoinAddress !== derivedAddress && (
+              <div className="bg-surface-800 rounded-xl p-3 mb-2 border border-surface-200/10">
+                <p className="text-[10px] text-gray-500 mb-1 uppercase tracking-wide">Declared Bitcoin address</p>
+                <div className="flex items-center gap-2">
+                  <code className="text-[10px] text-gray-300 flex-1 font-mono break-all leading-relaxed select-all">
+                    {profile.bitcoinAddress}
+                  </code>
+                  <button
+                    onClick={() => copy(profile.bitcoinAddress!, 'btc2')}
+                    className="p-1.5 hover:bg-surface-700 rounded-lg flex-shrink-0 transition-colors"
+                    title="Copy address"
+                  >
+                    {copied === 'btc2'
+                      ? <Check className="w-3.5 h-3.5 text-green-400" />
+                      : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Silent payment address (BIP-352) */}
+            {profile?.silentPaymentAddress && (
+              <div className="bg-purple-500/5 rounded-xl p-3 mb-2 border border-purple-500/20">
+                <p className="text-[10px] text-purple-400/80 mb-1 uppercase tracking-wide">Silent payment (BIP-352)</p>
+                <div className="flex items-center gap-2">
+                  <code className="text-[10px] text-gray-300 flex-1 font-mono break-all leading-relaxed select-all">
+                    {profile.silentPaymentAddress}
+                  </code>
+                  <button
+                    onClick={() => copy(profile.silentPaymentAddress!, 'sp')}
+                    className="p-1.5 hover:bg-surface-700 rounded-lg flex-shrink-0 transition-colors"
+                    title="Copy silent payment address"
+                  >
+                    {copied === 'sp'
+                      ? <Check className="w-3.5 h-3.5 text-green-400" />
+                      : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+                  </button>
+                </div>
+                <p className="text-[9px] text-gray-600 mt-1">Pay with a silent-payment-capable wallet for maximum privacy</p>
+              </div>
+            )}
+            <div className="mb-1" />
 
             {/* Primary actions */}
             <div className="flex gap-2 mb-2">

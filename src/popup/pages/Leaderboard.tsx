@@ -4,9 +4,9 @@ import { ArrowLeft, Trophy, Search, Loader2, RefreshCw, ExternalLink, Users, Glo
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub, npubToPubkey } from '@/lib/nostr/keys';
-import { getCachedProfile, getAllCachedProfiles } from '@/lib/nostr/cache';
+import { getCachedProfile, getAllCachedProfiles, searchProfilesNip50 } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
+import { toast } from 'sonner';
 import { useAuth } from '../context/AuthContext';
 import { useProfilePopup } from '../context/ProfilePopupContext';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
@@ -268,31 +268,29 @@ export function Leaderboard() {
     setProcessing(`Searching for "${searchTerm}"...`);
 
     try {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0 ? relays : DISCOVERY_RELAYS;
-
-      const foundProfiles = await searchRelaysForProfiles(relayUrls, searchTerm);
+      // Same NIP-50 search as Discover — finds anyone by name/nip05/npub
+      const foundProfiles = await searchProfilesNip50(searchTerm, 20);
       const results: LeaderboardEntry[] = [];
 
-      for (const profile of foundProfiles) {
+      await Promise.allSettled(foundProfiles.map(async (profile) => {
         const taprootAddress = pubkeyToTaprootAddress(profile.pubkey);
         const bal = await fetchBalance(taprootAddress);
-        if (bal.total > 0) {
-          results.push({
-            pubkey: profile.pubkey,
-            npub: pubkeyToNpub(profile.pubkey),
-            profile,
-            taprootAddress,
-            balance: bal.total,
-          });
-        }
-      }
+        results.push({
+          pubkey: profile.pubkey,
+          npub: pubkeyToNpub(profile.pubkey),
+          profile,
+          taprootAddress,
+          balance: bal.total,
+        });
+      }));
 
       const existingPubkeys = new Set(entries.map(e => e.pubkey));
       const newEntries = results.filter(r => !existingPubkeys.has(r.pubkey));
-      const merged = [...entries, ...newEntries].filter((e) => e.balance > 0).sort((a, b) => b.balance - a.balance);
+      const merged = [...entries, ...newEntries].sort((a, b) => b.balance - a.balance);
       setEntries(merged);
+      if (results.length === 0) {
+        toast.info(`No users found for "${searchTerm}"`);
+      }
     } catch (err: any) {
       setError(err.message || 'Search failed');
     } finally {
@@ -300,7 +298,8 @@ export function Leaderboard() {
     }
   }, [searchTerm, entries]);
 
-  const filtered = (searchTerm
+  // When searching, show matched users even with 0 balance so anyone is findable
+  const filtered = searchTerm
     ? entries.filter(e => {
         const name = (e.profile?.displayName || e.profile?.name || '').toLowerCase();
         const nip05 = (e.profile?.nip05 || '').toLowerCase();
@@ -308,8 +307,7 @@ export function Leaderboard() {
                nip05.includes(searchTerm.toLowerCase()) ||
                e.npub.includes(searchTerm.toLowerCase());
       })
-    : entries
-  ).filter((e) => e.balance > 0 || e.pubkey === publicKey);
+    : entries.filter((e) => e.balance > 0 || e.pubkey === publicKey);
 
   const nonZeroCount = entries.filter(e => e.balance > 0).length;
 
@@ -676,65 +674,3 @@ async function discoverUsers(signal: AbortSignal): Promise<string[]> {
   return Array.from(pubkeys);
 }
 
-async function searchRelaysForProfiles(relayUrls: string[], term: string): Promise<(ProfileMetadata & { pubkey: string })[]> {
-  const results: (ProfileMetadata & { pubkey: string })[] = [];
-  const seen = new Set<string>();
-  const lowerTerm = term.toLowerCase();
-
-  const promises = relayUrls.slice(0, 3).map((url) => {
-    return new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => resolve(), 6000);
-
-      try {
-        const ws = new WebSocket(url);
-        const subId = `search_${Math.random().toString(36).slice(2, 8)}`;
-
-        ws.onopen = () => {
-          ws.send(JSON.stringify(['REQ', subId, { kinds: [0], limit: 100 }]));
-        };
-
-        ws.onmessage = (msg) => {
-          try {
-            const data = JSON.parse(msg.data);
-            if (data[0] === 'EVENT' && data[2]) {
-              const event = data[2];
-              const content = JSON.parse(event.content);
-              const name = (content.name || '').toLowerCase();
-              const displayName = (content.display_name || content.displayName || '').toLowerCase();
-              const nip05 = (content.nip05 || '').toLowerCase();
-
-              if (name.includes(lowerTerm) || displayName.includes(lowerTerm) || nip05.includes(lowerTerm)) {
-                if (!seen.has(event.pubkey)) {
-                  seen.add(event.pubkey);
-                  results.push({
-                    pubkey: event.pubkey,
-                    name: content.name,
-                    displayName: content.display_name || content.displayName,
-                    picture: content.picture,
-                    banner: content.banner,
-                    about: content.about,
-                    nip05: content.nip05,
-                    lud16: content.lud16,
-                  });
-                }
-              }
-            } else if (data[0] === 'EOSE') {
-              ws.close();
-              clearTimeout(timeout);
-              resolve();
-            }
-          } catch {}
-        };
-
-        ws.onerror = () => { clearTimeout(timeout); resolve(); };
-        ws.onclose = () => { clearTimeout(timeout); resolve(); };
-      } catch {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-  });
-
-  await Promise.allSettled(promises);
-  return results.slice(0, 50);
-}

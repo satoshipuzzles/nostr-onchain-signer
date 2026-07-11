@@ -10,7 +10,7 @@ import { createMessageId } from '@/shared/messages';
 import { formatSats } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { appOrigin } from '@/lib/nostr/public-relay';
-import { encryptDM } from '@/lib/nostr/dm';
+import { sendDM } from '@/lib/nostr/dm';
 
 interface Props {
   wallet: ArchivedMultisig;
@@ -181,28 +181,10 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
             `Sign here: ${signUrl}\n` +
             `nostr:${response.result.id}`;
 
-          let encryptedDmContent: string;
-          let dmKind: number;
-          const result = await encryptDM(signer.pubkey, dmContent);
-          encryptedDmContent = result.content;
-          dmKind = result.kind;
-
-          const dmEvent = {
-            kind: dmKind,
-            content: encryptedDmContent,
-            tags: [['p', signer.pubkey]],
-            created_at: Math.floor(Date.now() / 1000),
-            pubkey: publicKey,
-          };
-
-          const dmResponse = await chrome.runtime.sendMessage({
-            type: 'nip07:signEvent',
-            payload: { event: dmEvent },
-            id: createMessageId(),
-          });
-
-          if (!dmResponse.error && dmResponse.result) {
-            await publishEvent(dmResponse.result);
+          try {
+            await sendDM(publicKey, signer.pubkey, dmContent);
+          } catch (dmErr) {
+            console.warn('Signing request DM failed:', dmErr);
           }
         }
 

@@ -4,12 +4,14 @@ import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Send, MessageCircle, Bitcoin, Loader2 } from 'lucide-react';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
-import { encryptDM, decryptDM, getGiftWrapSender } from '@/lib/nostr/dm';
-import { publishWithFeedback } from '@/lib/ui/publish-feedback';
+import { sendDM, decryptDM, unwrapGiftWrapEvent } from '@/lib/nostr/dm';
+import { ensureOwnDmRelayList, fetchDmInboxRelays, DEFAULT_DM_RELAYS } from '@/lib/nostr/dm-relays';
+import { celebratePublish } from '@/lib/ui/publish-feedback';
 import { toast } from 'sonner';
 import { getReadRelays, loadRelayList } from '@/lib/nostr/relays';
 import { FALLBACK_WRITE_RELAYS } from '@/lib/nostr/publish';
 import { parseInvoiceDmPayload, buildSendPathFromInvoice, type InvoiceDmPayload } from '@/lib/nostr/invoice-dm';
+import { SkeletonConversationList } from '@/popup/components/Skeleton';
 
 interface Conversation {
   pubkey: string;
@@ -28,10 +30,15 @@ interface DM {
   invoice?: InvoiceDmPayload | null;
 }
 
-async function getReadRelayUrls(): Promise<string[]> {
+async function getReadRelayUrls(publicKey?: string | null): Promise<string[]> {
   const relayList = await loadRelayList();
   const configured = getReadRelays(relayList);
-  return [...new Set([...configured, ...FALLBACK_WRITE_RELAYS])].slice(0, 8);
+  // Include our DM inbox relays (kind 10050) — gift wraps land there
+  let dmInbox: string[] = [];
+  if (publicKey) {
+    try { dmInbox = await fetchDmInboxRelays(publicKey); } catch {}
+  }
+  return [...new Set([...dmInbox, ...DEFAULT_DM_RELAYS, ...configured, ...FALLBACK_WRITE_RELAYS])].slice(0, 10);
 }
 
 function openRelay(url: string): Promise<WebSocket> {
@@ -69,7 +76,12 @@ export function Messages() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (publicKey) loadConversations();
+    if (publicKey) {
+      loadConversations();
+      // Publish our kind 10050 DM relay list so Amethyst/0xchat users
+      // know where to send us gift-wrapped DMs
+      ensureOwnDmRelayList(publicKey).catch(() => {});
+    }
   }, [publicKey]);
 
   useEffect(() => {
@@ -96,7 +108,7 @@ export function Messages() {
       }
 
       const convMap = new Map<string, Conversation>();
-      const readRelays = await getReadRelayUrls();
+      const readRelays = await getReadRelayUrls(publicKey);
       const giftWrapPromises: Promise<void>[] = [];
 
       // Query all relays in parallel (was sequential — up to 40s total)
@@ -114,18 +126,20 @@ export function Messages() {
                 const event = msg[2];
 
                 if (event.kind === 1059) {
-                  giftWrapPromises.push(getGiftWrapSender(event).then((sender) => {
-                    if (!sender) return;
+                  giftWrapPromises.push(unwrapGiftWrapEvent(event).then((unwrapped) => {
+                    if (!unwrapped) return;
+                    const { senderPubkey: sender, createdAt, content, rumor } = unwrapped;
                     const otherPubkey = sender === publicKey
-                      ? event.tags?.find((t: string[]) => t[0] === 'p' && t[1] !== publicKey)?.[1]
+                      ? rumor.tags?.find((t: string[]) => t[0] === 'p' && t[1] !== publicKey)?.[1]
                       : sender;
                     if (!otherPubkey) return;
                     const existing = convMap.get(otherPubkey);
-                    if (!existing || event.created_at > existing.lastTimestamp) {
+                    // Use the rumor's REAL timestamp (wrap timestamps are randomized)
+                    if (!existing || createdAt > existing.lastTimestamp) {
                       convMap.set(otherPubkey, {
                         pubkey: otherPubkey,
-                        lastMessage: '(encrypted)',
-                        lastTimestamp: event.created_at,
+                        lastMessage: content.slice(0, 80),
+                        lastTimestamp: createdAt,
                         unread: sender !== publicKey,
                       });
                     }
@@ -196,12 +210,12 @@ export function Messages() {
     } catch {}
 
     try {
-      const readRelays = await getReadRelayUrls();
+      const readRelays = await getReadRelayUrls(publicKey);
       const dms: DM[] = [];
       const seen = new Set<string>();
 
       // All relays in parallel (was sequential — up to 40s)
-      await Promise.allSettled(readRelays.slice(0, 4).map(async (relayUrl) => {
+      await Promise.allSettled(readRelays.slice(0, 6).map(async (relayUrl) => {
         const ws = await openRelay(relayUrl);
         const subId = `dm_thread_${Date.now()}_${relayUrl.slice(-6)}`;
 
@@ -243,18 +257,25 @@ export function Messages() {
       const results = await Promise.allSettled(sorted.map(async (dm): Promise<DM | null> => {
         try {
           if (dm.kind === 1059) {
-            const result = await decryptDM('', '', 1059, {
+            const unwrapped = await unwrapGiftWrapEvent({
               pubkey: dm.pubkey,
               content: dm.content,
               kind: 1059,
             });
-            const sender = await getGiftWrapSender({ pubkey: dm.pubkey, content: dm.content, kind: 1059 });
-            if (!sender) return null;
+            if (!unwrapped) return null;
+            const { senderPubkey: sender, content, createdAt, rumor } = unwrapped;
             const isMine = sender === publicKey;
-            const peer = isMine ? peerPubkey : sender;
-            if (peer !== peerPubkey) return null;
-            dm.content = result;
+            // Thread filter: incoming must be FROM peer; outgoing must be TO peer
+            if (isMine) {
+              const to = rumor.tags?.find((t: string[]) => t[0] === 'p')?.[1];
+              if (to !== peerPubkey) return null;
+            } else if (sender !== peerPubkey) {
+              return null;
+            }
+            dm.content = content;
             dm.isMine = isMine;
+            dm.pubkey = sender;
+            dm.created_at = createdAt; // real timestamp from the rumor
           } else {
             const other = dm.isMine ? peerPubkey : dm.pubkey;
             dm.content = await decryptDM(other, dm.content, dm.kind);
@@ -291,52 +312,20 @@ export function Messages() {
     if (!newMessage.trim() || !selectedPubkey || !publicKey) return;
     setSending(true);
     try {
-      const { content: encryptedContent, kind: dmKind, giftWrap } = await encryptDM(selectedPubkey, newMessage);
-
-      if (giftWrap && dmKind === 1059) {
-        await publishWithFeedback(giftWrap as any, 'Sent');
-        setMessages(prev => [...prev, {
-          id: (giftWrap as any).id || `local_${Date.now()}`,
-          pubkey: publicKey,
-          content: newMessage,
-          created_at: Math.floor(Date.now() / 1000),
-          isMine: true,
-          kind: 1059,
-        }]);
-        setNewMessage('');
-        return;
-      }
-
-      const event = {
-        kind: dmKind,
-        content: encryptedContent,
-        tags: [['p', selectedPubkey]],
-        created_at: Math.floor(Date.now() / 1000),
+      const result = await sendDM(publicKey, selectedPubkey, newMessage);
+      celebratePublish('Sent');
+      setMessages(prev => [...prev, {
+        id: result.eventId || `local_${Date.now()}`,
         pubkey: publicKey,
-      };
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event },
-        id: `dm_${Date.now()}`,
-      });
-
-      if (response?.error) throw new Error(response.error);
-      if (response?.result) {
-        await publishWithFeedback(response.result, 'Sent');
-        setMessages(prev => [...prev, {
-          id: response.result.id,
-          pubkey: publicKey,
-          content: newMessage,
-          created_at: Math.floor(Date.now() / 1000),
-          isMine: true,
-          kind: dmKind,
-        }]);
-        setNewMessage('');
-      }
+        content: newMessage,
+        created_at: Math.floor(Date.now() / 1000),
+        isMine: true,
+        kind: result.kind,
+      }]);
+      setNewMessage('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send DM';
-      if (!msg.includes('Could not reach any relay')) toast.error(msg);
+      toast.error(msg);
     } finally {
       setSending(false);
     }
@@ -445,12 +434,7 @@ export function Messages() {
       </div>
 
       <div>
-        {loading && conversations.length === 0 && (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="w-5 h-5 animate-spin text-gray-500 mr-2" />
-            <p className="text-gray-500 text-sm">Loading conversations...</p>
-          </div>
-        )}
+        {loading && conversations.length === 0 && <SkeletonConversationList count={6} />}
 
         {!loading && conversations.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 px-4">

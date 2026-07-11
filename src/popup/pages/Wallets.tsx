@@ -13,6 +13,7 @@ import {
   type ArchivedMultisig,
 } from '@/lib/bitcoin/wallet-store';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { SkeletonWalletList } from '@/popup/components/Skeleton';
 import { log } from '@/lib/utils/logger';
 
 export function Wallets() {
@@ -135,8 +136,8 @@ export function Wallets() {
       </div>
 
       {loading && wallets.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="w-6 h-6 animate-spin text-bitcoin" />
+        <div className="flex-1 overflow-y-auto">
+          <SkeletonWalletList count={3} />
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3">

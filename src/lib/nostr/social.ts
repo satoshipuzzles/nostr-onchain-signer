@@ -22,6 +22,17 @@ export interface ProfileMetadata {
   nip05?: string;
   lud16?: string;
   website?: string;
+  /** Onchain bitcoin address declared in kind-0 metadata (if any) */
+  bitcoinAddress?: string;
+  /** BIP-352 silent payment address (sp1...) declared in kind-0 metadata */
+  silentPaymentAddress?: string;
+}
+
+/** Pull an sp1... silent payment address out of free-form text (e.g. about) */
+export function extractSilentPaymentAddress(text?: string): string | undefined {
+  if (!text) return undefined;
+  const match = text.match(/\bsp1[02-9ac-hj-np-z]{20,150}\b/i);
+  return match?.[0];
 }
 
 export interface SocialGraph {
@@ -216,6 +227,10 @@ async function fetchProfilesFromRelay(
               nip05: content.nip05,
               lud16: content.lud16,
               website: content.website,
+              bitcoinAddress: content.bitcoin_address || content.btc_address || content.bitcoin,
+              silentPaymentAddress:
+                content.silent_payment_address || content.sp_address ||
+                extractSilentPaymentAddress(content.about),
             });
           } catch {
             // invalid profile JSON

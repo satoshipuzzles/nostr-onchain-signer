@@ -1,6 +1,8 @@
 import { createMessageId } from '@/shared/messages';
-import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
-import { createGiftWrap, unwrapGiftWrap, type Rumor } from '@/lib/nostr/gift-wrap';
+import { encryptNip04, decryptNip04, decryptNip44 } from '@/lib/nostr/dm-crypto';
+import { createGiftWrapPair, unwrapGiftWrap, type Rumor } from '@/lib/nostr/gift-wrap';
+import { fetchDmInboxRelays, publishToRelays, DEFAULT_DM_RELAYS } from '@/lib/nostr/dm-relays';
+import { getPublishRelays } from '@/lib/nostr/publish';
 
 let cachedPrivateKey: string | null = null;
 
@@ -63,44 +65,34 @@ export interface GiftWrapDMResult {
 }
 
 /**
- * Encrypt a DM using NIP-17 gift wrap (preferred) or fall back to NIP-44/NIP-04.
+ * Encrypt a DM. Prefers NIP-17 gift wrap (kind 1059); falls back to
+ * NIP-04 (kind 4). NEVER returns kind 14 — signed kind 14 events violate
+ * NIP-17 and are ignored by Amethyst/0xchat/other clients.
  */
 export async function encryptDM(
   recipientPubkey: string,
   plaintext: string,
-): Promise<{ content: string; kind: number; giftWrap?: object }> {
+): Promise<{ content: string; kind: number; giftWrap?: object; selfGiftWrap?: object }> {
   const privateKey = await getSessionPrivateKey();
 
-  // Preferred: NIP-17 gift wrap (kind 1059)
+  // Preferred: NIP-17 gift wrap (kind 1059) — pair includes self-copy
   if (privateKey) {
     try {
-      const { giftWrap } = createGiftWrap(privateKey, recipientPubkey, plaintext);
-      return { content: '', kind: 1059, giftWrap };
+      const { recipientWrap, selfWrap } = createGiftWrapPair(privateKey, recipientPubkey, plaintext);
+      return { content: '', kind: 1059, giftWrap: recipientWrap, selfGiftWrap: selfWrap };
     } catch (err) {
       console.warn('Gift wrap creation failed, falling back:', err);
     }
   }
 
-  // Try local NIP-44 encryption with local key
+  // NIP-04 fallback with local key
   if (privateKey) {
-    try {
-      return { content: encryptNip44(privateKey, recipientPubkey, plaintext), kind: 14 };
-    } catch {}
     try {
       return { content: await encryptNip04(privateKey, recipientPubkey, plaintext), kind: 4 };
     } catch {}
   }
 
-  // Extension runtime fallback
-  try {
-    const nip44Res = await chrome.runtime.sendMessage({
-      type: 'nip07:nip44:encrypt',
-      payload: { pubkey: recipientPubkey, plaintext },
-      id: createMessageId(),
-    });
-    if (nip44Res?.result) return { content: nip44Res.result, kind: 14 };
-  } catch {}
-
+  // Extension runtime fallback (NIP-04 only — kind 14 must never be signed)
   try {
     const nip04Res = await chrome.runtime.sendMessage({
       type: 'nip07:nip04:encrypt',
@@ -110,13 +102,8 @@ export async function encryptDM(
     if (nip04Res?.result) return { content: nip04Res.result, kind: 4 };
   } catch {}
 
-  // window.nostr fallbacks
+  // window.nostr fallback
   const nostr = (window as any).nostr;
-  if (typeof nostr?.nip44?.encrypt === 'function') {
-    try {
-      return { content: await nostr.nip44.encrypt(recipientPubkey, plaintext), kind: 14 };
-    } catch {}
-  }
   if (typeof nostr?.nip04?.encrypt === 'function') {
     try {
       return { content: await nostr.nip04.encrypt(recipientPubkey, plaintext), kind: 4 };
@@ -124,6 +111,74 @@ export async function encryptDM(
   }
 
   throw new Error('DM encryption failed — unlock your vault or install a Nostr signer');
+}
+
+export interface SendDMResult {
+  ok: boolean;
+  kind: number;
+  eventId?: string;
+  relays: string[];
+}
+
+/**
+ * Send a DM end-to-end: encrypt, resolve the recipient's DM inbox relays
+ * (kind 10050), and publish to the right places.
+ *
+ * NIP-17 path: recipient's wrap → their inbox relays (+ shared defaults);
+ * self wrap → our relays (so our sent messages sync).
+ * NIP-04 path: signed kind 4 → our write relays + their inbox relays.
+ */
+export async function sendDM(
+  senderPubkey: string,
+  recipientPubkey: string,
+  plaintext: string,
+): Promise<SendDMResult> {
+  const encrypted = await encryptDM(recipientPubkey, plaintext);
+
+  const [recipientRelays, ourRelays] = await Promise.all([
+    fetchDmInboxRelays(recipientPubkey),
+    getPublishRelays(),
+  ]);
+
+  if (encrypted.kind === 1059 && encrypted.giftWrap) {
+    // Recipient copy → THEIR inbox relays. This is what makes Amethyst
+    // users actually receive the message.
+    const recipientTargets = [...new Set([...recipientRelays, ...DEFAULT_DM_RELAYS])];
+    const recipientResult = await publishToRelays(encrypted.giftWrap as any, recipientTargets);
+
+    // Self copy → our relays (fire and forget, don't block the UI)
+    if (encrypted.selfGiftWrap) {
+      const selfTargets = [...new Set([...ourRelays, ...DEFAULT_DM_RELAYS])];
+      publishToRelays(encrypted.selfGiftWrap as any, selfTargets).catch(() => {});
+    }
+
+    if (recipientResult.success.length === 0) {
+      throw new Error('Could not reach any relay. Message not delivered.');
+    }
+    return {
+      ok: true,
+      kind: 1059,
+      eventId: (encrypted.giftWrap as any).id,
+      relays: recipientResult.success,
+    };
+  }
+
+  // NIP-04 path — sign a kind 4 event and publish broadly
+  const event = {
+    kind: encrypted.kind,
+    content: encrypted.content,
+    tags: [['p', recipientPubkey]],
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  const { signEventWithFallback } = await import('@/lib/nostr/sign-event');
+  const signed = await signEventWithFallback(event, senderPubkey);
+  const targets = [...new Set([...ourRelays, ...recipientRelays])];
+  const result = await publishToRelays(signed, targets);
+
+  if (result.success.length === 0) {
+    throw new Error('Could not reach any relay. Message not delivered.');
+  }
+  return { ok: true, kind: encrypted.kind, eventId: signed.id, relays: result.success };
 }
 
 /**
@@ -199,4 +254,23 @@ export async function getGiftWrapSender(
   if (!privateKey) return null;
   const result = unwrapGiftWrap(privateKey, event);
   return result?.senderPubkey ?? null;
+}
+
+/**
+ * Fully unwrap a gift wrap in one pass: content + sender + REAL timestamp
+ * (the rumor's created_at — the wrap's own timestamp is randomized).
+ */
+export async function unwrapGiftWrapEvent(
+  event: { pubkey: string; content: string; kind: number; tags?: string[][] },
+): Promise<{ content: string; senderPubkey: string; createdAt: number; rumor: Rumor } | null> {
+  const privateKey = await getSessionPrivateKey();
+  if (!privateKey) return null;
+  const result = unwrapGiftWrap(privateKey, event);
+  if (!result) return null;
+  return {
+    content: result.rumor.content,
+    senderPubkey: result.senderPubkey,
+    createdAt: result.rumor.created_at,
+    rumor: result.rumor,
+  };
 }

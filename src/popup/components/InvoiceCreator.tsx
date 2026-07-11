@@ -4,7 +4,7 @@ import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { npubToPubkey, pubkeyToNpub, isValidHexPubkey } from '@/lib/nostr/keys';
 import { ArrowLeft, Loader2, Send, ImageIcon, X, Repeat, Copy, Check, Search } from 'lucide-react';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
-import { encryptDM } from '@/lib/nostr/dm';
+import { sendDM } from '@/lib/nostr/dm';
 import { resolveNip05 } from '@/lib/nostr/nip05';
 import { encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
 import type { ProfileMetadata } from '@/lib/nostr/social';
@@ -340,35 +340,13 @@ export function InvoiceCreator({ publicKey, onClose, onCreated }: Props) {
           JSON.stringify(machinePayload),
         ].filter(Boolean).join('\n');
 
-        let encryptedDmContent: string;
-        let dmKind: number;
         try {
-          const result = await encryptDM(recipientHex, dmContent);
-          encryptedDmContent = result.content;
-          dmKind = result.kind;
-        } catch (encryptErr) {
-          const msg = encryptErr instanceof Error ? encryptErr.message : 'DM encryption failed';
+          await sendDM(publicKey, recipientHex, dmContent);
+          toast.success('Invoice DM sent!');
+        } catch (dmErr) {
+          const msg = dmErr instanceof Error ? dmErr.message : 'DM encryption failed';
           throw new Error(`${msg}. Unlock your vault to send encrypted invoice DMs.`);
         }
-
-        const dmTags: string[][] = [
-          ['p', recipientHex],
-          ['e', eventId, '', 'mention'],
-        ];
-        if (opReturn) {
-          dmTags.push(['op_return', opReturn.scriptHex]);
-        }
-
-        const dmEvent = {
-          kind: dmKind,
-          content: encryptedDmContent,
-          tags: dmTags,
-          created_at: Math.floor(Date.now() / 1000),
-          pubkey: publicKey,
-        };
-
-        const signedDm = await confirmAndSign(dmEvent);
-        await publishWithFeedback(signedDm, 'Invoice DM sent!');
       }
 
       if (!opReturnEnabled) {

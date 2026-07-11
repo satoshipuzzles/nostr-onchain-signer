@@ -9,7 +9,7 @@ import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { encryptDM } from '@/lib/nostr/dm';
+import { sendDM } from '@/lib/nostr/dm';
 import { loadSigningRounds, saveSigningRound, recordBroadcast, recordSignature, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
@@ -637,30 +637,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
       const link = signingUrl(round.id);
       const dmContent = `Reminder: You have a pending signing request. View and sign: ${link}`;
 
-      let content: string;
-      let kind: number;
-      const result = await encryptDM(signerPubkey, dmContent);
-      content = result.content;
-      kind = result.kind;
-
-      const dmEvent = {
-        kind,
-        content,
-        tags: [['p', signerPubkey]],
-        created_at: Math.floor(Date.now() / 1000),
-        pubkey: publicKey,
-      };
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event: dmEvent },
-        id: createMessageId(),
-      });
-
-      if (!response.error && response.result) {
-        const { publishEvent } = await import('@/lib/nostr/publish');
-        await publishEvent(response.result);
-      }
+      await sendDM(publicKey, signerPubkey, dmContent);
     } catch (err) {
       console.error('Nudge failed:', err);
     } finally {
@@ -1512,26 +1489,10 @@ function RequestDetail({
 
       const dmContent = `✅ Signed your transaction!\n\nRound: ${request.round_id.slice(0, 12)}...\nMulti-sig: ${request.multisig_address.slice(0, 16)}...\n\nCheck your Nostr Onchain signer for the updated PSBT.`;
 
-      const encryptResult = await encryptDM(request.senderPubkey, dmContent);
-      const encryptedDmContent = encryptResult.content;
-      const dmKind = encryptResult.kind;
-
-      const dmEvent = {
-        kind: dmKind,
-        content: encryptedDmContent,
-        tags: [['p', request.senderPubkey]],
-        created_at: Math.floor(Date.now() / 1000),
-        pubkey: publicKey,
-      };
-
-      const dmSignResponse = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event: dmEvent },
-        id: createMessageId(),
-      });
-
-      if (!dmSignResponse.error && dmSignResponse.result) {
-        await publishEvent(dmSignResponse.result);
+      try {
+        await sendDM(publicKey, request.senderPubkey, dmContent);
+      } catch (dmErr) {
+        console.warn('Signed-notification DM failed:', dmErr);
       }
 
       await markRequestStatus(request.eventId, 'signed');

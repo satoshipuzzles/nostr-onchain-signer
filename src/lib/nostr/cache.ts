@@ -9,7 +9,7 @@
  * 5. Local cache search for instant results
  */
 
-import { type ProfileMetadata } from './social';
+import { type ProfileMetadata, extractSilentPaymentAddress } from './social';
 import { KIND } from './events';
 import { getReadRelays, loadRelayList } from './relays';
 import { npubToPubkey } from './keys';
@@ -28,6 +28,12 @@ function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
     nip05: typeof raw.nip05 === 'string' ? raw.nip05 : '',
     lud16: typeof raw.lud16 === 'string' ? raw.lud16 : '',
     website: typeof raw.website === 'string' ? raw.website : '',
+    bitcoinAddress: typeof (raw.bitcoin_address || raw.btc_address || raw.bitcoin || raw.bitcoinAddress) === 'string'
+      ? (raw.bitcoin_address || raw.btc_address || raw.bitcoin || raw.bitcoinAddress)
+      : undefined,
+    silentPaymentAddress: typeof (raw.silent_payment_address || raw.sp_address || raw.silentPaymentAddress) === 'string'
+      ? (raw.silent_payment_address || raw.sp_address || raw.silentPaymentAddress)
+      : extractSilentPaymentAddress(typeof raw.about === 'string' ? raw.about : undefined),
   };
 }
 
