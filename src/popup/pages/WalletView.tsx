@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, RefreshCw, Loader2, ArrowUpRight, ArrowDownLeft, Send } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, Loader2, ArrowUpRight, ArrowDownLeft, Send, Copy, Check } from 'lucide-react';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import {
   fetchBalance, fetchTransactions, getCachedBalance, getMempoolAddressUrl, getMempoolTxUrl,
   formatSats, type Transaction,
 } from '@/lib/bitcoin/mempool';
+import { QRCode } from '../components/QRCode';
 
 interface Props {
   publicKey: string;
@@ -20,7 +21,14 @@ export function WalletView({ publicKey, onBack }: Props) {
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
   const receiveRef = useRef<HTMLDivElement>(null);
+
+  async function copyAddress() {
+    await navigator.clipboard.writeText(address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   useEffect(() => {
     // Instant: show cached data
@@ -114,14 +122,15 @@ export function WalletView({ publicKey, onBack }: Props) {
       </div>
 
       <div ref={receiveRef} className="card flex flex-col items-center mb-4">
-        <div className="w-40 h-40 bg-white rounded-lg p-2 mb-3 flex items-center justify-center">
-          <img
-            src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=bitcoin:${address}&format=svg`}
-            alt="QR Code"
-            className="w-full h-full"
-          />
-        </div>
+        <QRCode data={`bitcoin:${address}`} size={160} className="mb-3" />
         <code className="text-[10px] text-gray-400 text-center break-all px-4 leading-relaxed">{address}</code>
+        <button
+          onClick={copyAddress}
+          className="flex items-center gap-1.5 px-4 py-2 mt-3 rounded-xl bg-surface-700 hover:bg-surface-600 transition-colors text-xs font-medium"
+        >
+          {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-400" />}
+          {copied ? 'Copied!' : 'Copy Address'}
+        </button>
         <a href={getMempoolAddressUrl(address)} target="_blank" rel="noopener"
           className="flex items-center gap-1 text-xs text-bitcoin mt-2 hover:underline">
           View on mempool.space <ExternalLink className="w-3 h-3" />

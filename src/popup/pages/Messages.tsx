@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Send, MessageCircle, Bitcoin, Loader2 } from 'lucide-react';
 import { getCachedProfile } from '@/lib/nostr/cache';
@@ -54,8 +54,12 @@ function timeAgo(timestamp: number): string {
 
 export function Messages() {
   const { publicKey } = useAuth();
+  const [searchParams] = useSearchParams();
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedPubkey, setSelectedPubkey] = useState<string | null>(null);
+  const [selectedPubkey, setSelectedPubkey] = useState<string | null>(() => {
+    const to = searchParams.get('to');
+    return to && to.length === 64 ? to : null;
+  });
   const [messages, setMessages] = useState<DM[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
@@ -93,67 +97,70 @@ export function Messages() {
 
       const convMap = new Map<string, Conversation>();
       const readRelays = await getReadRelayUrls();
+      const giftWrapPromises: Promise<void>[] = [];
 
-      for (const relayUrl of readRelays) {
-        try {
-          const ws = await openRelay(relayUrl);
-          const subId = `dms_${Date.now()}`;
+      // Query all relays in parallel (was sequential — up to 40s total)
+      await Promise.allSettled(readRelays.map(async (relayUrl) => {
+        const ws = await openRelay(relayUrl);
+        const subId = `dms_${Date.now()}_${relayUrl.slice(-6)}`;
 
-          await new Promise<void>((resolve) => {
-            const timeout = setTimeout(() => { ws.close(); resolve(); }, 8000);
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => { ws.close(); resolve(); }, 5000);
 
-            ws.onmessage = (ev: MessageEvent) => {
-              try {
-                const msg = JSON.parse(ev.data);
-                if (msg[0] === 'EVENT' && msg[1] === subId) {
-                  const event = msg[2];
+          ws.onmessage = (ev: MessageEvent) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg[0] === 'EVENT' && msg[1] === subId) {
+                const event = msg[2];
 
-                  if (event.kind === 1059) {
-                    getGiftWrapSender(event).then((sender) => {
-                      if (!sender) return;
-                      const otherPubkey = sender === publicKey
-                        ? event.tags?.find((t: string[]) => t[0] === 'p' && t[1] !== publicKey)?.[1]
-                        : sender;
-                      if (!otherPubkey) return;
-                      const existing = convMap.get(otherPubkey);
-                      if (!existing || event.created_at > existing.lastTimestamp) {
-                        convMap.set(otherPubkey, {
-                          pubkey: otherPubkey,
-                          lastMessage: '(encrypted)',
-                          lastTimestamp: event.created_at,
-                          unread: sender !== publicKey,
-                        });
-                      }
-                    });
-                    return;
-                  }
-
-                  const otherPubkey = event.pubkey === publicKey
-                    ? event.tags.find((t: string[]) => t[0] === 'p')?.[1]
-                    : event.pubkey;
-                  if (!otherPubkey) return;
-
-                  const existing = convMap.get(otherPubkey);
-                  if (!existing || event.created_at > existing.lastTimestamp) {
-                    convMap.set(otherPubkey, {
-                      pubkey: otherPubkey,
-                      lastMessage: '(encrypted)',
-                      lastTimestamp: event.created_at,
-                      unread: event.pubkey !== publicKey,
-                    });
-                  }
+                if (event.kind === 1059) {
+                  giftWrapPromises.push(getGiftWrapSender(event).then((sender) => {
+                    if (!sender) return;
+                    const otherPubkey = sender === publicKey
+                      ? event.tags?.find((t: string[]) => t[0] === 'p' && t[1] !== publicKey)?.[1]
+                      : sender;
+                    if (!otherPubkey) return;
+                    const existing = convMap.get(otherPubkey);
+                    if (!existing || event.created_at > existing.lastTimestamp) {
+                      convMap.set(otherPubkey, {
+                        pubkey: otherPubkey,
+                        lastMessage: '(encrypted)',
+                        lastTimestamp: event.created_at,
+                        unread: sender !== publicKey,
+                      });
+                    }
+                  }).catch(() => {}));
+                  return;
                 }
-                if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
-              } catch {}
-            };
 
-            ws.send(JSON.stringify(['REQ', subId,
-              { kinds: [4, 14, 1059], authors: [publicKey!], limit: 50 },
-              { kinds: [4, 14, 1059], '#p': [publicKey!], limit: 50 },
-            ]));
-          });
-        } catch {}
-      }
+                const otherPubkey = event.pubkey === publicKey
+                  ? event.tags.find((t: string[]) => t[0] === 'p')?.[1]
+                  : event.pubkey;
+                if (!otherPubkey) return;
+
+                const existing = convMap.get(otherPubkey);
+                if (!existing || event.created_at > existing.lastTimestamp) {
+                  convMap.set(otherPubkey, {
+                    pubkey: otherPubkey,
+                    lastMessage: '(encrypted)',
+                    lastTimestamp: event.created_at,
+                    unread: event.pubkey !== publicKey,
+                  });
+                }
+              }
+              if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
+            } catch {}
+          };
+
+          ws.send(JSON.stringify(['REQ', subId,
+            { kinds: [4, 14, 1059], authors: [publicKey!], limit: 50 },
+            { kinds: [4, 14, 1059], '#p': [publicKey!], limit: 50 },
+          ]));
+        });
+      }));
+
+      // Wait for pending gift-wrap sender resolutions
+      await Promise.allSettled(giftWrapPromises);
 
       const sorted = Array.from(convMap.values()).sort((a, b) => b.lastTimestamp - a.lastTimestamp);
       if (sorted.length > 0) setConversations(sorted);
@@ -176,52 +183,64 @@ export function Messages() {
   async function loadMessages(peerPubkey: string) {
     setMessages([]);
     setDecrypting(true);
+
+    // Show cached decrypted thread instantly while fresh data loads
+    const threadCacheKey = `dm_thread_${publicKey}_${peerPubkey}`;
+    try {
+      const cached = await chrome.storage.local.get(threadCacheKey);
+      const cachedMsgs = cached[threadCacheKey];
+      if (Array.isArray(cachedMsgs) && cachedMsgs.length > 0) {
+        setMessages(cachedMsgs);
+        setDecrypting(false);
+      }
+    } catch {}
+
     try {
       const readRelays = await getReadRelayUrls();
       const dms: DM[] = [];
+      const seen = new Set<string>();
 
-      for (const relayUrl of readRelays.slice(0, 4)) {
-        try {
-          const ws = await openRelay(relayUrl);
-          const subId = `dm_thread_${Date.now()}_${relayUrl.slice(-6)}`;
+      // All relays in parallel (was sequential — up to 40s)
+      await Promise.allSettled(readRelays.slice(0, 4).map(async (relayUrl) => {
+        const ws = await openRelay(relayUrl);
+        const subId = `dm_thread_${Date.now()}_${relayUrl.slice(-6)}`;
 
-          await new Promise<void>((resolve) => {
-            const timeout = setTimeout(() => { ws.close(); resolve(); }, 10_000);
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => { ws.close(); resolve(); }, 6000);
 
-            ws.onmessage = (ev: MessageEvent) => {
-              try {
-                const msg = JSON.parse(ev.data);
-                if (msg[0] === 'EVENT' && msg[1] === subId) {
-                  const event = msg[2];
-                  if (!dms.some((d) => d.id === event.id)) {
-                    dms.push({
-                      id: event.id,
-                      pubkey: event.pubkey,
-                      content: event.content,
-                      created_at: event.created_at,
-                      isMine: event.pubkey === publicKey,
-                      kind: event.kind,
-                    });
-                  }
+          ws.onmessage = (ev: MessageEvent) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg[0] === 'EVENT' && msg[1] === subId) {
+                const event = msg[2];
+                if (!seen.has(event.id)) {
+                  seen.add(event.id);
+                  dms.push({
+                    id: event.id,
+                    pubkey: event.pubkey,
+                    content: event.content,
+                    created_at: event.created_at,
+                    isMine: event.pubkey === publicKey,
+                    kind: event.kind,
+                  });
                 }
-                if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
-              } catch {}
-            };
+              }
+              if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
+            } catch {}
+          };
 
-            ws.send(JSON.stringify(['REQ', subId,
-              { kinds: [4, 14], authors: [publicKey!], '#p': [peerPubkey], limit: 100 },
-              { kinds: [4, 14], authors: [peerPubkey], '#p': [publicKey!], limit: 100 },
-              { kinds: [1059], '#p': [publicKey!], limit: 100 },
-            ]));
-          });
-        } catch {}
-      }
+          ws.send(JSON.stringify(['REQ', subId,
+            { kinds: [4, 14], authors: [publicKey!], '#p': [peerPubkey], limit: 100 },
+            { kinds: [4, 14], authors: [peerPubkey], '#p': [publicKey!], limit: 100 },
+            { kinds: [1059], '#p': [publicKey!], limit: 100 },
+          ]));
+        });
+      }));
 
       const sorted = dms.sort((a, b) => a.created_at - b.created_at);
 
-      // Batch decrypt silently — no per-message prompts
-      const decrypted: DM[] = [];
-      for (const dm of sorted) {
+      // Decrypt all messages in parallel — local key makes each fast
+      const results = await Promise.allSettled(sorted.map(async (dm): Promise<DM | null> => {
         try {
           if (dm.kind === 1059) {
             const result = await decryptDM('', '', 1059, {
@@ -230,10 +249,10 @@ export function Messages() {
               kind: 1059,
             });
             const sender = await getGiftWrapSender({ pubkey: dm.pubkey, content: dm.content, kind: 1059 });
-            if (!sender) continue;
+            if (!sender) return null;
             const isMine = sender === publicKey;
             const peer = isMine ? peerPubkey : sender;
-            if (peer !== peerPubkey) continue;
+            if (peer !== peerPubkey) return null;
             dm.content = result;
             dm.isMine = isMine;
           } else {
@@ -241,16 +260,26 @@ export function Messages() {
             dm.content = await decryptDM(other, dm.content, dm.kind);
           }
           dm.invoice = parseInvoiceDmPayload(dm.content);
-          decrypted.push(dm);
+          return dm;
         } catch {
           if (dm.content.includes('?iv=') || (dm.content.length > 200 && !/\s/.test(dm.content))) {
             dm.content = '(unable to decrypt)';
           }
-          decrypted.push(dm);
+          return dm;
         }
-      }
+      }));
 
-      setMessages(decrypted);
+      const decrypted = results
+        .filter((r): r is PromiseFulfilledResult<DM | null> => r.status === 'fulfilled')
+        .map((r) => r.value)
+        .filter((d): d is DM => d !== null)
+        .sort((a, b) => a.created_at - b.created_at);
+
+      if (decrypted.length > 0) {
+        setMessages(decrypted);
+        // Cache the decrypted thread (last 50) for instant display next time
+        chrome.storage.local.set({ [threadCacheKey]: decrypted.slice(-50) }).catch(() => {});
+      }
     } catch (err) {
       console.error('Failed to load messages:', err);
     } finally {

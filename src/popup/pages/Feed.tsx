@@ -3,6 +3,7 @@ import { subscribeFeed, subscribeEvents, type FeedNote, type NostrEvent, type Fe
 import { DEFAULT_READ_RELAYS } from '@/lib/nostr/relay-subscribe';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
+import { loadMutedPubkeys } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
@@ -46,6 +47,11 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
   const cleanupRef = useRef<(() => void) | null>(null);
   const engagementCleanupRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const mutedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    loadMutedPubkeys().then((m) => { mutedRef.current = m; }).catch(() => {});
+  }, []);
 
   const loadFeed = useCallback(async (mode: FeedMode, append = false) => {
     if (cleanupRef.current) {
@@ -106,6 +112,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile }: Props) {
       relayUrls,
       filter,
       (note) => {
+        if (mutedRef.current.has(note.pubkey)) return;
         collected.push(note);
         const sorted = [...collected].sort((a, b) => b.created_at - a.created_at);
         if (append) {

@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { createMessageId } from '@/shared/messages';
 import { encryptVault, saveVault, clearVault, type VaultData } from '@/lib/crypto/vault';
-import { generateKeyPair, keyPairFromPrivateKey, nsecToPrivkey, isValidNsec, pubkeyToNpub } from '@/lib/nostr/keys';
+import { generateKeyPair, keyPairFromPrivateKey, nsecToPrivkey, isValidNsec, pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
 import { Shield, Key, Import, Upload, AlertTriangle, FileUp, Globe } from 'lucide-react';
 import { detectNostrSignerType, nip07SignerLabel } from '@/lib/bitcoin/psbt-external-sign';
 
@@ -21,12 +21,14 @@ export function Setup({ onCreated }: Props) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [wasGenerated, setWasGenerated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleGenerate() {
     const pair = generateKeyPair();
     setPrivateKey(pair.privateKeyHex);
     setPublicKey(pair.publicKeyHex);
+    setWasGenerated(true);
     setKeysToImport([{
       privateKeyHex: pair.privateKeyHex,
       publicKeyHex: pair.publicKeyHex,
@@ -34,6 +36,29 @@ export function Setup({ onCreated }: Props) {
       label: 'Primary Key',
     }]);
     setStep('password');
+  }
+
+  function downloadKeyBackup(keys: VaultData[]) {
+    let content = '# Nostr Onchain - Key Backup\n';
+    content += `# Generated: ${new Date().toISOString()}\n`;
+    content += '# KEEP THIS FILE SAFE - Anyone with these keys controls your account\n\n';
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (!k.privateKeyHex) continue;
+      content += `--- Account ${i + 1}: ${k.label || 'Unnamed'} ---\n`;
+      content += `npub: ${pubkeyToNpub(k.publicKeyHex)}\n`;
+      content += `nsec: ${privkeyToNsec(k.privateKeyHex)}\n`;
+      content += `hex pubkey: ${k.publicKeyHex}\n\n`;
+    }
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nostr-onchain-keys-${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   function handleImport() {
@@ -152,6 +177,18 @@ export function Setup({ onCreated }: Props) {
         payload: { password },
         id: createMessageId(),
       });
+
+      // Make decrypted keys available to DM crypto and signing right away
+      try {
+        sessionStorage.setItem('nostr_onchain_session_keys', JSON.stringify(vaultData));
+        sessionStorage.setItem('nostr_onchain_active_index', '0');
+      } catch {}
+
+      // Freshly generated keys only exist here — prompt the user to save them
+      if (wasGenerated) {
+        downloadKeyBackup(vaultData);
+        alert('Your key backup file is downloading. Save it somewhere safe — it is the ONLY way to recover your account.');
+      }
 
       onCreated(publicKey, password);
     } catch (err: unknown) {

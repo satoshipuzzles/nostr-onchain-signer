@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { ArrowLeft, Send, Users, Loader2, Check } from 'lucide-react';
+import { ArrowLeft, Send, Users, Loader2, Check, Key, AlertTriangle } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { type ArchivedMultisig, savePendingRequest, type PendingSignatureRequest } from '@/lib/bitcoin/wallet-store';
 import { createSigningRound, saveSigningRound } from '@/lib/bitcoin/signing-round';
 import { buildMultisigPsbt } from '@/lib/bitcoin/multisig-psbt';
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
+  const { canSignOnchain, handleUpgradeWithNsec } = useAuth();
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
   const [memo, setMemo] = useState('');
@@ -26,8 +28,27 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
   const [sentTo, setSentTo] = useState<string[]>([]);
+  const [nsecInput, setNsecInput] = useState('');
+  const [importingNsec, setImportingNsec] = useState(false);
+  const [nsecImported, setNsecImported] = useState(false);
 
   const otherSigners = wallet.keyHolders.filter((h) => !h.isOwnKey);
+
+  async function handleImportNsec(e: React.FormEvent) {
+    e.preventDefault();
+    if (!nsecInput.trim()) return;
+    setImportingNsec(true);
+    setError('');
+    try {
+      await handleUpgradeWithNsec(nsecInput.trim());
+      setNsecInput('');
+      setNsecImported(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import nsec');
+    } finally {
+      setImportingNsec(false);
+    }
+  }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -269,6 +290,57 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack }: Props) {
           </span>
         </div>
         <p className="text-[10px] text-gray-500 font-mono">{wallet.wallet.address}</p>
+      </div>
+
+      {/* Signing key status */}
+      {!canSignOnchain && !nsecImported ? (
+        <div className="card mb-4 border-amber-500/30 bg-amber-500/5">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <p className="text-xs font-medium text-amber-400">Your signing key is not in the vault</p>
+          </div>
+          <p className="text-[10px] text-gray-400 mb-2 leading-relaxed">
+            To sign your share of this multisig spend, the app needs your nsec.
+            Paste it below — it's encrypted with your vault password and never leaves this device.
+            Without it, you can still create the request; other holders sign first and you sign
+            last via your extension.
+          </p>
+          <form onSubmit={handleImportNsec} className="space-y-2">
+            <input
+              type="password"
+              value={nsecInput}
+              onChange={(e) => setNsecInput(e.target.value)}
+              placeholder="nsec1..."
+              className="input-field text-xs font-mono"
+            />
+            <button
+              type="submit"
+              disabled={importingNsec || !nsecInput.trim()}
+              className="btn-secondary w-full text-sm flex items-center justify-center gap-2"
+            >
+              {importingNsec ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Key className="w-3.5 h-3.5" />}
+              {importingNsec ? 'Importing...' : 'Import nsec to sign'}
+            </button>
+          </form>
+        </div>
+      ) : (
+        <div className="card mb-4 border-green-500/20 bg-green-500/5">
+          <p className="text-[11px] text-green-400 flex items-center gap-1.5">
+            <Check className="w-3.5 h-3.5" />
+            Your key is ready — you'll auto-sign your share when creating the request
+          </p>
+        </div>
+      )}
+
+      {/* How it works */}
+      <div className="card mb-4">
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2">How spending works</p>
+        <ol className="text-[11px] text-gray-400 space-y-1.5 list-decimal list-inside leading-relaxed">
+          <li>You create the transaction and sign your share ({wallet.wallet.config.threshold}-of-{wallet.wallet.config.pubkeys.length} needed)</li>
+          <li>Co-signers get a DM with a signing link</li>
+          <li>When {wallet.wallet.config.threshold} signatures are collected, you get a DM with the broadcast link</li>
+          <li>Open it and broadcast — done</li>
+        </ol>
       </div>
 
       {/* Transaction form */}

@@ -429,6 +429,17 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
         id: createMessageId(),
       });
 
+      // Refresh session keys so DM crypto and signing use the new vault contents
+      try {
+        const vault = await loadVault();
+        if (vault) {
+          const vaultData = await decryptVault(vault, pw);
+          sessionStorage.setItem('nostr_onchain_session_keys', JSON.stringify(vaultData));
+        }
+      } catch {}
+      const { clearDMKeyCache } = await import('@/lib/nostr/dm');
+      clearDMKeyCache();
+
       await activateAccount(newIndex, newAccounts, { password: pw, forceUnlock: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to add account';
@@ -494,16 +505,43 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
   }
 
   async function handleUpgradeWithNsec(nsec: string) {
-    if (!vaultPassword) throw new Error('Unlock your vault first');
-    const updated = await upgradeAccountWithNsec(vaultPassword, publicKey, nsec);
+    // Recover the password if it's not in memory (e.g. after a page refresh)
+    let pw = vaultPassword;
+    if (!pw) {
+      const entered = prompt('Enter your vault password to import the nsec');
+      if (!entered) throw new Error('Vault password required to import nsec');
+      const vault = await loadVault();
+      if (!vault) throw new Error('No vault found — create or unlock your vault first');
+      try {
+        await decryptVault(vault, entered);
+      } catch {
+        throw new Error('Incorrect vault password');
+      }
+      pw = entered;
+      setVaultPassword(entered);
+    }
+
+    const updated = await upgradeAccountWithNsec(pw, publicKey, nsec);
     setAccounts(updated);
     await chrome.storage.local.set({ cached_accounts: updated });
     await chrome.runtime.sendMessage({
       type: 'vault:unlock',
-      payload: { password: vaultPassword },
+      payload: { password: pw },
       id: createMessageId(),
     });
-    await activateAccount(activeAccountIndex, updated, { password: vaultPassword, forceUnlock: true });
+
+    // Refresh session keys + DM key cache so the new private key is picked up immediately
+    try {
+      const vault = await loadVault();
+      if (vault) {
+        const vaultData = await decryptVault(vault, pw);
+        sessionStorage.setItem('nostr_onchain_session_keys', JSON.stringify(vaultData));
+      }
+    } catch {}
+    const { clearDMKeyCache } = await import('@/lib/nostr/dm');
+    clearDMKeyCache();
+
+    await activateAccount(activeAccountIndex, updated, { password: pw, forceUnlock: true });
   }
 
   const canSignOnchain = accounts[activeAccountIndex]?.canSignOnchain ?? false;

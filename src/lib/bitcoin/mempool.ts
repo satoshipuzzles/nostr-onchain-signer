@@ -161,12 +161,27 @@ function getCachedTransactions(address: string): Transaction[] | null {
   } catch { return null; }
 }
 
+const MAX_CACHED_TXS_PER_ADDRESS = 50;
+const MAX_CACHED_ADDRESSES = 10;
+
 function setCachedTransactions(address: string, txs: Transaction[]) {
   try {
     const raw = localStorage.getItem(TX_CACHE_KEY);
-    const all: Record<string, TxCacheEntry> = raw ? JSON.parse(raw) : {};
-    all[address] = { txs, updatedAt: Date.now() };
-    localStorage.setItem(TX_CACHE_KEY, JSON.stringify(all));
+    let all: Record<string, TxCacheEntry> = raw ? JSON.parse(raw) : {};
+    // Cap per-address txs and total addresses to stay within mobile quota
+    all[address] = { txs: txs.slice(0, MAX_CACHED_TXS_PER_ADDRESS), updatedAt: Date.now() };
+    const addrs = Object.entries(all);
+    if (addrs.length > MAX_CACHED_ADDRESSES) {
+      addrs.sort((a, b) => b[1].updatedAt - a[1].updatedAt);
+      all = Object.fromEntries(addrs.slice(0, MAX_CACHED_ADDRESSES));
+    }
+    try {
+      localStorage.setItem(TX_CACHE_KEY, JSON.stringify(all));
+    } catch {
+      // Quota exceeded: drop the whole tx cache and store just this address
+      localStorage.removeItem(TX_CACHE_KEY);
+      localStorage.setItem(TX_CACHE_KEY, JSON.stringify({ [address]: all[address] }));
+    }
   } catch {}
 }
 

@@ -11,28 +11,65 @@ import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/no
 
 const STORAGE_PREFIX = 'nostr_onchain_';
 
-function logSignedEvent(event: any, origin: string) {
-  const log = (storageGet('signed_events_log') as any[]) || [];
-  log.unshift({
-    id: event.id,
-    kind: event.kind,
-    content: (event.content || '').slice(0, 100),
-    created_at: event.created_at,
-    origin,
-    pubkey: event.pubkey,
-  });
-  if (log.length > 500) log.length = 500;
-  storageSet('signed_events_log', log);
+// Cache keys that are safe to evict when storage quota is exceeded.
+// Ordered by eviction priority (biggest/least-important first).
+const EVICTABLE_KEYS = [
+  'nostr_onchain_tx_cache',
+  'nostr_onchain_profile_cache_v2',
+  'nostr_onchain_blocks_cache',
+  'nostr_onchain_balance_cache',
+  'nostr_onchain_signed_events_log',
+  'nostr_onchain_feed_cache',
+  'nostr_onchain_dm_cache',
+];
 
-  const apps = (storageGet('connected_apps') as any[]) || [];
-  const existing = apps.find((a: any) => a.origin === origin);
-  if (existing) {
-    existing.lastUsed = Date.now();
-    existing.signCount++;
-  } else {
-    apps.push({ origin, name: origin, firstUsed: Date.now(), lastUsed: Date.now(), signCount: 1, permission: 'always' });
+function evictCaches(): boolean {
+  let evicted = false;
+  for (const key of EVICTABLE_KEYS) {
+    if (localStorage.getItem(key) !== null) {
+      localStorage.removeItem(key);
+      evicted = true;
+    }
   }
-  storageSet('connected_apps', apps);
+  if (!evicted) {
+    // Last resort: remove any non-critical prefixed keys (never vault/accounts)
+    const critical = ['nostr_onchain_vault', 'nostr_onchain_activeAccountIndex', 'nostr_onchain_multisig_wallets'];
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.includes('cache') && !critical.includes(k)) {
+        localStorage.removeItem(k);
+        evicted = true;
+      }
+    }
+  }
+  return evicted;
+}
+
+function logSignedEvent(event: any, origin: string) {
+  // Never let bookkeeping break signing
+  try {
+    const log = (storageGet('signed_events_log') as any[]) || [];
+    log.unshift({
+      id: event.id,
+      kind: event.kind,
+      content: (event.content || '').slice(0, 100),
+      created_at: event.created_at,
+      origin,
+      pubkey: event.pubkey,
+    });
+    if (log.length > 100) log.length = 100;
+    storageSet('signed_events_log', log);
+
+    const apps = (storageGet('connected_apps') as any[]) || [];
+    const existing = apps.find((a: any) => a.origin === origin);
+    if (existing) {
+      existing.lastUsed = Date.now();
+      existing.signCount++;
+    } else {
+      apps.push({ origin, name: origin, firstUsed: Date.now(), lastUsed: Date.now(), signCount: 1, permission: 'always' });
+    }
+    storageSet('connected_apps', apps);
+  } catch {}
 }
 
 function storageGet(key: string): unknown {
@@ -43,7 +80,22 @@ function storageGet(key: string): unknown {
 }
 
 function storageSet(key: string, value: unknown) {
-  localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+  const serialized = JSON.stringify(value);
+  try {
+    localStorage.setItem(STORAGE_PREFIX + key, serialized);
+  } catch (err) {
+    // QuotaExceededError: evict caches and retry once
+    console.warn('[PWA] Storage quota exceeded, evicting caches...');
+    if (evictCaches()) {
+      try {
+        localStorage.setItem(STORAGE_PREFIX + key, serialized);
+        return;
+      } catch {}
+    }
+    // Only re-throw for critical data (vault, accounts); drop cache writes silently
+    const isCritical = key === 'vault' || key === 'activeAccountIndex' || key.includes('wallet');
+    if (isCritical) throw err;
+  }
 }
 
 function storageRemove(key: string) {

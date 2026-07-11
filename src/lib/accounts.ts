@@ -218,6 +218,44 @@ export async function loadAccountMeta(
 }
 
 /**
+ * Replace the active account's key with a new nsec, even when the stored
+ * key is a dummy/placeholder or belongs to a different pubkey.
+ * The account's pubkey is updated to match the new nsec.
+ */
+export async function replaceAccountNsec(
+  password: string,
+  publicKeyHex: string,
+  nsec: string
+): Promise<{ accounts: Account[]; newPublicKeyHex: string }> {
+  if (!isValidNsec(nsec)) throw new Error('Invalid nsec');
+  const privHex = nsecToPrivkey(nsec);
+  const pair = keyPairFromPrivateKey(privHex);
+
+  const vault = await loadVault();
+  if (!vault) throw new Error('No vault found');
+  const data = await decryptVault(vault, password);
+  const idx = data.findIndex((d) => d.publicKeyHex === publicKeyHex);
+  if (idx === -1) throw new Error('Account not found in vault');
+
+  if (data.some((d, i) => i !== idx && d.publicKeyHex === pair.publicKeyHex)) {
+    throw new Error('Another account in your vault already uses this nsec — switch to it instead');
+  }
+
+  data[idx] = {
+    ...data[idx],
+    privateKeyHex: pair.privateKeyHex,
+    publicKeyHex: pair.publicKeyHex,
+    externalSigner: false,
+    signerType: 'imported',
+    label: data[idx].label || `Imported ${pair.npub.slice(5, 11)}`,
+  };
+
+  const encrypted = await encryptVault(data, password);
+  await saveVault(encrypted);
+  return { accounts: getAccountsFromVault(data), newPublicKeyHex: pair.publicKeyHex };
+}
+
+/**
  * Upgrade a NIP-07-only vault entry by binding the matching nsec.
  * Same pubkey — enables in-app Bitcoin PSBT signing.
  */

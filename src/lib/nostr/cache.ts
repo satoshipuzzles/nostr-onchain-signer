@@ -58,8 +58,27 @@ export async function loadCache(): Promise<ProfileCacheStore> {
   return result[CACHE_KEY] ?? { profiles: {}, lastFullSync: 0 };
 }
 
+const MAX_CACHED_PROFILES = 800;
+
 async function saveCache(cache: ProfileCacheStore): Promise<void> {
-  await chrome.storage.local.set({ [CACHE_KEY]: cache });
+  // Prune to the most recently seen profiles so the cache can't blow past
+  // mobile Safari's ~5MB localStorage quota
+  const entries = Object.entries(cache.profiles);
+  if (entries.length > MAX_CACHED_PROFILES) {
+    entries.sort((a, b) => (b[1].lastSeen || b[1].fetchedAt || 0) - (a[1].lastSeen || a[1].fetchedAt || 0));
+    cache.profiles = Object.fromEntries(entries.slice(0, MAX_CACHED_PROFILES));
+  }
+  try {
+    await chrome.storage.local.set({ [CACHE_KEY]: cache });
+  } catch {
+    // Quota exceeded even after pruning — drop to the 200 most recent and retry
+    try {
+      const top = Object.entries(cache.profiles)
+        .sort((a, b) => (b[1].lastSeen || 0) - (a[1].lastSeen || 0))
+        .slice(0, 200);
+      await chrome.storage.local.set({ [CACHE_KEY]: { profiles: Object.fromEntries(top), lastFullSync: cache.lastFullSync } });
+    } catch {}
+  }
 }
 
 export async function getCachedProfile(pubkey: string): Promise<ProfileMetadata | null> {

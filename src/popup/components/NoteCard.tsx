@@ -164,8 +164,11 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
 
   const boostMenuRef = useRef<HTMLDivElement>(null);
 
-  // Fetch reactions and zaps on mount
+  // Fetch reactions and zaps — only in thread view (highlighted).
+  // In feed lists this would open hundreds of relay subscriptions;
+  // the feed provides batched counts via the `engagement` prop instead.
   useEffect(() => {
+    if (!highlighted) return;
     let cancelled = false;
     const cleanups: (() => void)[] = [];
 
@@ -524,27 +527,34 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
         </div>
       )}
 
-      {/* Author Header */}
-      <div className="flex items-center gap-2.5 mb-2.5 pr-8">
-        <ClickableAvatar
-          pubkey={note.pubkey}
-          picture={profile?.picture}
-          name={displayName}
-          size="lg"
-        />
+      {/* Jumble-style layout: avatar column left, content column right */}
+      <div className="flex gap-3">
+        <div className="flex-shrink-0 pt-0.5">
+          <ClickableAvatar
+            pubkey={note.pubkey}
+            picture={profile?.picture}
+            name={displayName}
+            size="lg"
+          />
+        </div>
+
+        <div className="flex-1 min-w-0">
+      {/* Author header */}
+      <div className="flex items-center gap-1.5 mb-1 pr-8">
         <button
           onClick={() => viewProfile(note.pubkey)}
-          className="flex-1 min-w-0 text-left"
+          className="min-w-0 flex items-baseline gap-1.5 text-left"
         >
-          <p className="text-sm font-medium text-white truncate">
+          <span className="text-sm font-semibold text-white truncate">
             {displayName}
-          </p>
+          </span>
           {profile?.nip05 && (
-            <p className="text-[10px] text-gray-500 truncate">
+            <span className="text-[10px] text-gray-500 truncate hidden sm:inline">
               {profile.nip05}
-            </p>
+            </span>
           )}
         </button>
+        <span className="text-gray-600 text-[11px]">·</span>
         <div className="flex items-center gap-1 text-gray-500 flex-shrink-0">
           <Clock className="w-3 h-3" />
           <span className="text-[11px]">{formatTimeAgo(note.created_at)}</span>
@@ -705,8 +715,8 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
           ) : (
             <Heart className={`w-4 h-4 ${liked || userReacted ? 'fill-current' : ''}`} />
           )}
-          {totalReactions > 0 && (
-            <span className="text-[11px]">{totalReactions}</span>
+          {(totalReactions > 0 || (engagement?.reactions ?? 0) > 0) && (
+            <span className="text-[11px]">{Math.max(totalReactions, engagement?.reactions ?? 0)}</span>
           )}
         </button>
 
@@ -722,10 +732,10 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
             }}
             className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-gray-500 hover:text-bitcoin hover:bg-bitcoin/10 transition-colors"
           >
-            <Zap className={`w-4 h-4 ${zapTotal > 0 ? 'text-yellow-500' : ''}`} />
-            {zapTotal > 0 && (
+            <Zap className={`w-4 h-4 ${(zapTotal > 0 || (engagement?.zapSats ?? 0) > 0) ? 'text-yellow-500' : ''}`} />
+            {(zapTotal > 0 || (engagement?.zapSats ?? 0) > 0) && (
               <span className="text-[11px] text-yellow-500 font-medium">
-                {formatSats(zapTotal)}
+                {formatSats(Math.max(zapTotal, engagement?.zapSats ?? 0))}
               </span>
             )}
           </button>
@@ -807,6 +817,8 @@ export function NoteCard({ note, profile, engagement, onNotePublished, onSelectN
           onPublished={onNotePublished}
         />
       )}
+        </div>
+      </div>
 
       {/* Zap Dialog */}
       {showZapDialog && (

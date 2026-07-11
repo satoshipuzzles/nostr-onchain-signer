@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, Copy, Check, BadgeCheck, Zap, Globe, Loader2, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { X, Copy, Check, BadgeCheck, Zap, Globe, Loader2, ExternalLink, MessageCircle, Bitcoin, VolumeX, Volume2, Ban } from 'lucide-react';
+import { toast } from 'sonner';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { fetchProfiles, type ProfileMetadata } from '@/lib/nostr/social';
 import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { subscribeEvents, type FeedNote, type NostrEvent } from '@/lib/nostr/feed';
+import { isMuted, mutePubkey, unmutePubkey } from '@/lib/nostr/mute';
+import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { safeImageUrl } from '@/lib/utils';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { useContext } from 'react';
@@ -26,22 +30,83 @@ function formatTimeAgo(timestamp: number): string {
 
 export function ProfilePopup({ pubkey, onClose }: Props) {
   const auth = useContext(AuthContext);
+  const navigate = useNavigate();
   const [profile, setProfile] = useState<ProfileMetadata | null>(null);
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loadingNotes, setLoadingNotes] = useState(true);
   const [copied, setCopied] = useState('');
+  const [muted, setMuted] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const npub = pubkeyToNpub(pubkey);
   const isFollowing = auth?.following.has(pubkey) ?? false;
+  const isSelf = auth?.publicKey === pubkey;
 
   const displayName = profile?.displayName || profile?.name || pubkey.slice(0, 8) + '...';
+
+  useEffect(() => {
+    isMuted(pubkey).then(setMuted).catch(() => {});
+  }, [pubkey]);
 
   async function copy(text: string, label: string) {
     await navigator.clipboard.writeText(text);
     setCopied(label);
     setTimeout(() => setCopied(''), 2000);
+  }
+
+  function openMessages() {
+    onClose();
+    navigate(`/messages?to=${pubkey}`);
+  }
+
+  function openSendBitcoin() {
+    onClose();
+    try {
+      const address = pubkeyToTaprootAddress(pubkey);
+      navigate(`/send?to=${address}`);
+    } catch {
+      navigate('/send');
+    }
+  }
+
+  function openZap() {
+    if (profile?.lud16) {
+      window.open(`lightning:${profile.lud16}`, '_blank');
+    } else {
+      toast.info('This user has no Lightning address in their profile');
+    }
+  }
+
+  async function toggleMute() {
+    if (!auth) return;
+    try {
+      if (muted) {
+        await unmutePubkey(pubkey, auth.publicKey);
+        setMuted(false);
+        toast.success(`Unmuted ${displayName}`);
+      } else {
+        await mutePubkey(pubkey, auth.publicKey);
+        setMuted(true);
+        toast.success(`Muted ${displayName} — their notes are hidden from your feed`);
+      }
+    } catch {
+      toast.error('Failed to update mute list');
+    }
+  }
+
+  async function handleBlock() {
+    if (!auth) return;
+    if (!confirm(`Block ${displayName}? This mutes them and unfollows them.`)) return;
+    try {
+      await mutePubkey(pubkey, auth.publicKey);
+      setMuted(true);
+      if (isFollowing) await auth.handleUnfollow(pubkey);
+      toast.success(`Blocked ${displayName}`);
+      onClose();
+    } catch {
+      toast.error('Failed to block');
+    }
   }
 
   useEffect(() => {
@@ -243,9 +308,9 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
               </div>
             </div>
 
-            {/* Follow / external link */}
-            <div className="flex gap-2">
-              {auth && pubkey !== auth.publicKey && (
+            {/* Primary actions */}
+            <div className="flex gap-2 mb-2">
+              {auth && !isSelf && (
                 <button
                   onClick={() => isFollowing ? auth.handleUnfollow(pubkey) : auth.handleFollow(pubkey)}
                   className={`flex-1 py-2 rounded-lg font-medium text-xs transition-colors ${
@@ -266,6 +331,54 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
                 <ExternalLink className="w-3 h-3" /> njump
               </a>
             </div>
+
+            {/* Action grid: message, send bitcoin, zap, mute, block */}
+            {!isSelf && (
+              <div className="grid grid-cols-5 gap-1.5">
+                <button
+                  onClick={openMessages}
+                  className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 transition-colors"
+                  title="Message"
+                >
+                  <MessageCircle className="w-4 h-4 text-purple-400" />
+                  <span className="text-[9px] text-gray-400">Message</span>
+                </button>
+                <button
+                  onClick={openSendBitcoin}
+                  className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 transition-colors"
+                  title="Send Bitcoin"
+                >
+                  <Bitcoin className="w-4 h-4 text-bitcoin" />
+                  <span className="text-[9px] text-gray-400">Send</span>
+                </button>
+                <button
+                  onClick={openZap}
+                  className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 transition-colors"
+                  title="Zap"
+                >
+                  <Zap className="w-4 h-4 text-yellow-400" />
+                  <span className="text-[9px] text-gray-400">Zap</span>
+                </button>
+                <button
+                  onClick={toggleMute}
+                  className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-surface-800 hover:bg-surface-700 transition-colors"
+                  title={muted ? 'Unmute' : 'Mute'}
+                >
+                  {muted
+                    ? <Volume2 className="w-4 h-4 text-green-400" />
+                    : <VolumeX className="w-4 h-4 text-gray-400" />}
+                  <span className="text-[9px] text-gray-400">{muted ? 'Unmute' : 'Mute'}</span>
+                </button>
+                <button
+                  onClick={handleBlock}
+                  className="flex flex-col items-center gap-1 py-2.5 rounded-xl bg-surface-800 hover:bg-red-500/20 transition-colors"
+                  title="Block"
+                >
+                  <Ban className="w-4 h-4 text-red-400" />
+                  <span className="text-[9px] text-gray-400">Block</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Kind 1 feed */}

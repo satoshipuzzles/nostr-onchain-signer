@@ -6,6 +6,7 @@ import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
 import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
 import { loadVault, decryptVault } from '@/lib/crypto/vault';
+import { replaceAccountNsec } from '@/lib/accounts';
 import { privkeyToNsec, pubkeyToNpub } from '@/lib/nostr/keys';
 import { loadMultisigWallets, walletToSyncConfig, syncConfigToWallet, saveMultisigWallet } from '@/lib/bitcoin/wallet-store';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
@@ -44,6 +45,13 @@ export function Settings() {
   const [nsecCopied, setNsecCopied] = useState(false);
   const [revealError, setRevealError] = useState('');
   const autoHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Replace nsec (fix dummy/placeholder keys)
+  const [editNsecOpen, setEditNsecOpen] = useState(false);
+  const [editNsecInput, setEditNsecInput] = useState('');
+  const [editNsecSaving, setEditNsecSaving] = useState(false);
+  const [editNsecError, setEditNsecError] = useState('');
+  const [editNsecSuccess, setEditNsecSuccess] = useState('');
 
   useEffect(() => {
     loadNwcConnection().then((conn) => {
@@ -115,6 +123,64 @@ export function Settings() {
     await navigator.clipboard.writeText(revealedNsec);
     setNsecCopied(true);
     setTimeout(() => setNsecCopied(false), 2000);
+  }
+
+  async function handleReplaceNsec(e: React.FormEvent) {
+    e.preventDefault();
+    setEditNsecError('');
+    setEditNsecSuccess('');
+    if (!editNsecInput.trim()) return;
+
+    // Get vault password (from memory or prompt)
+    let pw = vaultPassword;
+    if (!pw) {
+      const entered = prompt('Enter your vault password to replace the secret key');
+      if (!entered) { setEditNsecError('Password required'); return; }
+      try {
+        const vault = await loadVault();
+        if (!vault) { setEditNsecError('No vault found'); return; }
+        await decryptVault(vault, entered);
+        pw = entered;
+      } catch {
+        setEditNsecError('Incorrect password');
+        return;
+      }
+    }
+
+    setEditNsecSaving(true);
+    try {
+      const { accounts: updated, newPublicKeyHex } = await replaceAccountNsec(pw, publicKey, editNsecInput.trim());
+
+      // Refresh everything that caches keys
+      await chrome.storage.local.set({ cached_accounts: updated });
+      await chrome.runtime.sendMessage({
+        type: 'vault:unlock',
+        payload: { password: pw },
+        id: createMessageId(),
+      });
+      try {
+        const vault = await loadVault();
+        if (vault) {
+          const vaultData = await decryptVault(vault, pw);
+          sessionStorage.setItem('nostr_onchain_session_keys', JSON.stringify(vaultData));
+        }
+      } catch {}
+      const { clearDMKeyCache } = await import('@/lib/nostr/dm');
+      clearDMKeyCache();
+
+      setEditNsecInput('');
+      setEditNsecSuccess(
+        newPublicKeyHex === publicKey
+          ? 'Secret key saved — signing is now enabled.'
+          : 'Secret key replaced — reloading with your new identity...'
+      );
+      // Reload so every context (auth, DMs, wallets) picks up the new key
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+      setEditNsecError(err instanceof Error ? err.message : 'Failed to replace nsec');
+    } finally {
+      setEditNsecSaving(false);
+    }
   }
 
   async function handleNwcSave() {
@@ -542,6 +608,65 @@ export function Settings() {
                 </>
               )}
             </button>
+          </div>
+        )}
+
+        {/* Replace Secret Key */}
+        {!editNsecOpen ? (
+          <button
+            onClick={() => { setEditNsecOpen(true); setEditNsecError(''); setEditNsecSuccess(''); }}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+          >
+            <Edit3 className="w-5 h-5 text-gray-400" />
+            <div className="flex-1 text-left">
+              <p className="text-sm font-medium">Edit Secret Key (nsec)</p>
+              <p className="text-xs text-gray-500">
+                Replace a dummy or wrong nsec for this account
+              </p>
+            </div>
+          </button>
+        ) : (
+          <div className="bg-surface-800 border border-surface-200/10 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-bitcoin" />
+                <p className="text-sm font-semibold">Edit Secret Key</p>
+              </div>
+              <button
+                onClick={() => { setEditNsecOpen(false); setEditNsecInput(''); setEditNsecError(''); setEditNsecSuccess(''); }}
+                className="text-xs text-gray-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-500 mb-3 leading-relaxed">
+              Paste the real nsec for this account. If the nsec belongs to a different
+              npub, this account's identity switches to it. The key is encrypted with
+              your vault password and stored on this device only.
+            </p>
+            <form onSubmit={handleReplaceNsec} className="space-y-2">
+              <input
+                type="password"
+                value={editNsecInput}
+                onChange={(e) => setEditNsecInput(e.target.value)}
+                placeholder="nsec1..."
+                className="input-field text-xs font-mono"
+                autoComplete="off"
+              />
+              {editNsecError && <p className="text-xs text-red-400">{editNsecError}</p>}
+              {editNsecSuccess && (
+                <p className="text-xs text-green-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {editNsecSuccess}
+                </p>
+              )}
+              <button
+                type="submit"
+                disabled={editNsecSaving || !editNsecInput.trim()}
+                className="w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
+              >
+                {editNsecSaving ? 'Saving...' : 'Save Secret Key'}
+              </button>
+            </form>
           </div>
         )}
 
