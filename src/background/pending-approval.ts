@@ -51,11 +51,15 @@ export function needsApproval(
   sender: chrome.runtime.MessageSender
 ): boolean {
   if (!SIGNING_TYPES.has(type)) return false;
-  if (!sender.tab?.url) return false;
+  // sender.url is the requesting FRAME's URL — with all_frames content
+  // scripts an iframe inside our PWA must still be approved, so never trust
+  // the top-level tab URL alone
+  const url = sender.url || sender.tab?.url;
+  if (!url) return false;
   const extPrefix = chrome.runtime.getURL('');
-  if (sender.tab.url.startsWith(extPrefix)) return false;
+  if (url.startsWith(extPrefix)) return false;
   // Our own PWA — sign directly, no separate approval popup
-  if (isOwnAppUrl(sender.tab.url)) return false;
+  if (isOwnAppUrl(url)) return false;
   return true;
 }
 
@@ -90,7 +94,7 @@ export function queueForApproval(
 ): Promise<ExtensionResponse> {
   return new Promise(async (resolve) => {
     const id = crypto.randomUUID();
-    const origin = sender.tab?.url || 'unknown';
+    const origin = sender.url || sender.tab?.url || 'unknown';
 
     const pending: PendingApproval = {
       id,

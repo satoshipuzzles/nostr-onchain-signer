@@ -1,55 +1,60 @@
-import { useState } from 'react';
-import { Radio, Gamepad2, ExternalLink, Loader2 } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Radio, Gamepad2, ExternalLink, StopCircle } from 'lucide-react';
+import { useEmbedPlayer, type EmbedApp } from '../context/EmbedPlayerContext';
 
-interface App {
-  id: string;
-  name: string;
-  url: string;
-  description: string;
-}
-
-const AUDIO_APPS: App[] = [
+const AUDIO_APPS: EmbedApp[] = [
   {
     id: 'cornychat',
     name: 'Corny Chat',
     url: 'https://cornychat.com',
     description: 'Nostr audio spaces — live voice rooms',
+    kind: 'audio',
   },
 ];
 
-const GAME_APPS: App[] = [
+const GAME_APPS: EmbedApp[] = [
   {
     id: 'puzzl35',
     name: 'Puzzl35',
     url: 'https://puzzl35.com/',
     description: 'Turn anything into puzzles — Nostr-powered jigsaw puzzles with zaps',
+    kind: 'game',
   },
   {
     id: 'word5',
     name: 'WORD5',
     url: 'https://otherstuff.ai/word5/',
     description: 'Daily 5-letter word game with Nostr login and streaks',
+    kind: 'game',
   },
 ];
 
 type Tab = 'audio' | 'games';
 
 export default function OtherStuff() {
-  const [tab, setTab] = useState<Tab>('audio');
+  const { current, play, stop, registerDock } = useEmbedPlayer();
+  const [tab, setTab] = useState<Tab>(current?.kind === 'game' ? 'games' : 'audio');
   const apps = tab === 'audio' ? AUDIO_APPS : GAME_APPS;
-  const [activeApp, setActiveApp] = useState<App>(AUDIO_APPS[0]);
-  const [iframeLoading, setIframeLoading] = useState(true);
+  const activeApp = current ?? AUDIO_APPS[0];
+
+  // Auto-start the default audio app on first visit (same behavior as before,
+  // but the iframe now lives in the persistent player and survives navigation)
+  useEffect(() => {
+    if (!current) play(AUDIO_APPS[0]);
+  }, []);
+
+  // Unregister the dock when leaving the page — the player shrinks to a
+  // mini-player and the audio keeps going
+  const dockRef = useCallback((el: HTMLDivElement | null) => {
+    registerDock(el);
+  }, [registerDock]);
+
+  useEffect(() => () => registerDock(null), [registerDock]);
 
   function switchTab(next: Tab) {
     setTab(next);
     const first = next === 'audio' ? AUDIO_APPS[0] : GAME_APPS[0];
-    setActiveApp(first);
-    setIframeLoading(true);
-  }
-
-  function openApp(app: App) {
-    setActiveApp(app);
-    setIframeLoading(true);
+    if (current?.kind !== first.kind) play(first);
   }
 
   return (
@@ -80,7 +85,7 @@ export default function OtherStuff() {
           {apps.map((app) => (
             <button
               key={app.id}
-              onClick={() => openApp(app)}
+              onClick={() => play(app)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                 activeApp.id === app.id
                   ? 'bg-white/10 text-white'
@@ -97,35 +102,33 @@ export default function OtherStuff() {
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 flex-shrink-0">
         <div className="min-w-0">
           <p className="text-sm font-semibold truncate">{activeApp.name}</p>
-          <p className="text-[10px] text-gray-500 truncate">{activeApp.description}</p>
+          <p className="text-[10px] text-gray-500 truncate">
+            {activeApp.description} — keeps playing while you browse the app
+          </p>
         </div>
-        <a
-          href={activeApp.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] text-gray-400 hover:bg-white/5 hover:text-white transition-colors flex-shrink-0"
-        >
-          <ExternalLink className="w-3.5 h-3.5" /> Open in new tab
-        </a>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {current && (
+            <button
+              onClick={stop}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] text-gray-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+              title="Stop and close"
+            >
+              <StopCircle className="w-3.5 h-3.5" /> Stop
+            </button>
+          )}
+          <a
+            href={activeApp.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] text-gray-400 hover:bg-white/5 hover:text-white transition-colors"
+          >
+            <ExternalLink className="w-3.5 h-3.5" /> Open in new tab
+          </a>
+        </div>
       </div>
 
-      {/* Iframe */}
-      <div className="flex-1 relative min-h-[500px]">
-        {iframeLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10 pointer-events-none">
-            <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
-          </div>
-        )}
-        <iframe
-          key={activeApp.id}
-          src={activeApp.url}
-          title={activeApp.name}
-          onLoad={() => setIframeLoading(false)}
-          className="absolute inset-0 w-full h-full border-0"
-          allow="microphone; camera; autoplay; clipboard-write; web-share"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals"
-        />
-      </div>
+      {/* Dock — the persistent iframe overlays this container while on this page */}
+      <div ref={dockRef} className="flex-1 relative min-h-[500px] bg-black" />
     </div>
   );
 }

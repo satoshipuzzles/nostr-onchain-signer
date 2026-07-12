@@ -31,12 +31,10 @@ function copyExtensionFiles() {
         for (const size of ['16', '48', '128']) {
           const png = resolve(srcIcons, `icon-${size}.png`);
           if (existsSync(png)) copyFileSync(png, resolve(iconsDir, `icon-${size}.png`));
-          const svg = resolve(srcIcons, `icon-${size}.svg`);
-          if (existsSync(svg)) copyFileSync(svg, resolve(iconsDir, `icon-${size}.svg`));
         }
       }
-      const logo = resolve(__dirname, 'public/logo.svg');
-      if (existsSync(logo)) copyFileSync(logo, resolve(dist, 'logo.svg'));
+      const logo = resolve(__dirname, 'public/logo.png');
+      if (existsSync(logo)) copyFileSync(logo, resolve(dist, 'logo.png'));
     },
   };
 }

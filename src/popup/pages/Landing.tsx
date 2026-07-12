@@ -11,7 +11,7 @@ export function Landing({ onGetStarted }: Props) {
       <header className="sticky top-0 z-50 backdrop-blur-xl bg-black/80 border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <img src="/logo.svg" alt="Nostr Onchain" className="w-9 h-9 flex-shrink-0" />
+            <img src="/logo.png" alt="Nostr Onchain" className="w-9 h-9 rounded-xl flex-shrink-0" />
             <span className="font-bold text-base">Nostr Onchain</span>
           </div>
           <div className="flex items-center gap-3">
@@ -37,7 +37,7 @@ export function Landing({ onGetStarted }: Props) {
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.03)_0%,transparent_60%)]" />
         <div className="relative max-w-6xl mx-auto px-6 py-24 md:py-36 text-center">
-          <img src="/logo.svg" alt="Nostr Onchain" className="w-20 h-20 md:w-24 md:h-24 mx-auto mb-8" />
+          <img src="/logo.png" alt="Nostr Onchain" className="w-20 h-20 md:w-24 md:h-24 mx-auto mb-8 rounded-3xl" />
           <h1 className="text-4xl sm:text-5xl md:text-7xl font-bold mb-6 tracking-tight leading-[1.1]">
             Social Multi-Sig<br />
             <span className="text-gray-400">Bitcoin Signer</span>

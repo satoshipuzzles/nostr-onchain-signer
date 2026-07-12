@@ -46,7 +46,7 @@ export function Sidebar() {
     <div className="h-full w-60 bg-black border-r border-white/10 flex flex-col">
       {/* Logo + App name */}
       <div className="p-4 flex items-center gap-3 border-b border-white/10">
-        <img src="/logo.svg" alt="Nostr Onchain" className="w-9 h-9 rounded-xl flex-shrink-0" />
+        <img src="/logo.png" alt="Nostr Onchain" className="w-9 h-9 rounded-xl flex-shrink-0" />
         <div className="min-w-0">
           <p className="text-sm font-bold truncate">Nostr Onchain</p>
           <p className="text-[10px] text-gray-500">Signer</p>

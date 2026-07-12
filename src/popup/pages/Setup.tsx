@@ -205,7 +205,7 @@ export function Setup({ onCreated }: Props) {
       <div className="min-h-screen overflow-y-auto">
         {/* Hero Section */}
         <div className="flex flex-col items-center justify-center p-6 pt-12 pb-8">
-          <img src="/logo.svg" alt="Nostr Onchain" className="w-16 h-16 mb-5" />
+          <img src="/logo.png" alt="Nostr Onchain" className="w-16 h-16 mb-5 rounded-2xl" />
 
           <h1 className="text-2xl font-bold mb-2 text-center">Nostr Onchain</h1>
           <p className="text-gray-400 text-sm mb-1 text-center">

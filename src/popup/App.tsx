@@ -45,6 +45,7 @@ function PageFallback() {
   );
 }
 import { ProfilePopupProvider } from './context/ProfilePopupContext';
+import { EmbedPlayerProvider } from './context/EmbedPlayerContext';
 import { SigningConfirmation } from './components/SigningConfirmation';
 import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { createMessageId } from '@/shared/messages';
@@ -91,10 +92,12 @@ function AuthGate({ status, credentials, onGetStarted, onUnlocked, onCreated, on
   return (
     <AuthProvider initialPublicKey={credentials.publicKey} initialPassword={credentials.password}>
       <ProfilePopupProvider>
-        <SigningOverlay />
-        <Suspense fallback={<PageFallback />}>
-          <Outlet />
-        </Suspense>
+        <EmbedPlayerProvider>
+          <SigningOverlay />
+          <Suspense fallback={<PageFallback />}>
+            <Outlet />
+          </Suspense>
+        </EmbedPlayerProvider>
       </ProfilePopupProvider>
     </AuthProvider>
   );
