@@ -70,30 +70,37 @@ async function getAllSessionPrivateKeys(): Promise<string[]> {
     if (typeof k === 'string' && k.length === 64 && !keys.includes(k)) keys.push(k);
   };
 
-  try {
-    const raw = sessionStorage.getItem('nostr_onchain_session_keys');
-    if (raw) {
-      const session = JSON.parse(raw) as Array<{ privateKeyHex?: string }>;
-      const idxRaw = sessionStorage.getItem('nostr_onchain_active_index');
-      const activeIdx = idxRaw ? JSON.parse(idxRaw) : 0;
-      push(session[activeIdx]?.privateKeyHex);
-      for (const entry of session) push(entry?.privateKeyHex);
-    }
-  } catch {}
+  const readSyncStores = async () => {
+    try {
+      const raw = sessionStorage.getItem('nostr_onchain_session_keys');
+      if (raw) {
+        const session = JSON.parse(raw) as Array<{ privateKeyHex?: string }>;
+        const idxRaw = sessionStorage.getItem('nostr_onchain_active_index');
+        const activeIdx = idxRaw ? JSON.parse(idxRaw) : 0;
+        push(session[activeIdx]?.privateKeyHex);
+        for (const entry of session) push(entry?.privateKeyHex);
+      }
+    } catch {}
 
-  try {
-    const sessionData = await chrome.storage?.session?.get?.(['session_keys', 'active_index']);
-    if (sessionData?.session_keys) {
-      const session = sessionData.session_keys as Array<{ privateKeyHex?: string }>;
-      const idx = (sessionData.active_index as number) ?? 0;
-      push(session[idx]?.privateKeyHex);
-      for (const entry of session) push(entry?.privateKeyHex);
-    }
-  } catch {}
+    try {
+      const sessionData = await chrome.storage?.session?.get?.(['session_keys', 'active_index']);
+      if (sessionData?.session_keys) {
+        const session = sessionData.session_keys as Array<{ privateKeyHex?: string }>;
+        const idx = (sessionData.active_index as number) ?? 0;
+        push(session[idx]?.privateKeyHex);
+        for (const entry of session) push(entry?.privateKeyHex);
+      }
+    } catch {}
+  };
+
+  await readSyncStores();
 
   if (keys.length === 0) {
+    // Cold start — vault:getPrivateKey makes the runtime restore the durable
+    // session (PWA), then the repopulated sessionStorage has ALL accounts
     const active = await getSessionPrivateKey();
     push(active);
+    await readSyncStores();
   }
   return keys;
 }

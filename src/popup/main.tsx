@@ -8,6 +8,9 @@ import './index.css';
 // Static import — must run before boot so chrome APIs exist in PWA mode.
 // Safe in extension: mock only applies when chrome.runtime.id is missing.
 import '../dev/chrome-mock';
+import { startUpdateChecker } from '@/lib/update-check';
+
+startUpdateChecker();
 
 function boot() {
   const root = document.getElementById('root');

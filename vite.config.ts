@@ -1,7 +1,22 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
-import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { copyFileSync, mkdirSync, existsSync, writeFileSync } from 'fs';
+
+// Unique per build — lets long-lived PWA sessions detect new deployments
+const BUILD_VERSION = Date.now().toString(36);
+
+function writeVersionFile() {
+  return {
+    name: 'write-version-file',
+    closeBundle() {
+      writeFileSync(
+        resolve(__dirname, 'dist-web/version.json'),
+        JSON.stringify({ version: BUILD_VERSION }),
+      );
+    },
+  };
+}
 
 function copyExtensionFiles() {
   return {
@@ -46,7 +61,7 @@ export default defineConfig(({ command, mode }) => {
   // Web build (for Vercel/PWA) — just build index.html as a regular SPA
   if (isWebBuild) {
     return {
-      plugins: [react()],
+      plugins: [react(), writeVersionFile()],
       resolve: {
         alias: { '@': resolve(__dirname, './src') },
       },
@@ -54,7 +69,10 @@ export default defineConfig(({ command, mode }) => {
         outDir: 'dist-web',
         emptyOutDir: true,
       },
-      define: { 'process.env': {} },
+      define: {
+        'process.env': {},
+        __APP_VERSION__: JSON.stringify(BUILD_VERSION),
+      },
     };
   }
 
@@ -88,6 +106,9 @@ export default defineConfig(({ command, mode }) => {
             },
           },
         }),
-    define: { 'process.env': {} },
+    define: {
+      'process.env': {},
+      __APP_VERSION__: JSON.stringify(isServe ? 'dev' : BUILD_VERSION),
+    },
   };
 });
