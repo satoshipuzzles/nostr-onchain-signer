@@ -90,12 +90,45 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
+/**
+ * Message types that must NEVER be honored when the request originates from a
+ * web page (i.e. a real `sender` whose URL is not the extension's own origin).
+ * These are privileged internal operations — key access, vault lifecycle, and
+ * approval control — reserved for the extension popup / our own PWA plumbing.
+ *
+ * This is defense-in-depth: the content script already allowlists forwardable
+ * types, but the background must independently refuse to leak the private key
+ * (vault:getPrivateKey) or mutate the vault on behalf of an arbitrary origin.
+ */
+const EXTENSION_ONLY_TYPES = new Set<string>([
+  'vault:getPrivateKey',
+  'vault:unlock',
+  'vault:lock',
+  'vault:create',
+  'vault:switchAccount',
+  'approval:get',
+  'approval:confirm',
+  'approval:reject',
+  'dual:signAndBroadcast',
+]);
+
+function isExtensionSender(sender: chrome.runtime.MessageSender): boolean {
+  const url = sender.url || sender.tab?.url || '';
+  return url.startsWith(chrome.runtime.getURL(''));
+}
+
 async function handleMessage(
   message: ExtensionMessage,
   sender?: chrome.runtime.MessageSender,
   options?: { skipApproval?: boolean }
 ): Promise<ExtensionResponse> {
   const { type, payload, id } = message;
+
+  // A `sender` that is not our own extension page is an external web page.
+  // Never expose privileged operations (especially the raw private key) to it.
+  if (sender && !isExtensionSender(sender) && EXTENSION_ONLY_TYPES.has(type)) {
+    return { id, error: 'Unsupported request' };
+  }
 
   if (!options?.skipApproval && sender && needsApproval(type, sender)) {
     const key = await getActiveKey();

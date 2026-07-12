@@ -42,12 +42,48 @@ if (isOwnAppPage()) {
   injectScript('nostr-provider.js');
 }
 
+/**
+ * Message types a web page is allowed to request through this bridge.
+ *
+ * SECURITY: The content script runs on <all_urls>, so ANY page can post to
+ * it. It must only forward the NIP-07 / Bitcoin provider methods. Sensitive
+ * internal types (vault:*, approval:*, dual:*) — especially
+ * vault:getPrivateKey — MUST NEVER be reachable from a web page, or any site
+ * could exfiltrate the unlocked private key with no approval gate.
+ */
+const PAGE_ALLOWED_TYPES = new Set<string>([
+  'nip07:getPublicKey',
+  'nip07:signEvent',
+  'nip07:signSchnorr',
+  'nip07:getRelays',
+  'nip07:nip04:encrypt',
+  'nip07:nip04:decrypt',
+  'nip07:nip44:encrypt',
+  'nip07:nip44:decrypt',
+  'btc:getAddress',
+  'btc:getMultisigAddress',
+  'btc:signPsbt',
+  'btc:signPsbtPartial',
+]);
+
 // Bridge messages from page to background
 window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
   if (!event.data || event.data.target !== 'nostr-onchain-signer') return;
 
   const { type, payload, id } = event.data;
+
+  if (!PAGE_ALLOWED_TYPES.has(type)) {
+    window.postMessage(
+      {
+        target: 'nostr-onchain-signer-response',
+        id,
+        error: 'Unsupported request',
+      },
+      '*'
+    );
+    return;
+  }
 
   try {
     const response = await chrome.runtime.sendMessage({
