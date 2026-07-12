@@ -45,18 +45,19 @@ export const SENSITIVE_TYPES = new Set<string>([
 
 export type PermissionDecision = 'skip' | 'allow' | 'ask' | 'deny';
 
-const OWN_APP_HOSTS = [
-  'nostr-onchain-signer.vercel.app',
-  'nostrfreaks.com',
-  'www.nostrfreaks.com',
-  'localhost',
-  '127.0.0.1',
-];
+/**
+ * Hosts that bypass the approval prompt entirely. This is ONLY local
+ * development — deployed web apps (including our own nostrfreaks.com / the
+ * vercel.app mirror) must go through the same per-origin approval as any other
+ * site, so no website can silently sign. Users can still grant "always allow"
+ * to our web app from the prompt if they want seamless signing.
+ */
+const TRUSTED_LOCAL_HOSTS = ['localhost', '127.0.0.1'];
 
 export function isOwnAppUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname;
-    return OWN_APP_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+    return TRUSTED_LOCAL_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
   } catch {
     return false;
   }

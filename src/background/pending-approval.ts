@@ -29,18 +29,14 @@ const SIGNING_TYPES = new Set([
   'btc:signPsbtPartial',
 ]);
 
-const OWN_APP_HOSTS = [
-  'nostr-onchain-signer.vercel.app',
-  'nostrfreaks.com',
-  'www.nostrfreaks.com',
-  'localhost',
-  '127.0.0.1',
-];
+// Only local dev bypasses approval — deployed web apps go through the normal
+// per-origin permission flow (see app-permissions.ts).
+const TRUSTED_LOCAL_HOSTS = ['localhost', '127.0.0.1'];
 
 function isOwnAppUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname;
-    return OWN_APP_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+    return TRUSTED_LOCAL_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
   } catch {
     return false;
   }
