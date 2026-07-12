@@ -8,11 +8,11 @@
  */
 
 import { Transaction, getInputType, SigHash } from '@scure/btc-signer';
-import { hex } from '@scure/base';
+import { hex, base64 } from '@scure/base';
 import { concatBytes } from '@noble/hashes/utils';
 import type { VaultData } from '@/lib/crypto/vault';
 
-export type BitcoinSignerSource = 'vault' | 'webbtc' | 'nip07-schnorr' | 'bitcoin-api';
+export type BitcoinSignerSource = 'vault' | 'webbtc' | 'nip07-schnorr' | 'bitcoin-api' | 'nip46-amber';
 
 export interface SignedTxResult {
   txHex: string;
@@ -181,6 +181,32 @@ export async function signPsbtViaNostrSchnorr(
   };
 }
 
+/**
+ * NIP-46 remote signer (Amber). Sends the PSBT to the paired bunker, which
+ * signs it on the user's device and returns it; we then finalize and extract.
+ * The private key never touches this app.
+ */
+export async function signPsbtViaNip46(psbtHex: string): Promise<SignedTxResult | null> {
+  const { isRemoteSignerConnected, signPsbtBase64ViaRemote } = await import('@/lib/nostr/nip46');
+  if (!(await isRemoteSignerConnected())) return null;
+
+  const psbtBase64 = base64.encode(hex.decode(psbtHex));
+  const signedBase64 = await signPsbtBase64ViaRemote(psbtBase64);
+
+  const signedBytes = base64.decode(signedBase64.trim());
+  const tx = Transaction.fromPSBT(signedBytes, {
+    allowUnknownOutputs: true,
+    allowUnknownInputs: true,
+  });
+  tx.finalize();
+  const txBytes = tx.extract();
+  return {
+    txHex: hex.encode(txBytes),
+    txid: tx.id,
+    source: 'nip46-amber',
+  };
+}
+
 /** Our injected window.bitcoin API (extension with unlocked vault). */
 export async function signPsbtViaBitcoinApi(psbtHex: string): Promise<SignedTxResult | null> {
   const w = window as NostrWindow & {
@@ -196,6 +222,18 @@ export async function tryExternalPsbtSign(
   psbtHex: string,
   pubkeyHex?: string
 ): Promise<SignedTxResult | null> {
+  // Explicitly-paired remote signer (Amber) takes priority — the user opted
+  // into it, and it signs on their device.
+  try {
+    const remote = await signPsbtViaNip46(psbtHex);
+    if (remote) return remote;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : '';
+    if (msg && !msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('no remote signer')) {
+      throw err;
+    }
+  }
+
   try {
     return await signPsbtViaWebBtc(psbtHex);
   } catch (err: unknown) {

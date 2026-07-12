@@ -196,6 +196,11 @@ export function SendTx({ publicKey, onBack }: Props) {
     fetchBtcPrice();
     const info = detectBitcoinSigners();
     setSignerInfo(info.label);
+    import('@/lib/nostr/nip46').then(({ isRemoteSignerConnected }) => {
+      isRemoteSignerConnected().then((connected) => {
+        if (connected) setSignerInfo('Amber (NIP-46 remote signer)');
+      });
+    });
 
     const invoice = searchParams.get('invoice');
     const to = searchParams.get('to');
@@ -382,7 +387,7 @@ export function SendTx({ publicKey, onBack }: Props) {
             <p className="text-xs text-green-400 font-medium mb-1">Broadcast successful</p>
             <code className="text-[10px] text-gray-400 break-all block">{broadcastTxid}</code>
             <p className="text-[10px] text-gray-500 mt-1">
-              Signed via {signSource === 'webbtc' ? 'Alby (WebBTC)' : signSource === 'nip07-schnorr' ? 'NIP-07 signSchnorr' : signSource === 'bitcoin-api' ? 'Nostr Onchain extension' : signSource === 'vault' ? 'vault key' : 'signer'}
+              Signed via {signSource === 'webbtc' ? 'Alby (WebBTC)' : signSource === 'nip07-schnorr' ? 'NIP-07 signSchnorr' : signSource === 'bitcoin-api' ? 'Nostr Onchain extension' : signSource === 'nip46-amber' ? 'Amber (NIP-46)' : signSource === 'vault' ? 'vault key' : 'signer'}
               {' · '}Broadcast via {broadcastVia === 'node' ? 'your Bitcoin node' : 'public mempool'}
             </p>
             <a
