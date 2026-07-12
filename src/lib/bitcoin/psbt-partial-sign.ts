@@ -13,7 +13,7 @@ import { createMessageId } from '@/shared/messages';
 
 export interface PartialSignResult {
   psbtHex: string;
-  source: 'vault' | 'nip07-schnorr' | 'bitcoin-api';
+  source: 'vault' | 'nip07-schnorr' | 'bitcoin-api' | 'nip46-amber';
 }
 
 type SignerWindow = Window & {
@@ -31,6 +31,24 @@ export async function partialSignPsbt(
   signerPubkeyHex?: string,
 ): Promise<PartialSignResult> {
   const errors: string[] = [];
+
+  // 0. Paired remote signer (Amber) via NIP-46 sign_psbt. Amber adds its
+  //    tapscript signature on the user's device; we keep the PSBT unfinalized
+  //    so the remaining co-signers can still add theirs.
+  try {
+    const { isRemoteSignerConnected, signPsbtBase64ViaRemote } = await import('@/lib/nostr/nip46');
+    if (await isRemoteSignerConnected()) {
+      const { base64, hex } = await import('@scure/base');
+      const signedBase64 = await signPsbtBase64ViaRemote(base64.encode(hex.decode(psbtHex)));
+      const signedHex = hex.encode(base64.decode(signedBase64.trim()));
+      if (signedHex && signedHex !== psbtHex) {
+        return { psbtHex: signedHex, source: 'nip46-amber' };
+      }
+      errors.push('Amber returned the PSBT unchanged — is this account one of the co-signers?');
+    }
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : 'Amber (NIP-46) signing failed');
+  }
 
   // 1. App vault (any account with a stored key)
   if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
