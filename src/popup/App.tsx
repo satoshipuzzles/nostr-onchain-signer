@@ -110,6 +110,17 @@ export function App() {
     checkVaultStatus();
   }, []);
 
+  // The PWA session can vanish while the UI still shows the app (mobile PWA
+  // process kill, storage cleared). When signing detects this, route the user
+  // to the unlock screen instead of letting every action fail.
+  useEffect(() => {
+    const onSessionLost = () => {
+      setStatus((prev) => (prev === 'authenticated' ? 'unlock' : prev));
+    };
+    window.addEventListener('nostr-onchain:session-lost', onSessionLost);
+    return () => window.removeEventListener('nostr-onchain:session-lost', onSessionLost);
+  }, []);
+
   async function checkVaultStatus() {
     try {
       const response = await chrome.runtime.sendMessage({

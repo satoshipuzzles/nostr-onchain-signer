@@ -28,12 +28,15 @@ export async function signEventWithFallback(
   }
 
   const err = (response?.error as string) || 'Signing failed';
+  // A locked vault is also recoverable via an external signer — the user's
+  // NIP-07 extension can sign regardless of our vault/session state
+  const errLower = err.toLowerCase();
   const needsExternal =
-    err.includes('External signer') ||
-    err.includes('no key') ||
-    err.includes('no private key') ||
-    err.includes('No private key') ||
-    err.includes('NIP-07');
+    errLower.includes('external signer') ||
+    errLower.includes('no key') ||
+    errLower.includes('no private key') ||
+    errLower.includes('nip-07') ||
+    errLower.includes('locked');
 
   if (needsExternal) {
     const nostr = (window as { nostr?: { signEvent?: (e: UnsignedEvent) => Promise<SignedEvent> } }).nostr;
@@ -56,6 +59,10 @@ export async function signEventWithFallback(
           `NIP-07 signing failed: ${msg}. Unlock your signer extension (Alby/nos2x) or import nsec for this account.`,
         );
       }
+    }
+    if (errLower.includes('locked')) {
+      // No external signer to fall back to — surface the real problem
+      throw new Error(err);
     }
     throw new Error(
       'This account is linked via NIP-07 only. Install and unlock Alby or nos2x, or import nsec in Settings.',

@@ -49,25 +49,39 @@ export async function partialSignPsbt(
     }
   }
 
-  // 2. NIP-07 signSchnorr — works with any Nostr signer that exposes it
+  // 2. NIP-07 signSchnorr — works with any Nostr signer that exposes it.
+  //    The signer's OWN pubkey matters (it decides which tapleaf sighash we
+  //    compute), so prefer what the signer reports over the app account —
+  //    they can differ when the user switched accounts in their extension.
   const w = window as SignerWindow;
   if (typeof w.nostr?.signSchnorr === 'function') {
+    const candidates: string[] = [];
     try {
-      let pubkey = signerPubkeyHex;
-      if (!pubkey && w.nostr.getPublicKey) {
-        pubkey = await w.nostr.getPublicKey();
+      if (w.nostr.getPublicKey) {
+        const reported = await w.nostr.getPublicKey();
+        if (reported) candidates.push(reported.toLowerCase());
       }
-      if (pubkey) {
-        const { signMultisigPsbtViaSchnorr } = await import('./multisig-psbt');
-        const result = await signMultisigPsbtViaSchnorr(
-          psbtHex,
-          pubkey,
-          (hashHex) => w.nostr!.signSchnorr!(hashHex),
-        );
-        return { psbtHex: result.psbtHex, source: 'nip07-schnorr' };
+    } catch { /* signer may be locked — still try the app account below */ }
+    if (signerPubkeyHex && !candidates.includes(signerPubkeyHex.toLowerCase())) {
+      candidates.push(signerPubkeyHex.toLowerCase());
+    }
+
+    if (candidates.length > 0) {
+      const { signMultisigPsbtViaSchnorr } = await import('./multisig-psbt');
+      for (const pubkey of candidates) {
+        try {
+          const result = await signMultisigPsbtViaSchnorr(
+            psbtHex,
+            pubkey,
+            (hashHex) => w.nostr!.signSchnorr!(hashHex),
+          );
+          return { psbtHex: result.psbtHex, source: 'nip07-schnorr' };
+        } catch (err) {
+          errors.push(err instanceof Error ? err.message : 'NIP-07 Schnorr signing failed');
+        }
       }
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : 'NIP-07 Schnorr signing failed');
+    } else {
+      errors.push('NIP-07 signer found but it did not report a public key');
     }
   }
 
@@ -84,7 +98,11 @@ export async function partialSignPsbt(
     }
   }
 
+  // Surface the most actionable error: a locked vault is expected when the
+  // user signs with an external NIP-07 signer, so prefer any other failure
+  const meaningful = errors.find((e) => !e.toLowerCase().includes('locked'));
   throw new Error(
+    meaningful ||
     errors[0] ||
     'No signer could sign this PSBT. Unlock the app with the co-signer account, ' +
     'or use a NIP-07 extension that supports signSchnorr (e.g. Alby).',

@@ -145,6 +145,35 @@ function getActiveIndex(): number {
   return 0;
 }
 
+interface ExternalNostr {
+  getPublicKey?: () => Promise<string>;
+  signEvent?: (e: unknown) => Promise<any>;
+  signSchnorr?: (h: string) => Promise<string>;
+  nip04?: { encrypt?: (pk: string, pt: string) => Promise<string>; decrypt?: (pk: string, ct: string) => Promise<string> };
+  nip44?: { encrypt?: (pk: string, pt: string) => Promise<string>; decrypt?: (pk: string, ct: string) => Promise<string> };
+}
+
+/** External NIP-07 signer injected by a browser extension (Alby, nos2x, our extension bridge). */
+function externalNostr(): ExternalNostr | null {
+  const n = (window as any).nostr;
+  return n && typeof n === 'object' ? (n as ExternalNostr) : null;
+}
+
+/**
+ * The per-tab session can vanish while the UI still looks logged in (new tab,
+ * mobile PWA process kill). Tell the app shell so it can show the unlock
+ * screen instead of letting every action dead-end with "Vault is locked".
+ */
+function notifySessionLost() {
+  try {
+    window.dispatchEvent(new CustomEvent('nostr-onchain:session-lost'));
+  } catch { /* ignore */ }
+}
+
+function isValidPrivHex(k: unknown): k is string {
+  return typeof k === 'string' && k.length === 64 && /^[0-9a-f]+$/i.test(k);
+}
+
 const mockChrome = {
   runtime: {
     id: 'pwa-mode',
@@ -216,37 +245,55 @@ const mockChrome = {
 
         case 'nip07:getPublicKey': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          return { id, result: session[idx].publicKeyHex };
+          if (session) {
+            const idx = getActiveIndex();
+            return { id, result: session[idx].publicKeyHex };
+          }
+          // Session lost — the user's NIP-07 extension can still identify them
+          const ext = externalNostr();
+          if (typeof ext?.getPublicKey === 'function') {
+            try {
+              return { id, result: await ext.getPublicKey() };
+            } catch { /* fall through to locked error */ }
+          }
+          notifySessionLost();
+          return { id, error: 'Vault is locked — unlock the app to continue' };
         }
 
         case 'nip07:signEvent': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
           const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
+          const key = session ? session[getActiveIndex()] : null;
 
-          // If no valid private key (NIP-07 login or corrupted), delegate to browser extension
-          const hasValidPrivateKey = typeof key.privateKeyHex === 'string' && key.privateKeyHex.length === 64 && /^[0-9a-f]+$/i.test(key.privateKeyHex);
-          if (!hasValidPrivateKey) {
-            if (typeof (window as any).nostr?.signEvent === 'function') {
-              try {
-                const signed = await (window as any).nostr.signEvent({ ...event, pubkey: key.publicKeyHex });
-                logSignedEvent(signed, 'nostr-onchain-pwa');
-                return { id, result: signed };
-              } catch (err: any) {
-                return { id, error: `NIP-07 sign failed: ${err?.message || err}` };
-              }
-            }
-            return { id, error: 'No private key and no NIP-07 extension available. Install a Nostr signer extension.' };
+          // 1. Vault key available — sign locally
+          if (key && isValidPrivHex(key.privateKeyHex)) {
+            const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
+            const signed = signEvent(unsigned, key.privateKeyHex);
+            logSignedEvent(signed, 'nostr-onchain-pwa');
+            return { id, result: signed };
           }
 
-          const unsigned: UnsignedEvent = { ...event, pubkey: key.publicKeyHex };
-          const signed = signEvent(unsigned, key.privateKeyHex);
-          logSignedEvent(signed, 'nostr-onchain-pwa');
-          return { id, result: signed };
+          // 2. External NIP-07 signer — covers extension-linked accounts AND a
+          //    lost session (any NIP-07 signer can sign Nostr events)
+          const ext = externalNostr();
+          if (typeof ext?.signEvent === 'function') {
+            try {
+              const signed = await ext.signEvent(
+                key ? { ...event, pubkey: key.publicKeyHex } : event,
+              );
+              logSignedEvent(signed, 'nostr-onchain-pwa');
+              return { id, result: signed };
+            } catch (err: any) {
+              if (!session) notifySessionLost();
+              return { id, error: `NIP-07 sign failed: ${err?.message || err}` };
+            }
+          }
+
+          if (!session) {
+            notifySessionLost();
+            return { id, error: 'Vault is locked — unlock the app to continue' };
+          }
+          return { id, error: 'No private key and no NIP-07 extension available. Install a Nostr signer extension.' };
         }
 
         case 'nip07:getRelays':
@@ -254,18 +301,11 @@ const mockChrome = {
 
         case 'nip07:signSchnorr': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
+          const key = session ? session[getActiveIndex()] : null;
           const { hash } = (payload || {}) as { hash: string };
           if (!hash) return { id, error: 'Missing hash' };
 
-          const hasValidKey =
-            typeof key.privateKeyHex === 'string' &&
-            key.privateKeyHex.length === 64 &&
-            /^[0-9a-f]+$/i.test(key.privateKeyHex);
-
-          if (hasValidKey) {
+          if (key && isValidPrivHex(key.privateKeyHex)) {
             try {
               const { schnorrSign } = await import('@/lib/bitcoin/psbt');
               const { hexToBytes, bytesToHex } = await import('@noble/hashes/utils');
@@ -276,85 +316,111 @@ const mockChrome = {
             }
           }
 
-          // External NIP-07 signer (Alby, etc.)
-          const w = window as { nostr?: { signSchnorr?: (h: string) => Promise<string> } };
-          if (typeof w.nostr?.signSchnorr === 'function') {
+          // External NIP-07 signer (Alby, our extension bridge, …) — also the
+          // path when the session was lost but a signer extension is present
+          const ext = externalNostr();
+          if (typeof ext?.signSchnorr === 'function') {
             try {
-              const sig = await w.nostr.signSchnorr(hash);
+              const sig = await ext.signSchnorr(hash);
               return { id, result: sig };
             } catch (err: any) {
               return { id, error: `NIP-07 signSchnorr failed: ${err?.message || err}` };
             }
           }
+          if (!session) return { id, error: 'Vault is locked — unlock the app to continue' };
           return { id, error: 'No private key and no NIP-07 signSchnorr available' };
         }
 
         case 'nip07:nip04:encrypt': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
+          const key = session ? session[getActiveIndex()] : null;
           const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
-          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
-            return { id, error: 'No private key for DM encryption' };
+          if (key && isValidPrivHex(key.privateKeyHex)) {
+            try {
+              const encrypted = await encryptNip04(key.privateKeyHex, pubkey, plaintext);
+              return { id, result: encrypted };
+            } catch (err: any) {
+              return { id, error: err?.message || 'NIP-04 encrypt failed' };
+            }
           }
-          try {
-            const encrypted = await encryptNip04(key.privateKeyHex, pubkey, plaintext);
-            return { id, result: encrypted };
-          } catch (err: any) {
-            return { id, error: err?.message || 'NIP-04 encrypt failed' };
+          const ext = externalNostr();
+          if (typeof ext?.nip04?.encrypt === 'function') {
+            try {
+              return { id, result: await ext.nip04.encrypt(pubkey, plaintext) };
+            } catch (err: any) {
+              return { id, error: `NIP-07 nip04 encrypt failed: ${err?.message || err}` };
+            }
           }
+          return { id, error: session ? 'No private key for DM encryption' : 'Vault is locked — unlock the app to continue' };
         }
 
         case 'nip07:nip04:decrypt': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
+          const key = session ? session[getActiveIndex()] : null;
           const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
-          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
-            return { id, error: 'No private key for DM decryption' };
+          if (key && isValidPrivHex(key.privateKeyHex)) {
+            try {
+              const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
+              return { id, result: decrypted };
+            } catch (err: any) {
+              return { id, error: err?.message || 'NIP-04 decrypt failed' };
+            }
           }
-          try {
-            const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
-            return { id, result: decrypted };
-          } catch (err: any) {
-            return { id, error: err?.message || 'NIP-04 decrypt failed' };
+          const ext = externalNostr();
+          if (typeof ext?.nip04?.decrypt === 'function') {
+            try {
+              return { id, result: await ext.nip04.decrypt(pubkey, ciphertext) };
+            } catch (err: any) {
+              return { id, error: `NIP-07 nip04 decrypt failed: ${err?.message || err}` };
+            }
           }
+          return { id, error: session ? 'No private key for DM decryption' : 'Vault is locked — unlock the app to continue' };
         }
 
         case 'nip07:nip44:encrypt': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
+          const key = session ? session[getActiveIndex()] : null;
           const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
-          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
-            return { id, error: 'No private key for DM encryption' };
+          if (key && isValidPrivHex(key.privateKeyHex)) {
+            try {
+              const encrypted = encryptNip44(key.privateKeyHex, pubkey, plaintext);
+              return { id, result: encrypted };
+            } catch (err: any) {
+              return { id, error: err?.message || 'NIP-44 encrypt failed' };
+            }
           }
-          try {
-            const encrypted = encryptNip44(key.privateKeyHex, pubkey, plaintext);
-            return { id, result: encrypted };
-          } catch (err: any) {
-            return { id, error: err?.message || 'NIP-44 encrypt failed' };
+          const ext = externalNostr();
+          if (typeof ext?.nip44?.encrypt === 'function') {
+            try {
+              return { id, result: await ext.nip44.encrypt(pubkey, plaintext) };
+            } catch (err: any) {
+              return { id, error: `NIP-07 nip44 encrypt failed: ${err?.message || err}` };
+            }
           }
+          return { id, error: session ? 'No private key for DM encryption' : 'Vault is locked — unlock the app to continue' };
         }
 
         case 'nip07:nip44:decrypt': {
           const session = sessionGet('session_keys') as any[];
-          if (!session) return { id, error: 'Vault is locked' };
-          const idx = getActiveIndex();
-          const key = session[idx];
+          const key = session ? session[getActiveIndex()] : null;
           const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
-          if (!key?.privateKeyHex || key.privateKeyHex.length !== 64) {
-            return { id, error: 'No private key for DM decryption' };
+          if (key && isValidPrivHex(key.privateKeyHex)) {
+            try {
+              const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
+              return { id, result: decrypted };
+            } catch (err: any) {
+              return { id, error: err?.message || 'NIP-44 decrypt failed' };
+            }
           }
-          try {
-            const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
-            return { id, result: decrypted };
-          } catch (err: any) {
-            return { id, error: err?.message || 'NIP-44 decrypt failed' };
+          const ext = externalNostr();
+          if (typeof ext?.nip44?.decrypt === 'function') {
+            try {
+              return { id, result: await ext.nip44.decrypt(pubkey, ciphertext) };
+            } catch (err: any) {
+              return { id, error: `NIP-07 nip44 decrypt failed: ${err?.message || err}` };
+            }
           }
+          return { id, error: session ? 'No private key for DM decryption' : 'Vault is locked — unlock the app to continue' };
         }
 
         case 'btc:getAddress': {

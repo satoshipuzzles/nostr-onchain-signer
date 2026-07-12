@@ -218,6 +218,15 @@ export async function signMultisigPsbtViaSchnorr(
       if (sigBytes.length !== 64) {
         throw new Error('Signer returned an invalid Schnorr signature');
       }
+      // Verify against the expected pubkey — a signer logged into a different
+      // account would otherwise poison the PSBT with an invalid signature
+      const { schnorr } = await import('@noble/curves/secp256k1');
+      if (!schnorr.verify(sigBytes, msgHash, signerPub)) {
+        throw new Error(
+          'Your signer is logged into a different account than this co-signer key. ' +
+          'Switch accounts in your signer extension and try again.',
+        );
+      }
       const sig = sighash !== SigHash.DEFAULT
         ? concatBytes(sigBytes, new Uint8Array([sighash]))
         : sigBytes;

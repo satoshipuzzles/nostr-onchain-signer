@@ -10,6 +10,7 @@ import {
   type SocialUnlockContent,
 } from '@/lib/nostr/social-unlock';
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
+import { createMessageId } from '@/shared/messages';
 import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
 import { safeImageUrl } from '@/lib/utils';
 import type { ProfileMetadata } from '@/lib/nostr/social';
@@ -216,6 +217,20 @@ export function SocialUnlockPage() {
 
   async function handleConnect() {
     try {
+      // App vault/session first (handles NIP-07 fallback internally), then
+      // raw window.nostr for visitors who only have a signer extension
+      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+        try {
+          const resp = await chrome.runtime.sendMessage({
+            type: 'nip07:getPublicKey',
+            id: createMessageId(),
+          });
+          if (resp?.result) {
+            setConnectedPubkey(resp.result as string);
+            return;
+          }
+        } catch { /* fall through to window.nostr */ }
+      }
       if ((window as any).nostr?.getPublicKey) {
         const pk = await (window as any).nostr.getPublicKey();
         setConnectedPubkey(pk);
@@ -224,8 +239,31 @@ export function SocialUnlockPage() {
       }
     } catch (err) {
       console.error('NIP-07 connect failed:', err);
-      setSignError('Failed to connect. Please try again.');
+      const msg = err instanceof Error ? err.message : '';
+      setSignError(msg ? `Failed to connect: ${msg}` : 'Failed to connect. Please try again.');
     }
+  }
+
+  async function signViaAnySigner(event: {
+    kind: number; content: string; tags: string[][]; created_at: number;
+  }): Promise<any> {
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      const resp = await chrome.runtime.sendMessage({
+        type: 'nip07:signEvent',
+        payload: { event },
+        id: createMessageId(),
+      });
+      if (resp?.result) return resp.result;
+      // Only give up if there is no raw window.nostr left to try
+      if (resp?.error && typeof (window as any).nostr?.signEvent !== 'function') {
+        throw new Error(resp.error);
+      }
+    }
+    const nostr = (window as any).nostr;
+    if (typeof nostr?.signEvent !== 'function') {
+      throw new Error('No NIP-07 signer found. Install Alby, nos2x, or another Nostr signer extension.');
+    }
+    return nostr.signEvent(event);
   }
 
   function getEligibility(): 'eligible' | 'not_eligible' | 'already_signed' | 'is_creator' {
@@ -244,9 +282,6 @@ export function SocialUnlockPage() {
     setSignError(null);
 
     try {
-      const nostr = (window as any).nostr;
-      if (!nostr) throw new Error('NIP-07 extension not found');
-
       const signContent = JSON.stringify({
         unlock_event_id: eventId,
         message: 'Signed via public unlock page',
@@ -262,7 +297,7 @@ export function SocialUnlockPage() {
         created_at: Math.floor(Date.now() / 1000),
       };
 
-      const signedEvent = await nostr.signEvent(event);
+      const signedEvent = await signViaAnySigner(event);
       if (!signedEvent) throw new Error('Signing was cancelled');
 
       const result = await publishPublicEvent(signedEvent);
@@ -281,6 +316,7 @@ export function SocialUnlockPage() {
         try {
           const unlockUrl = `${window.location.origin}/unlock/${eventId}`;
           const dmText = `Your social unlock "${content.title}" has reached ${content.threshold} signatures and is ready to reveal! Open it here: ${unlockUrl}`;
+          const nostr = (window as any).nostr;
           if (nostr?.nip04?.encrypt) {
             const encrypted = await nostr.nip04.encrypt(creatorPubkey, dmText);
             const dmEvent = {
@@ -289,7 +325,7 @@ export function SocialUnlockPage() {
               tags: [['p', creatorPubkey]],
               created_at: Math.floor(Date.now() / 1000),
             };
-            const signedDm = await nostr.signEvent(dmEvent);
+            const signedDm = await signViaAnySigner(dmEvent);
             if (signedDm) await publishPublicEvent(signedDm);
           }
         } catch {
