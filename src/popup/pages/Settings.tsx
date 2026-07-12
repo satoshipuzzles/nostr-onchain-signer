@@ -762,7 +762,7 @@ export function Settings() {
           <Download className="w-5 h-5 text-gray-400" />
           <div className="flex-1 text-left">
             <p className="text-sm font-medium">Backup Keys</p>
-            <p className="text-xs text-gray-500">Download all keys as encrypted file</p>
+            <p className="text-xs text-red-400/80">Downloads plaintext nsec keys — store securely</p>
           </div>
         </button>
 

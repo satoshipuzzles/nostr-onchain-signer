@@ -68,6 +68,18 @@ function pendingKey(id: string): string {
 }
 
 function buildPreview(type: string, payload: unknown): string {
+  if (type === 'nip07:getPublicKey') {
+    return 'Reveal your Nostr public key (npub) to this site and let it request signatures.';
+  }
+  if (type === 'nip07:nip04:decrypt' || type === 'nip07:nip44:decrypt') {
+    return 'Decrypt a message with your key. A malicious site could use this to read your private messages — only allow sites you trust.';
+  }
+  if (type === 'nip07:nip04:encrypt' || type === 'nip07:nip44:encrypt') {
+    return 'Encrypt a message to another user with your key.';
+  }
+  if (type === 'btc:getAddress') {
+    return 'Reveal your Bitcoin Taproot address to this site.';
+  }
   if (type === 'nip07:signEvent') {
     const event = (payload as { event?: { kind?: number; content?: string } })?.event;
     if (!event) return 'Sign Nostr event';

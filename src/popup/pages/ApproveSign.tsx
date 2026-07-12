@@ -1,8 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ShieldCheck, X, Loader2 } from 'lucide-react';
+import { ShieldCheck, X, Loader2, Ban } from 'lucide-react';
 import { createMessageId } from '@/shared/messages';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+
+const ACTION_LABELS: Record<string, string> = {
+  'nip07:getPublicKey': 'Connect (share public key)',
+  'nip07:signEvent': 'Sign Nostr event',
+  'nip07:signSchnorr': 'Sign Bitcoin sighash',
+  'nip07:nip04:encrypt': 'Encrypt message',
+  'nip07:nip04:decrypt': 'Decrypt message',
+  'nip07:nip44:encrypt': 'Encrypt message (NIP-44)',
+  'nip07:nip44:decrypt': 'Decrypt message (NIP-44)',
+  'btc:getAddress': 'Share Bitcoin address',
+  'btc:signPsbt': 'Sign & finalize PSBT',
+  'btc:signPsbtPartial': 'Partial-sign PSBT',
+};
 
 export function ApproveSign() {
   const [params] = useSearchParams();
@@ -14,6 +27,7 @@ export function ApproveSign() {
   const [preview, setPreview] = useState('');
   const [pubkey, setPubkey] = useState('');
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(false);
 
   useEffect(() => {
     loadPending();
@@ -47,12 +61,12 @@ export function ApproveSign() {
     }
   }
 
-  async function respond(approved: boolean) {
+  async function respond(approved: boolean, block = false) {
     setBusy(true);
     try {
       await chrome.runtime.sendMessage({
         type: approved ? 'approval:confirm' : 'approval:reject',
-        payload: { approvalId },
+        payload: approved ? { approvalId, remember } : { approvalId, block },
         id: createMessageId(),
       });
       window.close();
@@ -97,7 +111,7 @@ export function ApproveSign() {
               <span className="text-gray-500">Site:</span> {origin}
             </p>
             <p className="text-xs text-gray-400 mb-2">
-              <span className="text-gray-500">Action:</span> {action}
+              <span className="text-gray-500">Action:</span> {ACTION_LABELS[action] || action}
             </p>
             {pubkey && (
               <p className="text-xs font-mono text-bitcoin mb-3 truncate">
@@ -109,26 +123,47 @@ export function ApproveSign() {
                 <p className="text-xs text-gray-300 whitespace-pre-wrap break-words">{preview}</p>
               </div>
             )}
+
+            <label className="flex items-center gap-2 mt-4 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+                className="w-4 h-4 rounded accent-bitcoin"
+              />
+              <span className="text-xs text-gray-400">
+                Always allow this site (skip future prompts)
+              </span>
+            </label>
           </>
         )}
       </div>
 
       {/* Buttons — always pinned at bottom */}
       {!error && (
-        <div className="flex-shrink-0 flex gap-2 p-4 border-t border-surface-200/10 bg-surface-900">
+        <div className="flex-shrink-0 p-4 border-t border-surface-200/10 bg-surface-900 space-y-2">
+          <div className="flex gap-2">
+            <button
+              onClick={() => respond(false)}
+              disabled={busy}
+              className="btn-secondary flex-1 flex items-center justify-center gap-1"
+            >
+              <X className="w-4 h-4" /> Deny
+            </button>
+            <button
+              onClick={() => respond(true)}
+              disabled={busy}
+              className="btn-primary flex-1"
+            >
+              {busy ? 'Working...' : remember ? 'Allow & Remember' : 'Allow Once'}
+            </button>
+          </div>
           <button
-            onClick={() => respond(false)}
+            onClick={() => respond(false, true)}
             disabled={busy}
-            className="btn-secondary flex-1 flex items-center justify-center gap-1"
+            className="w-full flex items-center justify-center gap-1.5 text-[11px] text-red-400/80 hover:text-red-300 transition-colors py-1"
           >
-            <X className="w-4 h-4" /> Deny
-          </button>
-          <button
-            onClick={() => respond(true)}
-            disabled={busy}
-            className="btn-primary flex-1"
-          >
-            {busy ? 'Signing...' : 'Approve'}
+            <Ban className="w-3.5 h-3.5" /> Block this site
           </button>
         </div>
       )}

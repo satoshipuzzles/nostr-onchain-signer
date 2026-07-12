@@ -13,12 +13,19 @@ import { schnorrSign } from '@/lib/bitcoin/psbt';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import type { ExtensionMessage, ExtensionResponse } from '@/shared/messages';
 import {
-  needsApproval,
   queueForApproval,
   getPendingApproval,
   getWaiter,
   clearPendingApproval,
 } from './pending-approval';
+import {
+  evaluateRequest,
+  recordAppUsage,
+  setOriginPermission,
+  originOf,
+  hostOf,
+  SENSITIVE_TYPES,
+} from './app-permissions';
 
 const SESSION_KEY = 'unlocked_session';
 const SESSION_INDEX_KEY = 'active_account_index';
@@ -130,12 +137,31 @@ async function handleMessage(
     return { id, error: 'Unsupported request' };
   }
 
-  if (!options?.skipApproval && sender && needsApproval(type, sender)) {
-    const key = await getActiveKey();
-    if (!key) {
-      return { id, error: 'Vault is locked — open the extension and unlock first' };
+  // Per-origin permission gate for every key/identity-exposing method. Skipped
+  // for our own app, the extension UI, and when re-running an already-approved
+  // request (skipApproval).
+  if (!options?.skipApproval && sender && !isExtensionSender(sender)) {
+    const url = sender.url || sender.tab?.url;
+    const decision = await evaluateRequest(type, url);
+    if (decision === 'deny') {
+      return { id, error: 'This site is blocked from using your signer. Change this under Connected Apps.' };
     }
-    return queueForApproval(message, sender, key.publicKeyHex);
+    if (decision === 'ask') {
+      const key = await getActiveKey();
+      if (!key) {
+        return { id, error: 'Vault is locked — open the extension and unlock first' };
+      }
+      return queueForApproval(message, sender, key.publicKeyHex);
+    }
+    if (decision === 'allow' && url) {
+      const origin = originOf(url);
+      if (origin) {
+        void recordAppUsage(origin, {
+          name: hostOf(url),
+          incrementSign: SENSITIVE_TYPES.has(type) && type !== 'nip07:getPublicKey',
+        });
+      }
+    }
   }
 
   switch (type) {
@@ -214,8 +240,13 @@ async function handleMessage(
     }
 
     case 'approval:reject': {
-      const { approvalId } = payload as { approvalId: string };
+      const { approvalId, block } = payload as { approvalId: string; block?: boolean };
+      const pending = await getPendingApproval(approvalId);
       const waiter = getWaiter(approvalId);
+      if (block && pending?.origin) {
+        const origin = originOf(pending.origin);
+        if (origin) await setOriginPermission(origin, 'deny');
+      }
       if (waiter) {
         waiter.resolve({ id: waiter.message.id, error: 'User denied signing request' });
       }
@@ -224,11 +255,19 @@ async function handleMessage(
     }
 
     case 'approval:confirm': {
-      const { approvalId } = payload as { approvalId: string };
+      const { approvalId, remember } = payload as { approvalId: string; remember?: boolean };
       const pending = await getPendingApproval(approvalId);
       const waiter = getWaiter(approvalId);
       if (!pending || !waiter) {
         return { id, error: 'Request expired — try again from the website' };
+      }
+      const origin = pending.origin ? originOf(pending.origin) : null;
+      if (origin) {
+        if (remember) await setOriginPermission(origin, 'always');
+        await recordAppUsage(origin, {
+          name: hostOf(pending.origin),
+          incrementSign: SENSITIVE_TYPES.has(pending.type) && pending.type !== 'nip07:getPublicKey',
+        });
       }
       const result = await handleMessage(waiter.message, undefined, { skipApproval: true });
       waiter.resolve(result);
