@@ -9,7 +9,7 @@ import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/tick
 import { fetchMempoolApi, getCachedBlocks, setCachedBlocks, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
-import { resolveProfiles } from '@/lib/nostr/cache';
+import { resolveProfiles, getAllCachedProfiles } from '@/lib/nostr/cache';
 import { queryPublicEvents } from '@/lib/nostr/public-relay';
 import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
@@ -1337,6 +1337,8 @@ interface OpReturnItem {
   scriptHex: string;
   proto: ProtocolMatch | null;
   text: string | null;
+  /** Author of the referenced nostr event (NSTR OP_RETURNs). */
+  eventAuthor?: string;
 }
 
 const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://nos.lol'];
@@ -1372,15 +1374,24 @@ function OpReturnTab({
       const myAddr = pubkeyToTaprootAddress(publicKey);
       setMyAddress(myAddr);
 
-      // Build address → nostr pubkey map from follows + self so we can show
-      // profile pictures for counterparties
+      // Build address → nostr pubkey map from self + follows + everyone in
+      // the discovery cache, so profile pictures show for counterparties
       const map: Record<string, string> = { [myAddr]: publicKey };
-      try {
-        const contacts = await fetchFollowingList(publicKey);
-        for (const c of contacts.slice(0, 500)) {
-          try { map[pubkeyToTaprootAddress(c.pubkey)] = c.pubkey; } catch { /* invalid */ }
+      const addPk = (pk: string) => {
+        try { map[pubkeyToTaprootAddress(pk)] ??= pk; } catch { /* invalid */ }
+      };
+      const [contactsRes, cachedRes] = await Promise.allSettled([
+        fetchFollowingList(publicKey),
+        getAllCachedProfiles(),
+      ]);
+      if (contactsRes.status === 'fulfilled') {
+        for (const c of contactsRes.value.slice(0, 500)) addPk(c.pubkey);
+      }
+      if (cachedRes.status === 'fulfilled') {
+        for (const c of cachedRes.value.slice(0, 2000)) {
+          if (c.profile.pubkey) addPk(c.profile.pubkey);
         }
-      } catch { /* no follows */ }
+      }
       setAddrToPubkey(map);
 
       const res = await fetchMempoolApi(`/address/${myAddr}/txs`);
@@ -1415,11 +1426,32 @@ function OpReturnTab({
       }
       setItems(found);
 
-      // Resolve profiles for matched counterparties (Discover mechanism)
-      const pks = [...new Set(
-        found.map((f) => (f.counterAddr ? map[f.counterAddr] : undefined)).filter(Boolean),
-      )] as string[];
-      pks.push(publicKey);
+      // NSTR OP_RETURNs reference a nostr event — fetch those events to learn
+      // the author pubkey, which gives an avatar even when the counterparty
+      // address is unknown
+      const eventIds = [...new Set(
+        found.filter((f) => f.proto?.protocol === 'NSTR')
+          .map((f) => (f.proto as { eventId: string }).eventId),
+      )];
+      const eventAuthors: Record<string, string> = {};
+      if (eventIds.length > 0) {
+        try {
+          const events = await queryPublicEvents({ ids: eventIds.slice(0, 50) }, 6000);
+          for (const evt of events) eventAuthors[evt.id] = evt.pubkey;
+          setItems((prev) => prev.map((it) =>
+            it.proto?.protocol === 'NSTR' && eventAuthors[it.proto.eventId]
+              ? { ...it, eventAuthor: eventAuthors[it.proto.eventId] }
+              : it,
+          ));
+        } catch { /* relays unavailable */ }
+      }
+
+      // Resolve profiles for matched counterparties + event authors
+      const pks = [...new Set([
+        ...found.map((f) => (f.counterAddr ? map[f.counterAddr] : undefined)).filter(Boolean) as string[],
+        ...Object.values(eventAuthors),
+        publicKey,
+      ])];
       const resolved = await resolveProfiles(pks, PROFILE_RELAYS);
       const p: Record<string, ProfileMetadata> = {};
       resolved.forEach((v, k) => { p[k] = v; });
@@ -1478,7 +1510,10 @@ function OpReturnTab({
       )}
 
       {items.map((item, i) => {
-        const counterPubkey = item.counterAddr ? addrToPubkey[item.counterAddr] : undefined;
+        // Prefer a counterparty matched by address; fall back to the author
+        // of the referenced nostr event (NSTR OP_RETURNs)
+        const counterPubkey = (item.counterAddr ? addrToPubkey[item.counterAddr] : undefined)
+          || item.eventAuthor;
         const counterProfile = counterPubkey ? profiles[counterPubkey] : undefined;
         const counterName = counterProfile?.displayName || counterProfile?.name
           || (item.counterAddr ? truncateHash(item.counterAddr, 8) : 'Unknown');

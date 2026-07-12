@@ -83,14 +83,19 @@ async function handleMethod(
 }
 
 /**
- * Answer NIP-07 postMessage requests coming from a specific iframe.
- * Only messages originating from that iframe's contentWindow are honored.
+ * Answer NIP-07 postMessage requests coming from our managed iframes.
+ * Only messages originating from a registered iframe's contentWindow are honored.
  */
-export function useIframeNostrBridge(iframeRef: RefObject<HTMLIFrameElement | null>) {
+export function useIframeNostrBridge(iframeRefs: RefObject<Map<string, HTMLIFrameElement>>) {
   useEffect(() => {
     async function onMessage(event: MessageEvent) {
-      const frame = iframeRef.current;
-      if (!frame || event.source !== frame.contentWindow) return;
+      const frames = iframeRefs.current;
+      if (!frames) return;
+      let matched = false;
+      for (const frame of frames.values()) {
+        if (event.source === frame.contentWindow) { matched = true; break; }
+      }
+      if (!matched) return;
       if (!isBridgeRequest(event.data)) return;
 
       const { id, method, params } = event.data;
@@ -112,5 +117,5 @@ export function useIframeNostrBridge(iframeRef: RefObject<HTMLIFrameElement | nu
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [iframeRef]);
+  }, [iframeRefs]);
 }

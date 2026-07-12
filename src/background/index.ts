@@ -68,6 +68,19 @@ function hasVaultPrivateKey(key: VaultData): boolean {
   );
 }
 
+/** All decryption-capable private keys, active account first. DMs may be
+ * addressed to a non-active vault account. */
+async function getAllPrivateKeys(): Promise<string[]> {
+  const session = await getSession();
+  if (!session || session.length === 0) return [];
+  const idx = await getActiveIndex();
+  const ordered = [
+    session[Math.min(idx, session.length - 1)],
+    ...session.filter((_, i) => i !== Math.min(idx, session.length - 1)),
+  ];
+  return ordered.filter(hasVaultPrivateKey).map((k) => k.privateKeyHex);
+}
+
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, sender, sendResponse) => {
     handleMessage(message, sender)
@@ -281,18 +294,20 @@ async function handleMessage(
     }
 
     case 'nip07:nip04:decrypt': {
-      const key = await getActiveKey();
-      if (!key || !hasVaultPrivateKey(key)) {
+      const keys = await getAllPrivateKeys();
+      if (keys.length === 0) {
         return { id, error: 'Vault is locked or has no private key for DM decryption' };
       }
       const { pubkey, ciphertext } = payload as { pubkey: string; ciphertext: string };
-      try {
-        const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
-        return { id, result: decrypted };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'NIP-04 decrypt failed';
-        return { id, error: msg };
+      let lastErr = 'NIP-04 decrypt failed';
+      for (const priv of keys) {
+        try {
+          return { id, result: await decryptNip04(priv, pubkey, ciphertext) };
+        } catch (err: unknown) {
+          lastErr = err instanceof Error ? err.message : lastErr;
+        }
       }
+      return { id, error: lastErr };
     }
 
     case 'nip07:nip44:encrypt': {
@@ -311,18 +326,20 @@ async function handleMessage(
     }
 
     case 'nip07:nip44:decrypt': {
-      const key = await getActiveKey();
-      if (!key || !hasVaultPrivateKey(key)) {
+      const keys = await getAllPrivateKeys();
+      if (keys.length === 0) {
         return { id, error: 'Vault is locked or has no private key for DM decryption' };
       }
       const { pubkey, ciphertext } = payload as { pubkey: string; ciphertext: string };
-      try {
-        const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
-        return { id, result: decrypted };
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'NIP-44 decrypt failed';
-        return { id, error: msg };
+      let lastErr = 'NIP-44 decrypt failed';
+      for (const priv of keys) {
+        try {
+          return { id, result: decryptNip44(priv, pubkey, ciphertext) };
+        } catch (err: unknown) {
+          lastErr = err instanceof Error ? err.message : lastErr;
+        }
       }
+      return { id, error: lastErr };
     }
 
     case 'btc:getAddress': {

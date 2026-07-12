@@ -3,7 +3,7 @@ import {
   useLayoutEffect, type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, X, Maximize2, Loader2 } from 'lucide-react';
+import { Radio, Gamepad2, X, Maximize2, Loader2 } from 'lucide-react';
 import { useIframeNostrBridge } from '@/lib/nostr/iframe-bridge';
 
 export interface EmbedApp {
@@ -15,11 +15,16 @@ export interface EmbedApp {
 }
 
 interface EmbedPlayerContextType {
-  current: EmbedApp | null;
-  /** Start (or switch to) an embedded app. The iframe persists across routes. */
-  play: (app: EmbedApp) => void;
-  /** Stop and unmount the embedded app. */
-  stop: () => void;
+  /** All currently open embeds (audio room + game can run at the same time). */
+  embeds: EmbedApp[];
+  /** The embed currently shown in the dock. */
+  activeId: string | null;
+  /** Open an app (keeps others running) and focus it. */
+  open: (app: EmbedApp) => void;
+  /** Focus an already-open embed without closing others. */
+  focus: (id: string) => void;
+  /** Close one embed. Others keep running. */
+  close: (id: string) => void;
   /** The page hosting the full-size view registers its container here. */
   registerDock: (el: HTMLElement | null) => void;
 }
@@ -33,37 +38,47 @@ export function useEmbedPlayer(): EmbedPlayerContextType {
 }
 
 /**
- * Keeps the active embed's iframe mounted OUTSIDE the routed pages so audio
- * rooms and games keep running while the user navigates the app.
+ * Keeps every open embed's iframe mounted OUTSIDE the routed pages, so audio
+ * rooms and games keep running while the user navigates — and an audio room
+ * can keep playing while a game is in the foreground.
  *
- * - Docked: the iframe is position-synced over the Audio & Games page's
- *   container (registered via registerDock).
- * - Undocked: the iframe stays alive at 1px (audio keeps playing) and a
- *   floating mini-player bar gives quick return/stop controls.
+ * - The active embed is position-synced over the Audio & Games page's dock.
+ * - Background embeds shrink to 1px (audio keeps playing).
+ * - Away from the page, a floating mini-player lists every open embed.
  */
 export function EmbedPlayerProvider({ children }: { children: ReactNode }) {
-  const [current, setCurrent] = useState<EmbedApp | null>(null);
+  const [embeds, setEmbeds] = useState<EmbedApp[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [dockEl, setDockEl] = useState<HTMLElement | null>(null);
   const [rect, setRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loadedIds, setLoadedIds] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map());
 
-  // Let the embedded app talk NIP-07 to us via postMessage (sign in with the
-  // user's active nostr keys — "nostr clients within clients")
-  useIframeNostrBridge(iframeRef);
+  // Answer NIP-07 postMessage requests from any open embed
+  useIframeNostrBridge(iframeRefs);
 
-  const play = useCallback((app: EmbedApp) => {
-    setCurrent((prev) => {
-      if (prev?.id === app.id) return prev;
-      setLoading(true);
-      return app;
-    });
+  const open = useCallback((app: EmbedApp) => {
+    setEmbeds((prev) => (prev.some((e) => e.id === app.id) ? prev : [...prev, app]));
+    setActiveId(app.id);
   }, []);
 
-  const stop = useCallback(() => {
-    setCurrent(null);
-    setLoading(false);
+  const focus = useCallback((id: string) => {
+    setActiveId(id);
+  }, []);
+
+  const close = useCallback((id: string) => {
+    iframeRefs.current.delete(id);
+    setEmbeds((prev) => {
+      const next = prev.filter((e) => e.id !== id);
+      setActiveId((cur) => (cur === id ? (next[next.length - 1]?.id ?? null) : cur));
+      return next;
+    });
+    setLoadedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   }, []);
 
   const registerDock = useCallback((el: HTMLElement | null) => {
@@ -95,63 +110,77 @@ export function EmbedPlayerProvider({ children }: { children: ReactNode }) {
   const docked = !!dockEl && !!rect;
 
   return (
-    <EmbedPlayerContext.Provider value={{ current, play, stop, registerDock }}>
+    <EmbedPlayerContext.Provider value={{ embeds, activeId, open, focus, close, registerDock }}>
       {children}
 
-      {current && (
-        <>
-          {/* The persistent iframe — never unmounts while an app is active */}
+      {/* Persistent iframes — one per open embed, none unmount on navigation */}
+      {embeds.map((app) => {
+        const isActive = app.id === activeId;
+        const showFull = docked && isActive;
+        return (
           <div
+            key={app.id}
             className="fixed z-40"
             style={
-              docked
+              showFull
                 ? { top: rect!.top, left: rect!.left, width: rect!.width, height: rect!.height }
                 : { bottom: 0, right: 0, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }
             }
           >
-            {docked && loading && (
+            {showFull && !loadedIds.has(app.id) && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10 pointer-events-none">
                 <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
               </div>
             )}
             <iframe
-              ref={iframeRef}
-              key={current.id}
-              src={current.url}
-              title={current.name}
-              onLoad={() => setLoading(false)}
+              ref={(el) => {
+                if (el) iframeRefs.current.set(app.id, el);
+                else iframeRefs.current.delete(app.id);
+              }}
+              src={app.url}
+              title={app.name}
+              onLoad={() => setLoadedIds((prev) => new Set(prev).add(app.id))}
               className="w-full h-full border-0 bg-black"
               allow="microphone; camera; autoplay; clipboard-write; web-share"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals"
             />
           </div>
+        );
+      })}
 
-          {/* Floating mini-player when the user navigates away */}
-          {!docked && (
-            <div className="fixed bottom-20 md:bottom-4 right-3 md:right-4 z-40 flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-2xl bg-surface-800/95 backdrop-blur border border-purple-500/30 shadow-lg shadow-black/50">
+      {/* Floating mini-player when away from the Audio & Games page */}
+      {!docked && embeds.length > 0 && (
+        <div className="fixed bottom-20 md:bottom-4 right-3 md:right-4 z-40 flex flex-col gap-1.5 items-end">
+          {embeds.map((app) => (
+            <div
+              key={app.id}
+              className="flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-2xl bg-surface-800/95 backdrop-blur border border-purple-500/30 shadow-lg shadow-black/50"
+            >
               <span className="relative flex h-2 w-2 flex-shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-60" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-400" />
               </span>
-              <Radio className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
-              <span className="text-xs font-medium text-white max-w-[120px] truncate">{current.name}</span>
+              {app.kind === 'audio'
+                ? <Radio className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
+                : <Gamepad2 className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
+              <span className="text-xs font-medium text-white max-w-[120px] truncate">{app.name}</span>
               <button
-                onClick={() => navigate('/other')}
+                onClick={() => { focus(app.id); navigate('/other'); }}
                 className="p-1.5 rounded-lg hover:bg-white/10 text-gray-300"
                 title="Back to full view"
               >
                 <Maximize2 className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={stop}
+                onClick={() => close(app.id)}
                 className="p-1.5 rounded-lg hover:bg-red-500/20 text-gray-400 hover:text-red-400"
                 title="Stop"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-          )}
-        </>
+          ))}
+        </div>
       )}
     </EmbedPlayerContext.Provider>
   );

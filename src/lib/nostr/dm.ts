@@ -59,6 +59,45 @@ export function clearDMKeyCache() {
   cachedPrivateKey = null;
 }
 
+/**
+ * All valid private keys in the session, active account first. DMs (and
+ * especially gift wraps) may be addressed to a non-active vault account —
+ * decryption should try every key we hold.
+ */
+async function getAllSessionPrivateKeys(): Promise<string[]> {
+  const keys: string[] = [];
+  const push = (k: unknown) => {
+    if (typeof k === 'string' && k.length === 64 && !keys.includes(k)) keys.push(k);
+  };
+
+  try {
+    const raw = sessionStorage.getItem('nostr_onchain_session_keys');
+    if (raw) {
+      const session = JSON.parse(raw) as Array<{ privateKeyHex?: string }>;
+      const idxRaw = sessionStorage.getItem('nostr_onchain_active_index');
+      const activeIdx = idxRaw ? JSON.parse(idxRaw) : 0;
+      push(session[activeIdx]?.privateKeyHex);
+      for (const entry of session) push(entry?.privateKeyHex);
+    }
+  } catch {}
+
+  try {
+    const sessionData = await chrome.storage?.session?.get?.(['session_keys', 'active_index']);
+    if (sessionData?.session_keys) {
+      const session = sessionData.session_keys as Array<{ privateKeyHex?: string }>;
+      const idx = (sessionData.active_index as number) ?? 0;
+      push(session[idx]?.privateKeyHex);
+      for (const entry of session) push(entry?.privateKeyHex);
+    }
+  } catch {}
+
+  if (keys.length === 0) {
+    const active = await getSessionPrivateKey();
+    push(active);
+  }
+  return keys;
+}
+
 export interface GiftWrapDMResult {
   giftWrapEvent: object;
   recipientPubkey: string;
@@ -191,20 +230,23 @@ export async function decryptDM(
   fullEvent?: { pubkey: string; content: string; kind: number; tags?: string[][] },
 ): Promise<string> {
   if (kind === 1059 && fullEvent) {
-    const privateKey = await getSessionPrivateKey();
-    if (privateKey) {
+    // Gift wraps can be addressed to any of our vault accounts — try them all
+    for (const privateKey of await getAllSessionPrivateKeys()) {
       const result = unwrapGiftWrap(privateKey, fullEvent);
       if (result) return result.rumor.content;
     }
     return '(unable to decrypt gift wrap)';
   }
 
-  // Try local key first (silent, no prompts)
-  const privateKey = await getSessionPrivateKey();
-  if (privateKey) {
+  // Try every local key first (silent, no prompts). Some clients also put
+  // NIP-44 ciphertext in kind 4, so try both algorithms per key.
+  for (const privateKey of await getAllSessionPrivateKeys()) {
     try {
       if (kind === 14) return decryptNip44(privateKey, senderPubkey, content);
       return await decryptNip04(privateKey, senderPubkey, content);
+    } catch {}
+    try {
+      if (kind === 4) return decryptNip44(privateKey, senderPubkey, content);
     } catch {}
   }
 
@@ -250,10 +292,11 @@ export async function decryptDM(
 export async function getGiftWrapSender(
   event: { pubkey: string; content: string; kind: number; tags?: string[][] },
 ): Promise<string | null> {
-  const privateKey = await getSessionPrivateKey();
-  if (!privateKey) return null;
-  const result = unwrapGiftWrap(privateKey, event);
-  return result?.senderPubkey ?? null;
+  for (const privateKey of await getAllSessionPrivateKeys()) {
+    const result = unwrapGiftWrap(privateKey, event);
+    if (result) return result.senderPubkey;
+  }
+  return null;
 }
 
 /**
@@ -263,14 +306,16 @@ export async function getGiftWrapSender(
 export async function unwrapGiftWrapEvent(
   event: { pubkey: string; content: string; kind: number; tags?: string[][] },
 ): Promise<{ content: string; senderPubkey: string; createdAt: number; rumor: Rumor } | null> {
-  const privateKey = await getSessionPrivateKey();
-  if (!privateKey) return null;
-  const result = unwrapGiftWrap(privateKey, event);
-  if (!result) return null;
-  return {
-    content: result.rumor.content,
-    senderPubkey: result.senderPubkey,
-    createdAt: result.rumor.created_at,
-    rumor: result.rumor,
-  };
+  for (const privateKey of await getAllSessionPrivateKeys()) {
+    const result = unwrapGiftWrap(privateKey, event);
+    if (result) {
+      return {
+        content: result.rumor.content,
+        senderPubkey: result.senderPubkey,
+        createdAt: result.rumor.created_at,
+        rumor: result.rumor,
+      };
+    }
+  }
+  return null;
 }

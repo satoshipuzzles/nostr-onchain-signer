@@ -8,6 +8,7 @@
 import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
 import { generateKeyPair, keyPairFromPrivateKey } from '@/lib/nostr/keys';
 import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
+import { persistSession, restoreSession, clearPersistedSession } from './session-persist';
 
 const STORAGE_PREFIX = 'nostr_onchain_';
 
@@ -145,6 +146,23 @@ function getActiveIndex(): number {
   return 0;
 }
 
+/**
+ * Session keys with durable restore: sessionStorage first, then the
+ * device-key-encrypted copy in localStorage (survives PWA process kills and
+ * new tabs). Restoring repopulates sessionStorage so sync readers (DM crypto)
+ * see the keys too.
+ */
+async function getSessionKeys(): Promise<any[] | null> {
+  const inTab = sessionGet('session_keys') as any[] | undefined;
+  if (inTab) return inTab;
+  const restored = (await restoreSession()) as any[] | null;
+  if (Array.isArray(restored) && restored.length > 0) {
+    sessionSet('session_keys', restored);
+    return restored;
+  }
+  return null;
+}
+
 interface ExternalNostr {
   getPublicKey?: () => Promise<string>;
   signEvent?: (e: unknown) => Promise<any>;
@@ -190,7 +208,7 @@ const mockChrome = {
       switch (type) {
         case 'vault:status': {
           const vault = storageGet('vault');
-          const session = sessionGet('session_keys') as Array<{privateKeyHex: string; publicKeyHex: string}> | undefined;
+          const session = (await getSessionKeys()) as Array<{privateKeyHex: string; publicKeyHex: string}> | null;
           const activeIdx = getActiveIndex();
           return {
             id,
@@ -210,6 +228,9 @@ const mockChrome = {
             const { decryptVault } = await import('@/lib/crypto/vault');
             const keys = await decryptVault(vault, password!);
             sessionSet('session_keys', keys);
+            // Durable copy (device-key encrypted) so mobile PWA restarts and
+            // new tabs don't come back "locked"
+            persistSession(keys).catch(() => {});
             const idx = getActiveIndex();
             return { id, result: { publicKey: keys[Math.min(idx, keys.length - 1)]?.publicKeyHex } };
           } catch {
@@ -219,12 +240,13 @@ const mockChrome = {
 
         case 'vault:lock': {
           sessionRemove('session_keys');
+          await clearPersistedSession();
           return { id, result: { locked: true } };
         }
 
         case 'vault:switchAccount': {
           const { index } = (payload || {}) as { index: number };
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session || index < 0 || index >= session.length) return { id, error: 'Invalid index' };
           storageSet('activeAccountIndex', index);
           sessionSet('active_index', index);
@@ -233,7 +255,7 @@ const mockChrome = {
         }
 
         case 'vault:getPrivateKey': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session) return { id, error: 'Vault is locked' };
           const idx = getActiveIndex();
           const key = session[idx];
@@ -244,7 +266,7 @@ const mockChrome = {
         }
 
         case 'nip07:getPublicKey': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (session) {
             const idx = getActiveIndex();
             return { id, result: session[idx].publicKeyHex };
@@ -261,7 +283,7 @@ const mockChrome = {
         }
 
         case 'nip07:signEvent': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           const { event } = (payload || {}) as { event: Omit<UnsignedEvent, 'pubkey'> };
           const key = session ? session[getActiveIndex()] : null;
 
@@ -300,7 +322,7 @@ const mockChrome = {
           return { id, result: {} };
 
         case 'nip07:signSchnorr': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           const key = session ? session[getActiveIndex()] : null;
           const { hash } = (payload || {}) as { hash: string };
           if (!hash) return { id, error: 'Missing hash' };
@@ -332,7 +354,7 @@ const mockChrome = {
         }
 
         case 'nip07:nip04:encrypt': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           const key = session ? session[getActiveIndex()] : null;
           const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
           if (key && isValidPrivHex(key.privateKeyHex)) {
@@ -355,16 +377,22 @@ const mockChrome = {
         }
 
         case 'nip07:nip04:decrypt': {
-          const session = sessionGet('session_keys') as any[];
-          const key = session ? session[getActiveIndex()] : null;
+          const session = await getSessionKeys();
           const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
-          if (key && isValidPrivHex(key.privateKeyHex)) {
-            try {
-              const decrypted = await decryptNip04(key.privateKeyHex, pubkey, ciphertext);
-              return { id, result: decrypted };
-            } catch (err: any) {
-              return { id, error: err?.message || 'NIP-04 decrypt failed' };
+          if (session) {
+            // DMs can be addressed to any vault account — try every key
+            const idx = getActiveIndex();
+            const ordered = [session[idx], ...session.filter((_, i) => i !== idx)];
+            let lastErr = '';
+            for (const k of ordered) {
+              if (!k || !isValidPrivHex(k.privateKeyHex)) continue;
+              try {
+                return { id, result: await decryptNip04(k.privateKeyHex, pubkey, ciphertext) };
+              } catch (err: any) {
+                lastErr = err?.message || 'NIP-04 decrypt failed';
+              }
             }
+            if (lastErr) return { id, error: lastErr };
           }
           const ext = externalNostr();
           if (typeof ext?.nip04?.decrypt === 'function') {
@@ -378,7 +406,7 @@ const mockChrome = {
         }
 
         case 'nip07:nip44:encrypt': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           const key = session ? session[getActiveIndex()] : null;
           const { pubkey, plaintext } = (payload || {}) as { pubkey: string; plaintext: string };
           if (key && isValidPrivHex(key.privateKeyHex)) {
@@ -401,16 +429,21 @@ const mockChrome = {
         }
 
         case 'nip07:nip44:decrypt': {
-          const session = sessionGet('session_keys') as any[];
-          const key = session ? session[getActiveIndex()] : null;
+          const session = await getSessionKeys();
           const { pubkey, ciphertext } = (payload || {}) as { pubkey: string; ciphertext: string };
-          if (key && isValidPrivHex(key.privateKeyHex)) {
-            try {
-              const decrypted = decryptNip44(key.privateKeyHex, pubkey, ciphertext);
-              return { id, result: decrypted };
-            } catch (err: any) {
-              return { id, error: err?.message || 'NIP-44 decrypt failed' };
+          if (session) {
+            const idx = getActiveIndex();
+            const ordered = [session[idx], ...session.filter((_, i) => i !== idx)];
+            let lastErr = '';
+            for (const k of ordered) {
+              if (!k || !isValidPrivHex(k.privateKeyHex)) continue;
+              try {
+                return { id, result: decryptNip44(k.privateKeyHex, pubkey, ciphertext) };
+              } catch (err: any) {
+                lastErr = err?.message || 'NIP-44 decrypt failed';
+              }
             }
+            if (lastErr) return { id, error: lastErr };
           }
           const ext = externalNostr();
           if (typeof ext?.nip44?.decrypt === 'function') {
@@ -424,7 +457,7 @@ const mockChrome = {
         }
 
         case 'btc:getAddress': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session) return { id, error: 'Vault is locked' };
           const idx = getActiveIndex();
           const { pubkeyToTaprootAddress } = await import('@/lib/bitcoin/address');
@@ -432,7 +465,7 @@ const mockChrome = {
         }
 
         case 'btc:signPsbtPartial': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session) return { id, error: 'Vault is locked' };
           const { psbtHex } = (payload || {}) as { psbtHex: string };
           if (!psbtHex) return { id, error: 'Missing psbtHex' };
@@ -459,7 +492,7 @@ const mockChrome = {
         }
 
         case 'btc:signPsbt': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session) return { id, error: 'Vault is locked' };
           const idx = getActiveIndex();
           const key = session[idx];
@@ -511,7 +544,7 @@ const mockChrome = {
           return { id, result: { ok: true } };
 
         case 'dual:signAndBroadcast': {
-          const session = sessionGet('session_keys') as any[];
+          const session = await getSessionKeys();
           if (!session) return { id, error: 'Vault is locked' };
           const idx = getActiveIndex();
           const key = session[idx];
