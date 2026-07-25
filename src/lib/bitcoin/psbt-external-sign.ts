@@ -123,10 +123,21 @@ export async function signPsbtViaWebBtc(psbtHex: string): Promise<SignedTxResult
   return finalizeSignedPsbt(signedHex, 'webbtc');
 }
 
+export const KEYPATH_TWEAK_ERROR =
+  'Your Nostr signer signs with the raw (untweaked) key, so it cannot authorize ' +
+  'key-path Taproot spends from your personal address — the signature would be ' +
+  'invalid on-chain. Import your nsec into the vault, or pair Amber (which signs ' +
+  'PSBTs with the correct tweak), then try again.';
+
 /**
  * Build Taproot sighash → ask NIP-07 signer to signSchnorr → attach to PSBT.
  * This is the "transaction is ready, just need the signature" path.
- * Works with Alby; nos2x does not implement signSchnorr.
+ *
+ * IMPORTANT: key-path spends must be signed with the TapTweak-adjusted key
+ * (d + H_TapTweak(P)), but NIP-07 signSchnorr signs with the raw nostr key.
+ * We therefore VERIFY each returned signature against the actual output key
+ * before attaching it — a raw-key signature never validates, and previously
+ * this produced transactions that every node rejected at broadcast.
  */
 export async function signPsbtViaNostrSchnorr(
   psbtHex: string,
@@ -135,8 +146,10 @@ export async function signPsbtViaNostrSchnorr(
   const w = window as NostrWindow;
   if (!w.nostr?.signSchnorr) return null;
 
+  const { schnorr } = await import('@noble/curves/secp256k1');
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
   let signedCount = 0;
+  let invalidTweakCount = 0;
 
   for (let idx = 0; idx < tx.inputsLength; idx++) {
     const input = tx.getInput(idx);
@@ -160,6 +173,18 @@ export async function signPsbtViaNostrSchnorr(
     const msgHash = tx.preimageWitnessV1(idx, prevOutScript, sighash, amount);
     const sigHex = await w.nostr.signSchnorr(hex.encode(msgHash));
     const sigBytes = hex.decode(sigHex.replace(/^0x/, ''));
+    if (sigBytes.length !== 64) throw new Error('Signer returned an invalid Schnorr signature');
+
+    // The key-path signature must verify against the TWEAKED output key,
+    // which is the witness program of this input (script = OP_1 PUSH32 <Q>).
+    const ownScript = prevOutScript[idx];
+    const outputKey = ownScript.length === 34 && ownScript[0] === 0x51 && ownScript[1] === 0x20
+      ? ownScript.slice(2)
+      : null;
+    if (!outputKey || !schnorr.verify(sigBytes, msgHash, outputKey)) {
+      invalidTweakCount++;
+      continue;
+    }
 
     const tapKeySig =
       sighash !== SigHash.DEFAULT
@@ -170,7 +195,11 @@ export async function signPsbtViaNostrSchnorr(
     signedCount++;
   }
 
-  if (signedCount === 0) return null;
+  if (signedCount === 0) {
+    if (invalidTweakCount > 0) throw new Error(KEYPATH_TWEAK_ERROR);
+    return null;
+  }
+  if (invalidTweakCount > 0) throw new Error(KEYPATH_TWEAK_ERROR);
 
   tx.finalize();
   const txBytes = tx.extract();
@@ -243,22 +272,33 @@ export async function tryExternalPsbtSign(
     }
   }
 
+  // NIP-07 signSchnorr: works for tapscript inputs, but CANNOT produce valid
+  // key-path signatures (raw key, no TapTweak). If it fails for that reason,
+  // keep the error but still try the remaining signers first — our extension's
+  // vault (window.bitcoin) can sign key-path spends correctly.
+  let deferredError: Error | null = null;
   if (pubkeyHex) {
     try {
       const schnorr = await signPsbtViaNostrSchnorr(psbtHex, pubkeyHex);
       if (schnorr) return schnorr;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
-      if (msg && !msg.toLowerCase().includes('reject')) throw err;
+      if (msg === KEYPATH_TWEAK_ERROR) {
+        deferredError = err as Error;
+      } else if (msg && !msg.toLowerCase().includes('reject')) {
+        throw err;
+      }
     }
   }
 
   try {
-    return await signPsbtViaBitcoinApi(psbtHex);
+    const viaApi = await signPsbtViaBitcoinApi(psbtHex);
+    if (viaApi) return viaApi;
   } catch {
     // fall through
   }
 
+  if (deferredError) throw deferredError;
   return null;
 }
 

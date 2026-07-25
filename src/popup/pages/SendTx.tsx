@@ -177,7 +177,7 @@ export function SendTx({ publicKey, onBack }: Props) {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to sign and broadcast';
       setError(msg);
-      if (msg.includes('Alby') || msg.includes('nos2x') || msg.includes('No Bitcoin signer')) {
+      if (msg.includes('Alby') || msg.includes('nos2x') || msg.includes('No Bitcoin signer') || msg.includes('untweaked')) {
         setShowNsecUpgrade(true);
       }
     } finally {
@@ -382,7 +382,7 @@ export function SendTx({ publicKey, onBack }: Props) {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to send transaction';
       setError(msg);
-      if (msg.includes('nos2x') || msg.includes('Alby') || msg.includes('No Bitcoin signer')) {
+      if (msg.includes('nos2x') || msg.includes('Alby') || msg.includes('No Bitcoin signer') || msg.includes('untweaked')) {
         setShowNsecUpgrade(true);
       }
     } finally {
