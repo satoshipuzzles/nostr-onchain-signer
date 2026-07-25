@@ -1,0 +1,381 @@
+/**
+ * OP_RETURN Nostr note embedding for Bitcoin transactions.
+ *
+ * Encodes Nostr event data into OP_RETURN outputs that fit within
+ * the 80-byte limit required by Bitcoin Knots and standard relay policy.
+ *
+ * Protocol format:
+ *   OP_RETURN <protocol_id:4> <version:1> <kind:2> <event_id:32> = 39 bytes
+ *
+ * Extended format (with truncated content hash):
+ *   OP_RETURN <protocol_id:4> <version:1> <kind:2> <event_id:32> <content_hash:20> = 59 bytes
+ *
+ * The remaining ~20 bytes can be used for additional metadata.
+ */
+
+import { sha256 } from '@noble/hashes/sha256';
+import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
+
+// "NSTR" in ASCII - 4-byte protocol identifier
+const PROTOCOL_ID = new Uint8Array([0x4e, 0x53, 0x54, 0x52]);
+const PROTOCOL_VERSION = 0x01;
+const MAX_OP_RETURN = 80;
+
+/**
+ * Build a full OP_RETURN scriptPubKey with a MINIMAL push of the payload.
+ * Direct pushes only work up to 75 bytes — larger payloads need OP_PUSHDATA1
+ * (≤255) or OP_PUSHDATA2 (≤65535). The old code used a single-byte push for
+ * everything, which produced invalid scripts for 76+ byte payloads.
+ */
+export function buildOpReturnScript(payload: Uint8Array): Uint8Array {
+  if (payload.length === 0) return new Uint8Array([0x6a]);
+  if (payload.length <= 75) {
+    return concatBytes(new Uint8Array([0x6a, payload.length]), payload);
+  }
+  if (payload.length <= 255) {
+    return concatBytes(new Uint8Array([0x6a, 0x4c, payload.length]), payload); // OP_PUSHDATA1
+  }
+  if (payload.length <= 65535) {
+    return concatBytes(
+      new Uint8Array([0x6a, 0x4d, payload.length & 0xff, (payload.length >> 8) & 0xff]), // OP_PUSHDATA2
+      payload,
+    );
+  }
+  throw new Error(`OP_RETURN payload too large: ${payload.length} bytes (max 65535)`);
+}
+
+export interface NostrOpReturnData {
+  eventId: string;   // 32-byte hex event ID
+  kind: number;      // Nostr event kind
+  content?: string;  // Optional content to hash
+  pubkey?: string;   // Optional author pubkey (truncated)
+}
+
+export interface OpReturnOutput {
+  script: Uint8Array;
+  scriptHex: string;
+  size: number;
+  breakdown: {
+    protocolId: string;
+    version: number;
+    kind: number;
+    eventId: string;
+    contentHash?: string;
+  };
+}
+
+/**
+ * Encode a Nostr event reference into an OP_RETURN script.
+ *
+ * Layout:
+ *   [OP_RETURN(1)] [OP_PUSHDATA(1)] [payload(N)]
+ *   Payload: [NSTR(4)] [version(1)] [kind(2 LE)] [event_id(32)]
+ *   Optional: [content_hash_truncated(20)]
+ *
+ * Total with event_id only: 1 + 1 + 4 + 1 + 2 + 32 = 41 bytes
+ * Total with content hash:  1 + 1 + 4 + 1 + 2 + 32 + 20 = 61 bytes
+ */
+export function encodeNostrOpReturn(data: NostrOpReturnData): OpReturnOutput {
+  const eventIdBytes = hexToBytes(data.eventId);
+  if (eventIdBytes.length !== 32) {
+    throw new Error('Event ID must be 32 bytes');
+  }
+
+  // Kind as 2-byte little-endian
+  const kindBytes = new Uint8Array(2);
+  kindBytes[0] = data.kind & 0xff;
+  kindBytes[1] = (data.kind >> 8) & 0xff;
+
+  // Build payload
+  let payload = concatBytes(
+    PROTOCOL_ID,
+    new Uint8Array([PROTOCOL_VERSION]),
+    kindBytes,
+    eventIdBytes
+  );
+
+  // Optionally add truncated content hash (first 20 bytes of SHA-256)
+  if (data.content) {
+    const contentHash = sha256(new TextEncoder().encode(data.content));
+    const truncated = contentHash.slice(0, 20);
+    payload = concatBytes(payload, truncated);
+  }
+
+  // Check size limit
+  const scriptSize = 1 + 1 + payload.length; // OP_RETURN + push opcode + payload
+  if (scriptSize > MAX_OP_RETURN) {
+    throw new Error(
+      `OP_RETURN script exceeds ${MAX_OP_RETURN} bytes: ${scriptSize}`
+    );
+  }
+
+  // Build full script: OP_RETURN <push N bytes> <payload>
+  const script = concatBytes(
+    new Uint8Array([0x6a]),           // OP_RETURN
+    new Uint8Array([payload.length]), // push data length
+    payload
+  );
+
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    breakdown: {
+      protocolId: 'NSTR',
+      version: PROTOCOL_VERSION,
+      kind: data.kind,
+      eventId: data.eventId,
+      contentHash: data.content
+        ? bytesToHex(sha256(new TextEncoder().encode(data.content)).slice(0, 20))
+        : undefined,
+    },
+  };
+}
+
+/**
+ * Decode an OP_RETURN script back into Nostr event reference data.
+ */
+export function decodeNostrOpReturn(scriptHex: string): NostrOpReturnData | null {
+  const script = hexToBytes(scriptHex);
+
+  // Minimum: OP_RETURN(1) + push(1) + NSTR(4) + ver(1) + kind(2) + eventId(32) = 41
+  if (script.length < 41) return null;
+  if (script[0] !== 0x6a) return null; // Not OP_RETURN
+
+  const pushLen = script[1];
+  const payload = script.slice(2, 2 + pushLen);
+
+  // Check protocol ID
+  if (
+    payload[0] !== 0x4e ||
+    payload[1] !== 0x53 ||
+    payload[2] !== 0x54 ||
+    payload[3] !== 0x52
+  ) {
+    return null; // Not our protocol
+  }
+
+  const version = payload[4];
+  if (version !== PROTOCOL_VERSION) return null;
+
+  const kind = payload[5] | (payload[6] << 8);
+  const eventId = bytesToHex(payload.slice(7, 39));
+
+  const result: NostrOpReturnData = { eventId, kind };
+
+  // Check for content hash (20 bytes after event ID)
+  if (payload.length >= 59) {
+    // Content hash is present but we can't reverse it — just note it exists
+  }
+
+  return result;
+}
+
+/**
+ * Verify that a given content matches the OP_RETURN content hash.
+ */
+export function verifyOpReturnContent(
+  scriptHex: string,
+  content: string
+): boolean {
+  const script = hexToBytes(scriptHex);
+  if (script.length < 61) return false; // No content hash present
+
+  const payload = script.slice(2);
+  const storedHash = payload.slice(39, 59);
+  const computedHash = sha256(new TextEncoder().encode(content)).slice(0, 20);
+
+  return bytesToHex(storedHash) === bytesToHex(computedHash);
+}
+
+/**
+ * Calculate the maximum content that can fit in the remaining OP_RETURN space.
+ * Useful for showing the user how much metadata room they have left.
+ */
+export function remainingOpReturnBytes(includeContentHash: boolean): number {
+  const baseSize = 2 + 4 + 1 + 2 + 32; // script overhead + protocol + ver + kind + eventId
+  const contentHashSize = includeContentHash ? 20 : 0;
+  return MAX_OP_RETURN - baseSize - contentHashSize;
+}
+
+// "LOPS" protocol identifier for Light OPs
+const LOPS_PROTOCOL_ID = new Uint8Array([0x4c, 0x4f, 0x50, 0x53]);
+
+export interface LightOpOutput {
+  script: Uint8Array;
+  scriptHex: string;
+  size: number;
+  eventId: string;
+  hash: string;
+}
+
+/**
+ * Encode a Nostr event ID into a Light OP OP_RETURN script.
+ * Creates proof-of-existence on Bitcoin for any Nostr event.
+ *
+ * Layout: [OP_RETURN(1)] [PUSH(1)] [LOPS(4)] [version(1)] [SHA256(event_id)(32)] = 39 bytes
+ */
+export function encodeLightOp(eventId: string): LightOpOutput {
+  const eventIdBytes = new TextEncoder().encode(eventId);
+  const hash = sha256(eventIdBytes);
+
+  const payload = concatBytes(
+    LOPS_PROTOCOL_ID,
+    new Uint8Array([PROTOCOL_VERSION]),
+    hash
+  );
+
+  const script = concatBytes(
+    new Uint8Array([0x6a]),
+    new Uint8Array([payload.length]),
+    payload
+  );
+
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    eventId,
+    hash: bytesToHex(hash),
+  };
+}
+
+/**
+ * Decode a Light OP OP_RETURN script.
+ * Returns the stored hash (cannot recover the original event ID).
+ */
+export function decodeLightOp(scriptHex: string): { hash: string } | null {
+  const script = hexToBytes(scriptHex);
+  if (script.length < 39) return null;
+  if (script[0] !== 0x6a) return null;
+
+  const payload = script.slice(2);
+  if (
+    payload[0] !== 0x4c || payload[1] !== 0x4f ||
+    payload[2] !== 0x50 || payload[3] !== 0x53
+  ) return null;
+
+  if (payload[4] !== PROTOCOL_VERSION) return null;
+
+  return { hash: bytesToHex(payload.slice(5, 37)) };
+}
+
+/**
+ * Verify that an event ID matches a Light OP hash.
+ */
+export function verifyLightOp(scriptHex: string, eventId: string): boolean {
+  const decoded = decodeLightOp(scriptHex);
+  if (!decoded) return false;
+  const computedHash = bytesToHex(sha256(new TextEncoder().encode(eventId)));
+  return decoded.hash === computedHash;
+}
+
+/**
+ * Encode a plain-text memo into OP_RETURN (no Nostr event / kind 1).
+ * No hard size cap — the UI surfaces BIP-110 (83-byte script) compliance and
+ * relay-policy implications so the user decides how large to go.
+ */
+export function encodePlainMemoOpReturn(memo: string): OpReturnOutput {
+  const trimmed = memo.trim();
+  if (!trimmed) throw new Error('Memo cannot be empty');
+  const bytes = new TextEncoder().encode(trimmed);
+  const script = buildOpReturnScript(bytes);
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    breakdown: {
+      protocolId: 'MEMO',
+      version: 0,
+      kind: 0,
+      eventId: '',
+    },
+  };
+}
+
+/**
+ * Encode arbitrary user data (UTF-8 text or hex) into an OP_RETURN output.
+ * Returns the payload separately so builders can size fees precisely.
+ */
+export function encodeCustomOpReturn(
+  input: string,
+  format: 'text' | 'hex',
+): { payload: Uint8Array; script: Uint8Array; scriptHex: string; size: number } {
+  let payload: Uint8Array;
+  if (format === 'hex') {
+    const clean = input.replace(/^0x/i, '').replace(/\s+/g, '');
+    if (!clean) throw new Error('Data cannot be empty');
+    if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) {
+      throw new Error('Invalid hex data');
+    }
+    payload = hexToBytes(clean.toLowerCase());
+  } else {
+    const trimmed = input.trim();
+    if (!trimmed) throw new Error('Data cannot be empty');
+    payload = new TextEncoder().encode(trimmed);
+  }
+  const script = buildOpReturnScript(payload);
+  return { payload, script, scriptHex: bytesToHex(script), size: script.length };
+}
+
+// "NINV" protocol identifier for invoice OP_RETURN
+const INVOICE_PROTOCOL_ID = new Uint8Array([0x4e, 0x49, 0x4e, 0x56]);
+
+export interface InvoiceOpReturnOutput {
+  script: Uint8Array;
+  scriptHex: string;
+  size: number;
+  invoiceEventId: string;
+}
+
+/**
+ * Encode an invoice event reference into an OP_RETURN script.
+ * Proves on-chain which Nostr invoice (kind 9733) was settled.
+ *
+ * Layout:
+ *   [OP_RETURN(1)] [OP_PUSHDATA(1)] [NINV(4)] [version(1)] [SHA256(invoiceEventId)(32)]
+ *   Total: 1 + 1 + 4 + 1 + 32 = 39 bytes
+ */
+export function encodeInvoiceOpReturn(invoiceEventId: string): InvoiceOpReturnOutput {
+  const eventIdBytes = new TextEncoder().encode(invoiceEventId);
+  const hash = sha256(eventIdBytes);
+
+  const payload = concatBytes(
+    INVOICE_PROTOCOL_ID,
+    new Uint8Array([PROTOCOL_VERSION]),
+    hash
+  );
+
+  const script = concatBytes(
+    new Uint8Array([0x6a]),
+    new Uint8Array([payload.length]),
+    payload
+  );
+
+  return {
+    script,
+    scriptHex: bytesToHex(script),
+    size: script.length,
+    invoiceEventId,
+  };
+}
+
+/**
+ * Decode an invoice OP_RETURN to check for the NINV protocol marker.
+ * Returns the stored hash (cannot recover the original event ID).
+ */
+export function decodeInvoiceOpReturn(scriptHex: string): { hash: string } | null {
+  const script = hexToBytes(scriptHex);
+  if (script.length < 39) return null;
+  if (script[0] !== 0x6a) return null;
+
+  const payload = script.slice(2);
+  if (
+    payload[0] !== 0x4e || payload[1] !== 0x49 ||
+    payload[2] !== 0x4e || payload[3] !== 0x56
+  ) return null;
+
+  if (payload[4] !== PROTOCOL_VERSION) return null;
+
+  return { hash: bytesToHex(payload.slice(5, 37)) };
+}

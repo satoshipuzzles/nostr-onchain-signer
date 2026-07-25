@@ -1,24 +1,18 @@
 {
-  "name": "nostr-onchain-signer",
+  "name": "bitcoin-wallet-manager",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Social multi-sig Bitcoin signer + NIP-07 Nostr signer Chrome extension",
-  "workspaces": [
-    "packages/*",
-    "apps/*"
-  ],
+  "description": "Sparrow-style Bitcoin wallet manager with Nostr integration — mobile-first offline PWA",
   "scripts": {
     "dev": "vite --host",
-    "dev:ext": "vite build --watch --mode development",
     "build": "tsc && vite build",
-    "build:ext": "tsc && vite build",
-    "build:web": "tsc && vite build --mode web",
     "preview": "vite preview"
   },
   "dependencies": {
     "@noble/curves": "^1.8.0",
     "@noble/hashes": "^1.7.0",
+    "@nostr-onchain/core": "*",
     "@scure/base": "^1.2.0",
     "@scure/btc-signer": "^1.5.0",
     "jotai": "^2.11.0",
@@ -27,12 +21,9 @@
     "qr-creator": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^7.1.0",
-    "sonner": "^1.7.0",
-    "tailwind-merge": "^2.6.0"
+    "react-router-dom": "^7.1.0"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.287",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
@@ -40,6 +31,7 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.6.2",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vite-plugin-pwa": "^0.21.1"
   }
 }
