@@ -1,0 +1,32 @@
+{
+  "name": "nostr-onchain-explorer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Nostr Block Chain — block explorer + Nostr client for OP_RETURN-anchored Nostr events",
+  "scripts": {
+    "dev": "vite --host --port 5175",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.7.0",
+    "@nostr-onchain/core": "*",
+    "@scure/base": "^1.2.0",
+    "lucide-react": "^0.469.0",
+    "nostr-tools": "^2.10.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.0"
+  }
+}

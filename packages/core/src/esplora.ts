@@ -68,6 +68,17 @@ export interface EsploraAddressInfo {
   };
 }
 
+export interface EsploraBlock {
+  id: string;
+  height: number;
+  version: number;
+  timestamp: number;
+  tx_count: number;
+  size: number;
+  weight: number;
+  previousblockhash: string;
+}
+
 export interface FeeEstimates {
   fastest: number;
   halfHour: number;
@@ -140,6 +151,28 @@ export class EsploraClient {
   async getTipHeight(): Promise<number> {
     const res = await this.request('/blocks/tip/height');
     return parseInt(await res.text(), 10);
+  }
+
+  async getBlockHashAtHeight(height: number): Promise<string> {
+    const res = await this.request(`/block-height/${height}`);
+    return (await res.text()).trim();
+  }
+
+  async getBlock(hash: string): Promise<EsploraBlock> {
+    const res = await this.request(`/block/${hash}`);
+    return res.json();
+  }
+
+  /** Paged block transactions (25 per page, startIndex must be a multiple of 25). */
+  async getBlockTxs(hash: string, startIndex = 0): Promise<EsploraTx[]> {
+    const res = await this.request(startIndex > 0 ? `/block/${hash}/txs/${startIndex}` : `/block/${hash}/txs`);
+    return res.json();
+  }
+
+  /** Recent blocks (10), optionally starting at a height going backwards. */
+  async getBlocks(startHeight?: number): Promise<EsploraBlock[]> {
+    const res = await this.request(startHeight ? `/blocks/${startHeight}` : '/blocks');
+    return res.json();
   }
 
   async getFeeEstimates(): Promise<FeeEstimates> {
