@@ -6,7 +6,8 @@ import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink
 import { fetchBalance, fetchFeeEstimates, fetchUTXOs, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction, type UTXO } from '@/lib/bitcoin/mempool';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { buildPsbt, downloadPsbtFile, downloadPsbtText, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
-import { encodePlainMemoOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
+import { encodeCustomOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
+import { checkOpReturnCompliance, BIP110_MAX_OP_RETURN_SCRIPT } from '@/lib/bitcoin/bip110';
 import { loadBitcoinNodeConfig } from '@/lib/bitcoin/node';
 import { detectBitcoinSigners, tryExternalPsbtSign, promptExtensionAccess, type BitcoinSignerSource } from '@/lib/bitcoin/psbt-external-sign';
 import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
@@ -48,6 +49,9 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [copied, setCopied] = useState('');
   const [invoiceEventId, setInvoiceEventId] = useState('');
   const [prefilledFromInvoice, setPrefilledFromInvoice] = useState(false);
+  // OP_RETURN data controls
+  const [dataFormat, setDataFormat] = useState<'text' | 'hex'>('text');
+  const [dataPolicy, setDataPolicy] = useState<'bip110' | 'large'>('bip110');
   const [showNsecUpgrade, setShowNsecUpgrade] = useState(false);
   const [nsecInput, setNsecInput] = useState('');
   const [upgrading, setUpgrading] = useState(false);
@@ -74,11 +78,27 @@ export function SendTx({ publicKey, onBack }: Props) {
     return ms?.wallet?.address || personalAddress;
   }, [senderSource, multisigWallets, personalAddress]);
 
+  // OP_RETURN payload preview: byte size + BIP-110 compliance, live as you type
+  const opReturnPreview = useMemo(() => {
+    if (invoiceEventId.trim()) {
+      // NINV invoice reference: fixed 39-byte script, always compliant
+      return { payloadLen: 37, compliance: checkOpReturnCompliance(37), source: 'invoice' as const };
+    }
+    if (!memo.trim()) return null;
+    try {
+      const encoded = encodeCustomOpReturn(memo, dataFormat);
+      return { payloadLen: encoded.payload.length, compliance: checkOpReturnCompliance(encoded.payload.length), source: 'data' as const };
+    } catch {
+      return null;
+    }
+  }, [memo, dataFormat, invoiceEventId]);
+
   // Fee + size estimate
   const estimatedVsize = useMemo(() => {
     const inputCount = selectedUtxos.size > 0 ? selectedUtxos.size : Math.max(1, Math.ceil((parseInt(amountSats) || 10000) / 50000));
-    return 10.5 + inputCount * 57.5 + 2 * 43;
-  }, [selectedUtxos, amountSats]);
+    const opReturnSize = opReturnPreview ? 9 + opReturnPreview.compliance.scriptSize : 0;
+    return 10.5 + inputCount * 57.5 + 2 * 43 + opReturnSize;
+  }, [selectedUtxos, amountSats, opReturnPreview]);
 
   const estimatedFeeUsd = useMemo(() => {
     if (!btcPriceUsd || !feeRate) return null;
@@ -330,8 +350,14 @@ export function SendTx({ publicKey, onBack }: Props) {
         const invoiceOpReturn = encodeInvoiceOpReturn(invoiceEventId.trim());
         opReturnData = invoiceOpReturn.script.slice(2);
       } else if (memo.trim()) {
-        const memoOpReturn = encodePlainMemoOpReturn(memo.trim());
-        opReturnData = memoOpReturn.script.slice(2);
+        const encoded = encodeCustomOpReturn(memo, dataFormat);
+        if (dataPolicy === 'bip110' && encoded.size > BIP110_MAX_OP_RETURN_SCRIPT) {
+          throw new Error(
+            `OP_RETURN script is ${encoded.size} bytes — over BIP-110's ${BIP110_MAX_OP_RETURN_SCRIPT}-byte limit. ` +
+            'Shorten the data, or switch to "Large / main chain only" mode.'
+          );
+        }
+        opReturnData = encoded.payload;
       }
 
       const preSelected = selectedUtxos.size > 0
@@ -868,17 +894,85 @@ export function SendTx({ publicKey, onBack }: Props) {
           )}
         </div>
 
-        {/* Optional on-chain memo */}
-        <div>
-          <label className="text-xs text-gray-400 mb-1 block">Memo (optional, plain text on-chain)</label>
-          <input
+        {/* On-chain data (OP_RETURN) */}
+        <div className="rounded-xl bg-surface-800/30 border border-white/5 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs text-gray-400">On-chain data — OP_RETURN (optional)</label>
+            <div className="flex rounded-lg bg-surface-700 p-0.5">
+              {(['text', 'hex'] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setDataFormat(f)}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
+                    dataFormat === f ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {f === 'text' ? 'Text' : 'Hex'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <textarea
             value={memo}
             onChange={(e) => setMemo(e.target.value)}
-            placeholder="Short message embedded in OP_RETURN..."
-            maxLength={75}
-            className="input-field text-sm"
+            placeholder={dataFormat === 'text' ? 'Message embedded in the transaction...' : 'deadbeef... (raw hex bytes)'}
+            rows={2}
+            className={`input-field text-sm w-full resize-y ${dataFormat === 'hex' ? 'font-mono' : ''}`}
           />
-          <p className="text-[10px] text-gray-600 mt-1">No Nostr event — just text in the transaction</p>
+
+          {/* Live size + chain compatibility */}
+          {memo.trim() && (
+            opReturnPreview && opReturnPreview.source === 'data' ? (
+              <div className={`mt-2 rounded-lg p-2 border text-[10px] leading-relaxed ${
+                opReturnPreview.compliance.bip110Compliant
+                  ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                  : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+              }`}>
+                <span className="font-medium">
+                  {opReturnPreview.payloadLen} payload bytes → {opReturnPreview.compliance.scriptSize}-byte script.{' '}
+                </span>
+                {opReturnPreview.compliance.bip110Compliant
+                  ? 'BIP-110 compliant — relays everywhere and stays valid on both chains after the flag day.'
+                  : 'Over BIP-110\u2019s 83-byte limit — needs Core 30+ nodes to relay, and after activation (~block 965,664, Sep 2026) it confirms on the main chain only. Use this deliberately to send main-chain-only.'}
+              </div>
+            ) : (
+              <p className="text-[10px] text-red-400 mt-1">
+                {dataFormat === 'hex' ? 'Invalid hex — use pairs of 0-9 a-f characters' : 'Could not encode data'}
+              </p>
+            )
+          )}
+
+          {/* Size policy */}
+          <div className="flex gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => setDataPolicy('bip110')}
+              className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-colors ${
+                dataPolicy === 'bip110'
+                  ? 'bg-green-500/15 border-green-500/30 text-green-400'
+                  : 'bg-surface-700 border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              BIP-110 compliant (≤83B, both chains)
+            </button>
+            <button
+              type="button"
+              onClick={() => setDataPolicy('large')}
+              className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-medium border transition-colors ${
+                dataPolicy === 'large'
+                  ? 'bg-amber-500/15 border-amber-500/30 text-amber-400'
+                  : 'bg-surface-700 border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              Large (main chain only post-fork)
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-600 mt-1.5">
+            Compliant mode blocks builds over the 83-byte script limit. Large mode allows any size
+            — after BIP-110 activation such transactions are invalid on the enforcing chain,
+            which also makes them a clean way to move coins on the main chain only.
+          </p>
         </div>
 
         {/* Optional invoice reference */}

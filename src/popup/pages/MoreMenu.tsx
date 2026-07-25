@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import {
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
   Inbox, Compass, Settings, Radio, Edit3, Download, Lock,
-  Shield, Gamepad2,
+  Shield, Gamepad2, Hammer,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { createMessageId } from '@/shared/messages';
@@ -21,6 +21,7 @@ const sections = [
   {
     title: 'Bitcoin',
     items: [
+      { to: '/send', icon: Hammer, label: 'TX Builder' },
       { to: '/signing', icon: Inbox, label: 'Signing Inbox' },
       { to: '/lightops', icon: Fingerprint, label: 'Light OPs' },
       { to: '/unlocks', icon: Unlock, label: 'Social Unlocks' },

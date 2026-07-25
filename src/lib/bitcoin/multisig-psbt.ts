@@ -7,12 +7,18 @@ import { tapLeafHash } from '@scure/btc-signer/payment';
 import { hex } from '@scure/base';
 import { concatBytes } from '@noble/hashes/utils';
 import { fetchUTXOs, fetchFeeEstimates } from './mempool';
+import { buildOpReturnScript } from './opreturn';
 import type { MultisigWallet } from './multisig';
 import type { PsbtResult } from './psbt-builder';
 
-function estimateVsize(numInputs: number, numOutputs: number, hasOpReturn: boolean): number {
+/**
+ * @param numOutputs count of NON-OP_RETURN outputs (recipient + change)
+ * @param opReturnScriptLen full OP_RETURN scriptPubKey length (0 = none)
+ */
+function estimateVsize(numInputs: number, numOutputs: number, opReturnScriptLen: number): number {
   // Tapscript multisig inputs are larger than key-path
-  return 11 + numInputs * 120 + numOutputs * 43 + (hasOpReturn ? 50 : 0);
+  const opReturnSize = opReturnScriptLen > 0 ? 9 + opReturnScriptLen : 0;
+  return 11 + numInputs * 120 + numOutputs * 43 + opReturnSize;
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
@@ -60,7 +66,10 @@ export async function buildMultisigPsbt(params: {
   }
 
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
-  const hasOpReturn = !!opReturnData && opReturnData.length <= 80;
+  // Never silently drop OP_RETURN data — size policy is decided in the UI.
+  const opReturnScript = opReturnData && opReturnData.length > 0
+    ? buildOpReturnScript(opReturnData)
+    : null;
 
   const selected: typeof utxos = [];
   let totalInput = 0;
@@ -69,14 +78,14 @@ export async function buildMultisigPsbt(params: {
   for (const utxo of sorted) {
     selected.push(utxo);
     totalInput += utxo.value;
-    const numOutputs = 1 + (hasOpReturn ? 1 : 0) + 1;
-    const vsize = estimateVsize(selected.length, numOutputs, hasOpReturn);
+    const vsize = estimateVsize(selected.length, 2, opReturnScript?.length ?? 0);
     fee = Math.ceil(vsize * actualFeeRate);
     if (totalInput >= amountSats + fee + 546) break;
   }
 
-  const numOutputs = 1 + (hasOpReturn ? 1 : 0) + (totalInput - amountSats - fee >= 546 ? 1 : 0);
-  const vsize = estimateVsize(selected.length, numOutputs, hasOpReturn);
+  const hasChange = totalInput - amountSats - fee >= 546;
+  const numOutputs = 1 + (hasChange ? 1 : 0) + (opReturnScript ? 1 : 0);
+  const vsize = estimateVsize(selected.length, 1 + (hasChange ? 1 : 0), opReturnScript?.length ?? 0);
   fee = Math.ceil(vsize * actualFeeRate);
 
   if (totalInput < amountSats + fee) {
@@ -84,7 +93,7 @@ export async function buildMultisigPsbt(params: {
   }
 
   const changeSats = totalInput - amountSats - fee;
-  const tx = new Transaction();
+  const tx = new Transaction({ allowUnknownOutputs: true });
 
   for (const utxo of selected) {
     tx.addInput({
@@ -103,11 +112,7 @@ export async function buildMultisigPsbt(params: {
     tx.addOutputAddress(changeAddress || wallet.address, BigInt(changeSats));
   }
 
-  if (hasOpReturn && opReturnData) {
-    const opReturnScript = new Uint8Array(2 + opReturnData.length);
-    opReturnScript[0] = 0x6a;
-    opReturnScript[1] = opReturnData.length;
-    opReturnScript.set(opReturnData, 2);
+  if (opReturnScript) {
     tx.addOutput({ script: opReturnScript, amount: 0n });
   }
 

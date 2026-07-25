@@ -21,6 +21,29 @@ const PROTOCOL_ID = new Uint8Array([0x4e, 0x53, 0x54, 0x52]);
 const PROTOCOL_VERSION = 0x01;
 const MAX_OP_RETURN = 80;
 
+/**
+ * Build a full OP_RETURN scriptPubKey with a MINIMAL push of the payload.
+ * Direct pushes only work up to 75 bytes — larger payloads need OP_PUSHDATA1
+ * (≤255) or OP_PUSHDATA2 (≤65535). The old code used a single-byte push for
+ * everything, which produced invalid scripts for 76+ byte payloads.
+ */
+export function buildOpReturnScript(payload: Uint8Array): Uint8Array {
+  if (payload.length === 0) return new Uint8Array([0x6a]);
+  if (payload.length <= 75) {
+    return concatBytes(new Uint8Array([0x6a, payload.length]), payload);
+  }
+  if (payload.length <= 255) {
+    return concatBytes(new Uint8Array([0x6a, 0x4c, payload.length]), payload); // OP_PUSHDATA1
+  }
+  if (payload.length <= 65535) {
+    return concatBytes(
+      new Uint8Array([0x6a, 0x4d, payload.length & 0xff, (payload.length >> 8) & 0xff]), // OP_PUSHDATA2
+      payload,
+    );
+  }
+  throw new Error(`OP_RETURN payload too large: ${payload.length} bytes (max 65535)`);
+}
+
 export interface NostrOpReturnData {
   eventId: string;   // 32-byte hex event ID
   kind: number;      // Nostr event kind
@@ -249,20 +272,14 @@ export function verifyLightOp(scriptHex: string, eventId: string): boolean {
 
 /**
  * Encode a plain-text memo into OP_RETURN (no Nostr event / kind 1).
- * Max ~75 bytes of UTF-8 text per standard relay policy.
+ * No hard size cap — the UI surfaces BIP-110 (83-byte script) compliance and
+ * relay-policy implications so the user decides how large to go.
  */
 export function encodePlainMemoOpReturn(memo: string): OpReturnOutput {
   const trimmed = memo.trim();
   if (!trimmed) throw new Error('Memo cannot be empty');
   const bytes = new TextEncoder().encode(trimmed);
-  if (bytes.length > 75) {
-    throw new Error(`Memo too long (${bytes.length} bytes, max 75)`);
-  }
-  const script = concatBytes(
-    new Uint8Array([0x6a]),
-    new Uint8Array([bytes.length]),
-    bytes
-  );
+  const script = buildOpReturnScript(bytes);
   return {
     script,
     scriptHex: bytesToHex(script),
@@ -274,6 +291,31 @@ export function encodePlainMemoOpReturn(memo: string): OpReturnOutput {
       eventId: '',
     },
   };
+}
+
+/**
+ * Encode arbitrary user data (UTF-8 text or hex) into an OP_RETURN output.
+ * Returns the payload separately so builders can size fees precisely.
+ */
+export function encodeCustomOpReturn(
+  input: string,
+  format: 'text' | 'hex',
+): { payload: Uint8Array; script: Uint8Array; scriptHex: string; size: number } {
+  let payload: Uint8Array;
+  if (format === 'hex') {
+    const clean = input.replace(/^0x/i, '').replace(/\s+/g, '');
+    if (!clean) throw new Error('Data cannot be empty');
+    if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2 !== 0) {
+      throw new Error('Invalid hex data');
+    }
+    payload = hexToBytes(clean.toLowerCase());
+  } else {
+    const trimmed = input.trim();
+    if (!trimmed) throw new Error('Data cannot be empty');
+    payload = new TextEncoder().encode(trimmed);
+  }
+  const script = buildOpReturnScript(payload);
+  return { payload, script, scriptHex: bytesToHex(script), size: script.length };
 }
 
 // "NINV" protocol identifier for invoice OP_RETURN

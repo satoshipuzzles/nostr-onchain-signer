@@ -14,6 +14,7 @@ import { queryPublicEvents } from '@/lib/nostr/public-relay';
 import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { Bip110Monitor } from '@/popup/components/Bip110Monitor';
 import { useAuth } from '@/popup/context/AuthContext';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
@@ -667,6 +668,9 @@ function OverviewTab({
 }) {
   return (
     <div className="p-4 space-y-3">
+      {/* BIP-110 fork monitor: dual chain tips + signaling/validity metrics */}
+      <Bip110Monitor />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-white flex items-center gap-2">
