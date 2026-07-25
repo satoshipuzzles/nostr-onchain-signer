@@ -853,7 +853,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                           {copied === request.eventId ? <Check className="w-3 h-3 text-green-400" /> : <Link className="w-3 h-3" />}
                         </button>
 
-                        {request.status === 'pending' && (
+                        {(request.status === 'pending' || request.status === 'expired') && (
                           <div className="flex items-center gap-1.5 ml-auto">
                             <button
                               onClick={(e) => { e.stopPropagation(); handleDecline(request); }}
@@ -1814,18 +1814,26 @@ function RequestDetail({
             <CheckCircle2 className="w-4 h-4" />
             You&apos;ve already signed this transaction
           </div>
-        ) : request.status === 'pending' && (
-          <button
-            onClick={handleSign}
-            disabled={signing}
-            className="btn-primary w-full flex items-center justify-center gap-2 min-h-[44px]"
-          >
-            {signing ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
-            ) : (
-              <><Check className="w-4 h-4" /> Sign &amp; Notify via DM</>
+        ) : (request.status === 'pending' || request.status === 'expired') && (
+          <>
+            {request.status === 'expired' && (
+              <p className="text-[11px] text-amber-400 mb-2 leading-relaxed">
+                The suggested deadline has passed, but deadlines are advisory — this
+                transaction is still valid and can be signed.
+              </p>
             )}
-          </button>
+            <button
+              onClick={handleSign}
+              disabled={signing}
+              className="btn-primary w-full flex items-center justify-center gap-2 min-h-[44px]"
+            >
+              {signing ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
+              ) : (
+                <><Check className="w-4 h-4" /> Sign &amp; Notify via DM</>
+              )}
+            </button>
+          </>
         )}
       </div>
     </div>

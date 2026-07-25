@@ -126,6 +126,9 @@ export function SignPage() {
   const [broadcastTxid, setBroadcastTxid] = useState('');
   const [broadcastError, setBroadcastError] = useState('');
   const [coSignerPubkeys, setCoSignerPubkeys] = useState<string[]>([]);
+  const [walletInStore, setWalletInStore] = useState<boolean | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoredOk, setRestoredOk] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -140,6 +143,49 @@ export function SignPage() {
       setSigned(true);
     }
   }, [userPubkey, signers]);
+
+  // Check whether this multisig is already saved locally so we can offer
+  // recovery — wallet records live in browser storage and can be lost even
+  // though the wallet itself is fully reconstructible from the request.
+  useEffect(() => {
+    if (!request?.multisig_address) return;
+    (async () => {
+      try {
+        const { loadMultisigWallets } = await import('@/lib/bitcoin/wallet-store');
+        const all = await loadMultisigWallets();
+        setWalletInStore(all.some((w) => w.wallet?.address === request.multisig_address));
+      } catch {
+        setWalletInStore(null);
+      }
+    })();
+  }, [request?.multisig_address]);
+
+  async function handleRestoreWallet() {
+    if (!request?.signer_pubkeys?.length || !request.threshold || !userPubkey) return;
+    setRestoring(true);
+    try {
+      const { createMultisigFromPubkeys } = await import('@/lib/bitcoin/multisig');
+      const { createArchivedMultisig, saveMultisigWallet } = await import('@/lib/bitcoin/wallet-store');
+      const wallet = createMultisigFromPubkeys(request.signer_pubkeys, request.threshold);
+      if (wallet.address !== request.multisig_address) {
+        throw new Error('Reconstructed address does not match this signing request');
+      }
+      const archived = createArchivedMultisig(
+        wallet,
+        request.signer_pubkeys.map((pk) => ({ pubkey: pk, isOwnKey: pk === userPubkey })),
+        `${request.threshold}-of-${request.signer_pubkeys.length} Social Multisig`,
+        `Restored from signing round ${request.round_id.slice(0, 8)}`,
+        userPubkey,
+      );
+      await saveMultisigWallet(archived);
+      setWalletInStore(true);
+      setRestoredOk(true);
+    } catch (err) {
+      alert(`Restore failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setRestoring(false);
+    }
+  }
 
   async function fetchSigningRequest(rid: string) {
     setLoading(true);
@@ -495,12 +541,19 @@ export function SignPage() {
         </div>
 
         {/* PRIMARY ACTION — one clear next step */}
-        {isExpired ? (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-4 mb-4 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-red-400" />
-            <span className="text-sm font-medium text-red-400">This signing request has expired</span>
+        {isExpired && (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 mb-4 flex items-start gap-2">
+            <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-amber-400">The suggested deadline has passed</p>
+              <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
+                Deadlines are advisory only. This transaction is still valid — it can be signed
+                and broadcast as long as the funds remain unspent.
+              </p>
+            </div>
           </div>
-        ) : isReady ? (
+        )}
+        {isReady ? (
           <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-4 mb-4">
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle2 className="w-5 h-5 text-green-400" />
@@ -601,6 +654,35 @@ export function SignPage() {
                 )}
               </button>
             )}
+          </div>
+        )}
+
+        {/* Wallet recovery — the multisig is fully reconstructible from this request */}
+        {userPubkey && coSignerPubkeys.includes(userPubkey)
+          && (request.signer_pubkeys?.length ?? 0) > 0 && walletInStore === false && (
+          <div className="bg-nostr/10 border border-nostr/20 rounded-2xl p-4 mb-4">
+            <p className="text-sm font-medium text-white mb-1">This wallet isn't in your accounts</p>
+            <p className="text-[11px] text-gray-400 mb-3 leading-relaxed">
+              You're a key holder of this {request.threshold}-of-{request.signer_pubkeys?.length} multisig.
+              Restore it to your accounts to see its balance and create new spends.
+            </p>
+            <button
+              onClick={handleRestoreWallet}
+              disabled={restoring}
+              className="w-full py-2.5 bg-nostr/80 text-white rounded-xl font-medium text-sm hover:bg-nostr transition-colors flex items-center justify-center gap-2"
+            >
+              {restoring ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Restoring...</>
+              ) : (
+                <><Shield className="w-4 h-4" /> Restore Wallet to My Accounts</>
+              )}
+            </button>
+          </div>
+        )}
+        {restoredOk && (
+          <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-3 mb-4 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-400 flex-shrink-0" />
+            <span className="text-xs text-green-400">Wallet restored — it's back in your accounts.</span>
           </div>
         )}
 

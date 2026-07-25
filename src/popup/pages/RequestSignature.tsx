@@ -37,6 +37,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
   const [nsecImported, setNsecImported] = useState(false);
   const [signingLink, setSigningLink] = useState('');
   const [linkCopied, setLinkCopied] = useState(false);
+  const [expiryHours, setExpiryHours] = useState(0);
 
   const otherSigners = wallet.keyHolders.filter((h) => !h.isOwnKey);
 
@@ -93,7 +94,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         signerPubkeys,
         psbtHex,
         memo: memo || `Send ${formatSats(amount)} to ${recipient.slice(0, 12)}...`,
-        ttlHours: 168,
+        ttlHours: expiryHours > 0 ? expiryHours : undefined,
         initiatorPubkey: publicKey,
         initiatorSigned,
       });
@@ -401,6 +402,24 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
             placeholder="What is this payment for?"
             className="input-field text-sm"
           />
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">Signing deadline (optional)</label>
+          <select
+            value={expiryHours}
+            onChange={(e) => setExpiryHours(parseInt(e.target.value, 10))}
+            className="input-field text-sm"
+          >
+            <option value={0}>No deadline</option>
+            <option value={24}>24 hours</option>
+            <option value={72}>3 days</option>
+            <option value={168}>7 days</option>
+            <option value={720}>30 days</option>
+          </select>
+          <p className="text-[10px] text-gray-500 mt-1">
+            Advisory only — co-signers see the deadline but can still sign after it passes.
+          </p>
         </div>
 
         {/* Co-signers who will receive the request */}
