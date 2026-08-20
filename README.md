@@ -5,8 +5,13 @@ A Chrome extension that acts as a dual-purpose signer for **Bitcoin on-chain tra
 ## Core Features
 
 ### Dual Signer
-- **NIP-07 Nostr Signer** — injects `window.nostr` for any Nostr web app
-- **Bitcoin Transaction Signer** — injects `window.bitcoin` for Taproot key-path and script-path spending
+- **NIP-07 Nostr Signer** — injects `window.nostr` for any Nostr web app.
+  If another NIP-07 extension is already installed (Alby, nos2x, or the
+  sibling hardware-backed **Pocket Signer Link**), we yield the
+  `window.nostr` slot to it and log a note in DevTools — the other
+  extension handles Nostr signing, and this extension continues to
+  provide the Bitcoin API side-by-side.
+- **Bitcoin Transaction Signer** — injects `window.bitcoin` for Taproot key-path and script-path spending. Unique to this extension; always installed.
 
 ### Social Multi-Sig
 - Derive Bitcoin Taproot addresses from any set of Nostr npubs

@@ -1,6 +1,6 @@
 {
   "name": "nostr-onchain-signer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Social multi-sig Bitcoin signer + NIP-07 Nostr signer Chrome extension",

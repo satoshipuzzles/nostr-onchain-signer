@@ -51,46 +51,73 @@
     }
   });
 
-  // NIP-07 interface — takes priority when our extension is installed
-  window.nostr = {
-    _nostrOnchainSigner: true,
+  // NIP-07 interface. If another Nostr signer extension (Alby, nos2x,
+  // the sibling Pocket Signer Link, …) already claimed window.nostr,
+  // yield to it — signing continues to work through the other extension
+  // and the user has one source of truth for Nostr identity per page.
+  // Bitcoin support below is installed unconditionally: this is the only
+  // extension that provides window.bitcoin, so it can never conflict.
+  const nostrClaimedByUs =
+    typeof window.nostr === 'object' &&
+    window.nostr !== null &&
+    window.nostr._nostrOnchainSigner === true;
 
-    async getPublicKey() {
-      return sendRequest('nip07:getPublicKey');
-    },
+  if (window.nostr && !nostrClaimedByUs) {
+    const other = window.nostr._pocketSignerLink
+      ? 'Pocket Signer Link'
+      : 'another Nostr signer extension';
+    console.info(
+      '%c[Nostr Onchain Signer]%c window.nostr already set by ' +
+        other +
+        ' — yielding NIP-07 to it. Bitcoin API remains available on window.bitcoin.',
+      'background:#8B5CF6;color:#fff;padding:2px 8px;border-radius:4px;font-weight:600',
+      'color:inherit'
+    );
+  } else {
+    window.nostr = {
+      _nostrOnchainSigner: true,
 
-    async signEvent(event) {
-      return sendRequest('nip07:signEvent', { event });
-    },
-
-    async signSchnorr(hash) {
-      return sendRequest('nip07:signSchnorr', { hash });
-    },
-
-    async getRelays() {
-      return sendRequest('nip07:getRelays');
-    },
-
-    nip04: {
-      async encrypt(pubkey, plaintext) {
-        return sendRequest('nip07:nip04:encrypt', { pubkey, plaintext });
+      async getPublicKey() {
+        return sendRequest('nip07:getPublicKey');
       },
-      async decrypt(pubkey, ciphertext) {
-        return sendRequest('nip07:nip04:decrypt', { pubkey, ciphertext });
-      },
-    },
 
-    nip44: {
-      async encrypt(pubkey, plaintext) {
-        return sendRequest('nip07:nip44:encrypt', { pubkey, plaintext });
+      async signEvent(event) {
+        return sendRequest('nip07:signEvent', { event });
       },
-      async decrypt(pubkey, ciphertext) {
-        return sendRequest('nip07:nip44:decrypt', { pubkey, ciphertext });
-      },
-    },
-  };
 
-  // Bitcoin signing API (experimental extension to NIP-07 concept)
+      async signSchnorr(hash) {
+        return sendRequest('nip07:signSchnorr', { hash });
+      },
+
+      async getRelays() {
+        return sendRequest('nip07:getRelays');
+      },
+
+      nip04: {
+        async encrypt(pubkey, plaintext) {
+          return sendRequest('nip07:nip04:encrypt', { pubkey, plaintext });
+        },
+        async decrypt(pubkey, ciphertext) {
+          return sendRequest('nip07:nip04:decrypt', { pubkey, ciphertext });
+        },
+      },
+
+      nip44: {
+        async encrypt(pubkey, plaintext) {
+          return sendRequest('nip07:nip44:encrypt', { pubkey, plaintext });
+        },
+        async decrypt(pubkey, ciphertext) {
+          return sendRequest('nip07:nip44:decrypt', { pubkey, ciphertext });
+        },
+      },
+    };
+    window.dispatchEvent(new Event('nostr:init'));
+    window.dispatchEvent(new Event('nostr-provider-loaded'));
+  }
+
+  // Bitcoin signing API (experimental extension to NIP-07 concept).
+  // Unique to this extension — always install regardless of the Nostr
+  // yield decision above.
   window.bitcoin = {
     _nostrOnchainSigner: true,
 
@@ -114,15 +141,13 @@
       });
     },
   };
-
-  // Standard events Nostr clients listen for
-  window.dispatchEvent(new Event('nostr:init'));
-  window.dispatchEvent(new Event('nostr-provider-loaded'));
   window.dispatchEvent(new Event('bitcoin-provider-loaded'));
 
-  // Log for users on Nostr clients so they know the signer is ready
+  const nostrStatus = window.nostr && window.nostr._nostrOnchainSigner
+    ? 'NIP-07 + Bitcoin signing active'
+    : 'Bitcoin signing active (NIP-07 delegated to another extension)';
   console.log(
-    '%c⚡ Nostr Onchain Signer ready %c NIP-07 + Bitcoin signing active',
+    '%c⚡ Nostr Onchain Signer ready %c ' + nostrStatus,
     'background: #F7931A; color: white; padding: 2px 8px; border-radius: 4px 0 0 4px; font-weight: bold;',
     'background: #8B5CF6; color: white; padding: 2px 8px; border-radius: 0 4px 4px 0;'
   );

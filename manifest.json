@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nostr Onchain Signer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Social multi-sig Bitcoin signer + NIP-07 Nostr signer",
   "permissions": [
     "storage",
