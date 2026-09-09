@@ -8,6 +8,8 @@ export interface BitcoinNodeConfig {
   rpcUrl: string;
   rpcUser?: string;
   rpcPassword?: string;
+  /** Which chain this node follows. Knots with BLAKE2b = 'xbt'. Default 'btc'. */
+  chain?: 'btc' | 'xbt';
 }
 
 const STORAGE_KEY = 'bitcoin_node_config';

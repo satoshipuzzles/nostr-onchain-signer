@@ -6,15 +6,17 @@ import {
   decodeLightOp,
 } from '@/lib/bitcoin/opreturn';
 import { fetchBlockchainStatus, type BlockchainStatus } from '@/lib/bitcoin/ticker';
-import { fetchMempoolApi, getCachedBlocks, setCachedBlocks, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { fetchMempoolApi, getCachedBlocks, setCachedBlocks, getMempoolTxUrl, getMempoolAddressUrl, fetchBalance } from '@/lib/bitcoin/mempool';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
+import { CHAIN_INFO, explorerHost, isChain, loadChainPreference, saveChainPreference, outpointKey, type Chain } from '@/lib/bitcoin/chain';
+import { classifyAddressUtxos, SPLIT_BADGE, type SplitReport } from '@/lib/bitcoin/split';
 import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
 import { resolveProfiles, getAllCachedProfiles } from '@/lib/nostr/cache';
 import { queryPublicEvents } from '@/lib/nostr/public-relay';
 import { CUSTOM_KIND, parseOnchainInvoice, type OnchainInvoiceContent } from '@/lib/nostr/kinds';
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
-import { Bip110Monitor } from '@/popup/components/Bip110Monitor';
+import { ChainSplitMonitor } from '@/popup/components/ChainSplitMonitor';
 import { useAuth } from '@/popup/context/AuthContext';
 import {
   Search, Loader2, ExternalLink, AlertCircle,
@@ -329,8 +331,17 @@ export function OnchainExplorer() {
   const initialTab = (searchParams.get('tab') as Tab) || 'overview';
   const initialTxQuery = searchParams.get('txid') || '';
   const initialAddrQuery = searchParams.get('addr') || '';
+  const initialChain = searchParams.get('chain');
 
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  // Which chain the explorer is looking at: BTC (SHA-256) or XBT (BLAKE2b)
+  const [chain, setChainState] = useState<Chain>(isChain(initialChain) ? initialChain : loadChainPreference());
+  function setChain(c: Chain) {
+    if (c === chain) return;
+    setChainState(c);
+    saveChainPreference(c);
+    setSearchParams((prev) => { prev.set('chain', c); return prev; }, { replace: true });
+  }
 
   // Stats
   const [status, setStatus] = useState<BlockchainStatus | null>(null);
@@ -360,6 +371,9 @@ export function OnchainExplorer() {
   const [addrLoading, setAddrLoading] = useState(false);
   const [addrError, setAddrError] = useState('');
   const [showUtxos, setShowUtxos] = useState(false);
+  // The same address on the OTHER chain, and per-coin split status
+  const [addrOtherBalance, setAddrOtherBalance] = useState<number | null>(null);
+  const [addrSplit, setAddrSplit] = useState<SplitReport | null>(null);
 
   const refreshTimer = useRef<ReturnType<typeof setInterval>>();
   const loadedRef = useRef(false);
@@ -370,31 +384,31 @@ export function OnchainExplorer() {
 
   const loadStats = useCallback(async () => {
     const [s, diffRes, hrRes] = await Promise.allSettled([
-      fetchBlockchainStatus(),
-      fetchMempoolApi('/v1/difficulty-adjustment').then((r) => r.ok ? r.json() : null),
-      fetchMempoolApi('/v1/mining/hashrate/3d').then((r) => r.ok ? r.json() : null),
+      fetchBlockchainStatus(chain),
+      fetchMempoolApi('/v1/difficulty-adjustment', 12_000, chain).then((r) => r.ok ? r.json() : null),
+      fetchMempoolApi('/v1/mining/hashrate/3d', 12_000, chain).then((r) => r.ok ? r.json() : null),
     ]);
     if (s.status === 'fulfilled') setStatus(s.value);
     if (diffRes.status === 'fulfilled' && diffRes.value) setDifficulty(diffRes.value);
     if (hrRes.status === 'fulfilled' && hrRes.value) setHashrate(hrRes.value);
-  }, []);
+  }, [chain]);
 
   const loadBlocks = useCallback(async () => {
     setBlocksError('');
     // Show cached blocks instantly
-    const cached = getCachedBlocks<BlockSummary>();
+    const cached = getCachedBlocks<BlockSummary>(chain);
     if (cached && cached.length > 0) {
       setBlocks(cached);
       setBlocksLoading(false);
       loadedRef.current = true;
     }
     try {
-      const res = await fetchMempoolApi('/v1/blocks');
+      const res = await fetchMempoolApi('/v1/blocks', 12_000, chain);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: BlockSummary[] = await res.json();
       const slice = data.slice(0, 10);
       setBlocks(slice);
-      setCachedBlocks(slice);
+      setCachedBlocks(slice, chain);
       loadedRef.current = true;
       setBlocksError('');
     } catch (err) {
@@ -403,7 +417,27 @@ export function OnchainExplorer() {
       }
     }
     setBlocksLoading(false);
-  }, []);
+  }, [chain]);
+
+  // Chain switch: clear everything that was fetched from the other chain
+  useEffect(() => {
+    loadedRef.current = false;
+    setBlocks([]);
+    setBlocksLoading(true);
+    setExpandedBlock(null);
+    setBlockTxs({});
+    setStatus(null);
+    setDifficulty(null);
+    setHashrate(null);
+    setTxResult(null);
+    setTxError('');
+    setAddrData(null);
+    setAddrTxs([]);
+    setAddrUtxos([]);
+    setAddrOtherBalance(null);
+    setAddrSplit(null);
+    setAddrError('');
+  }, [chain]);
 
   useEffect(() => {
     if (loadedRef.current && blocks.length > 0) {
@@ -441,7 +475,7 @@ export function OnchainExplorer() {
     if (blockTxs[blockHash]) return;
     setBlockTxsLoading(blockHash);
     try {
-      const res = await fetchMempoolApi(`/block/${blockHash}/txs`);
+      const res = await fetchMempoolApi(`/block/${blockHash}/txs`, 12_000, chain);
       if (res.ok) {
         const txs: TxData[] = await res.json();
         setBlockTxs((prev) => ({ ...prev, [blockHash]: txs.slice(0, 25) }));
@@ -462,15 +496,15 @@ export function OnchainExplorer() {
     setTxResult(null);
 
     try {
-      const res = await fetchMempoolApi(`/tx/${id}`);
-      if (!res.ok) throw new Error('Transaction not found');
+      const res = await fetchMempoolApi(`/tx/${id}`, 12_000, chain);
+      if (!res.ok) throw new Error(`Transaction not found on ${CHAIN_INFO[chain].ticker} — try the other chain`);
       const tx: TxData = await res.json();
       setTxResult(tx);
 
       if (status?.blockHeight) setTxCurrentHeight(status.blockHeight);
       else {
         try {
-          const hRes = await fetchMempoolApi('/blocks/tip/height');
+          const hRes = await fetchMempoolApi('/blocks/tip/height', 12_000, chain);
           if (hRes.ok) setTxCurrentHeight(parseInt(await hRes.text(), 10));
         } catch { /* ignore */ }
       }
@@ -492,14 +526,23 @@ export function OnchainExplorer() {
     setAddrData(null);
     setAddrTxs([]);
     setAddrUtxos([]);
+    setAddrOtherBalance(null);
+    setAddrSplit(null);
+
+    // The other chain's balance and the per-coin split status load in the background
+    const other: Chain = chain === 'btc' ? 'xbt' : 'btc';
+    fetchBalance(address, { chain: other, force: true })
+      .then((b) => setAddrOtherBalance(b.error && !b.cached ? null : b.total))
+      .catch(() => setAddrOtherBalance(null));
+    classifyAddressUtxos(address).then(setAddrSplit).catch(() => setAddrSplit(null));
 
     try {
       const [infoRes, txsRes, utxoRes] = await Promise.all([
-        fetchMempoolApi(`/address/${address}`),
-        fetchMempoolApi(`/address/${address}/txs`),
-        fetchMempoolApi(`/address/${address}/utxo`),
+        fetchMempoolApi(`/address/${address}`, 12_000, chain),
+        fetchMempoolApi(`/address/${address}/txs`, 12_000, chain),
+        fetchMempoolApi(`/address/${address}/utxo`, 12_000, chain),
       ]);
-      if (!infoRes.ok) throw new Error('Address not found');
+      if (!infoRes.ok) throw new Error(`Address not found on ${CHAIN_INFO[chain].ticker}`);
 
       const info: AddressData = await infoRes.json();
       setAddrData(info);
@@ -565,6 +608,22 @@ export function OnchainExplorer() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1 className="text-lg font-bold">Block Explorer</h1>
+        <div className="ml-auto flex rounded-lg bg-surface-700 p-0.5" role="group" aria-label="Chain">
+          {(['btc', 'xbt'] as Chain[]).map((c) => (
+            <button
+              key={c}
+              onClick={() => setChain(c)}
+              title={`${CHAIN_INFO[c].label} — ${CHAIN_INFO[c].pow}`}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
+                chain === c
+                  ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              {CHAIN_INFO[c].ticker}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Stats bar */}
@@ -591,6 +650,7 @@ export function OnchainExplorer() {
       <div className="flex-1 overflow-y-auto pb-24">
         {activeTab === 'overview' && (
           <OverviewTab
+            chain={chain}
             blocks={blocks}
             blocksLoading={blocksLoading}
             blocksError={blocksError}
@@ -604,6 +664,7 @@ export function OnchainExplorer() {
         )}
         {activeTab === 'transaction' && (
           <TransactionTab
+            chain={chain}
             query={txQuery}
             setQuery={setTxQuery}
             result={txResult}
@@ -616,6 +677,11 @@ export function OnchainExplorer() {
         )}
         {activeTab === 'address' && (
           <AddressTab
+            chain={chain}
+            otherBalance={addrOtherBalance}
+            split={addrSplit}
+            isOwnAddress={!!publicKey && addrData?.address === pubkeyToTaprootAddress(publicKey)}
+            onSplit={() => navigate('/send?mode=split&chain=xbt')}
             query={addrQuery}
             setQuery={setAddrQuery}
             data={addrData}
@@ -646,6 +712,7 @@ export function OnchainExplorer() {
 // ===========================================================================
 
 function OverviewTab({
+  chain,
   blocks,
   blocksLoading,
   blocksError,
@@ -656,6 +723,7 @@ function OverviewTab({
   onRefresh,
   onViewTx,
 }: {
+  chain: Chain;
   blocks: BlockSummary[];
   blocksLoading: boolean;
   blocksError: string;
@@ -669,7 +737,7 @@ function OverviewTab({
   return (
     <div className="p-4 space-y-3">
       {/* BIP-110 fork monitor: dual chain tips + signaling/validity metrics */}
-      <Bip110Monitor />
+      <ChainSplitMonitor chain={chain} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -783,6 +851,7 @@ function OverviewTab({
 // ===========================================================================
 
 function TransactionTab({
+  chain,
   query,
   setQuery,
   result,
@@ -792,6 +861,7 @@ function TransactionTab({
   onSearch,
   onViewAddr,
 }: {
+  chain: Chain;
   query: string;
   setQuery: (q: string) => void;
   result: TxData | null;
@@ -851,12 +921,12 @@ function TransactionTab({
               <div className="w-1.5 h-1.5 rounded-full bg-bitcoin" />
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">Transaction</span>
               <a
-                href={getMempoolTxUrl(result.txid)}
+                href={getMempoolTxUrl(result.txid, chain)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ml-auto flex items-center gap-1 text-[10px] text-bitcoin hover:text-bitcoin/80"
               >
-                mempool.space <ExternalLink className="w-3 h-3" />
+                {explorerHost(chain)} <ExternalLink className="w-3 h-3" />
               </a>
             </div>
 
@@ -1093,6 +1163,11 @@ function TransactionTab({
 // ===========================================================================
 
 function AddressTab({
+  chain,
+  otherBalance,
+  split,
+  isOwnAddress,
+  onSplit,
   query,
   setQuery,
   data,
@@ -1106,6 +1181,11 @@ function AddressTab({
   onViewTx,
   currentHeight,
 }: {
+  chain: Chain;
+  otherBalance: number | null;
+  split: SplitReport | null;
+  isOwnAddress: boolean;
+  onSplit: () => void;
   query: string;
   setQuery: (q: string) => void;
   data: AddressData | null;
@@ -1169,12 +1249,12 @@ function AddressTab({
               <div className="w-1.5 h-1.5 rounded-full bg-bitcoin" />
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">Address</span>
               <a
-                href={getMempoolAddressUrl(data.address)}
+                href={getMempoolAddressUrl(data.address, chain)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ml-auto flex items-center gap-1 text-[10px] text-bitcoin hover:text-bitcoin/80"
               >
-                mempool.space <ExternalLink className="w-3 h-3" />
+                {explorerHost(chain)} <ExternalLink className="w-3 h-3" />
               </a>
             </div>
 
@@ -1218,8 +1298,47 @@ function AddressTab({
                 <p className="text-[10px] text-gray-500 mb-0.5">UTXOs</p>
                 <p className="text-sm text-white font-mono">{utxos.length}</p>
               </div>
+              <div>
+                <p className="text-[10px] text-gray-500 mb-0.5">Balance on {chain === 'btc' ? 'XBT' : 'BTC'}</p>
+                <p className={`text-sm font-mono ${chain === 'btc' ? 'text-purple-400' : 'text-bitcoin'}`}>
+                  {otherBalance === null ? '—' : formatSats(otherBalance)}
+                </p>
+              </div>
             </div>
           </div>
+
+          {/* Split status: which coins still exist on both chains */}
+          {split && (
+            <div className={`card ${split.unsplit.length > 0 ? 'border-amber-500/30' : 'border-green-500/20'}`}>
+              <p className="text-xs font-semibold text-white mb-1">Coin split status</p>
+              {split.unsplit.length > 0 ? (
+                <>
+                  <p className="text-[11px] text-amber-300 leading-relaxed">
+                    {split.unsplit.length} coin{split.unsplit.length === 1 ? '' : 's'} worth{' '}
+                    <span className="font-mono">{formatSats(split.unsplitSats)}</span> exist on BOTH chains. An
+                    ordinary spend of them moves the BTC and the XBT together (replay).
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-1">
+                    To separate them: send them to yourself on XBT with SIGHASH_UNIFIED, wait for it to confirm, then
+                    spend the BTC side normally.
+                  </p>
+                  {isOwnAddress && (
+                    <button onClick={onSplit} className="btn-primary w-full mt-2 text-sm">
+                      Split on XBT
+                    </button>
+                  )}
+                </>
+              ) : (
+                <p className="text-[11px] text-green-400">
+                  No unsplit coins — every UTXO of this address is on one chain only
+                  {split.btcOnlySats > 0 && ` (BTC-only ${formatSats(split.btcOnlySats)}`}
+                  {split.btcOnlySats > 0 && split.xbtOnlySats > 0 && ', '}
+                  {split.xbtOnlySats > 0 && `${split.btcOnlySats > 0 ? '' : ' ('}XBT-only ${formatSats(split.xbtOnlySats)}`}
+                  {(split.btcOnlySats > 0 || split.xbtOnlySats > 0) && ')'}.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* UTXO Inspector */}
           <div className="card">
@@ -1260,6 +1379,14 @@ function AddressTab({
                         <span className="text-gray-500">
                           {confs > 0 ? `${confs.toLocaleString()} confs` : 'unconfirmed'}
                         </span>
+                        {(() => {
+                          const st = split?.status.get(outpointKey(u.txid, u.vout));
+                          return st ? (
+                            <span className={`px-1.5 py-0.5 rounded ${SPLIT_BADGE[st].cls}`} title={SPLIT_BADGE[st].title}>
+                              {SPLIT_BADGE[st].label}
+                            </span>
+                          ) : null;
+                        })()}
                       </div>
                     </div>
                   );

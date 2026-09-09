@@ -10,6 +10,9 @@ import { fetchUTXOs, fetchFeeEstimates } from './mempool';
 import { buildOpReturnScript } from './opreturn';
 import type { MultisigWallet } from './multisig';
 import type { PsbtResult } from './psbt-builder';
+import type { Chain } from './chain';
+import { SIGHASH_ALL_UNIFIED, isUnifiedSighash, psbtHasUnifiedInputs, unifiedTapscriptSighash } from './unified-sighash';
+import { signUnifiedTapscriptInputs } from './taproot-sign';
 
 /**
  * @param numOutputs count of NON-OP_RETURN outputs (recipient + change)
@@ -46,22 +49,25 @@ export async function buildMultisigPsbt(params: {
   feeRate?: number;
   changeAddress?: string;
   opReturnData?: Uint8Array;
+  /** 'xbt' marks every input SIGHASH_ALL|UNIFIED (XBT-only, replay-safe). Default 'btc'. */
+  chain?: Chain;
 }): Promise<PsbtResult> {
   const { wallet, toAddress, amountSats, feeRate, changeAddress, opReturnData } = params;
+  const chain = params.chain ?? 'btc';
   const tap = multisigTaprootInfo(wallet);
 
   if (tap.address !== wallet.address) {
     throw new Error('Multisig address mismatch — wallet config may be corrupted');
   }
 
-  const utxos = await fetchUTXOs(wallet.address);
+  const utxos = await fetchUTXOs(wallet.address, chain);
   if (utxos.length === 0) {
-    throw new Error('No UTXOs available. Fund this multisig address first.');
+    throw new Error(`No UTXOs available on ${chain.toUpperCase()}. Fund this multisig address first.`);
   }
 
   let actualFeeRate = feeRate;
   if (!actualFeeRate) {
-    const estimates = await fetchFeeEstimates();
+    const estimates = await fetchFeeEstimates(chain);
     actualFeeRate = estimates.halfHour;
   }
 
@@ -103,6 +109,7 @@ export async function buildMultisigPsbt(params: {
       tapInternalKey: tap.tapInternalKey,
       tapLeafScript: tap.tapLeafScript,
       tapMerkleRoot: tap.tapMerkleRoot,
+      ...(chain === 'xbt' ? { sighashType: SIGHASH_ALL_UNIFIED } : {}),
     });
   }
 
@@ -132,7 +139,12 @@ export async function buildMultisigPsbt(params: {
 /** Add this signer's Tapscript Schnorr sig to the PSBT (does not finalize). */
 export function signMultisigPsbtPartial(psbtHex: string, privateKeyHex: string): string {
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
-  tx.sign(hex.decode(privateKeyHex));
+  const priv = hex.decode(privateKeyHex);
+  if (psbtHasUnifiedInputs(tx)) {
+    if (signUnifiedTapscriptInputs(tx, priv) === 0) throw new Error('No inputs signed');
+  } else {
+    tx.sign(priv);
+  }
   return hex.encode(tx.toPSBT());
 }
 
@@ -148,10 +160,16 @@ export function signMultisigPsbtWithKeys(
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
   let signedCount = 0;
   let lastError: unknown = null;
+  const unified = psbtHasUnifiedInputs(tx);
 
   for (const keyHex of privateKeysHex) {
     try {
-      tx.sign(hex.decode(keyHex));
+      const priv = hex.decode(keyHex);
+      if (unified) {
+        if (signUnifiedTapscriptInputs(tx, priv) === 0) throw new Error('No inputs signed');
+      } else {
+        tx.sign(priv);
+      }
       signedCount++;
     } catch (err) {
       // Key doesn't match any input — try the next one
@@ -215,9 +233,10 @@ export async function signMultisigPsbtViaSchnorr(
       );
       if (!hasKey) continue;
 
-      const msgHash = tx.preimageWitnessV1(
-        idx, prevOutScripts, sighash, amounts, undefined, script, ver,
-      );
+      // XBT (opted-in) inputs sign the unified message, not BIP341's.
+      const msgHash = isUnifiedSighash(sighash)
+        ? unifiedTapscriptSighash(tx, idx, script, ver, sighash)
+        : tx.preimageWitnessV1(idx, prevOutScripts, sighash, amounts, undefined, script, ver);
       const sigHex = await signSchnorr(hex.encode(msgHash));
       const sigBytes = hex.decode(sigHex.replace(/^0x/, '').trim());
       if (sigBytes.length !== 64) {

@@ -7,11 +7,14 @@
 
 import {
   EsploraClient,
+  esploraForChain,
   decodeNostrOpReturn,
   decodeLightOp,
   decodeInvoiceOpReturn,
   type EsploraTx,
+  type Chain,
 } from '@nostr-onchain/core';
+import { getChain } from './chain';
 
 export type AnchorProtocol = 'NSTR' | 'LOPS' | 'NINV' | 'TEXT';
 
@@ -35,7 +38,13 @@ export interface AnchorRecord {
   hash?: string;
 }
 
-export const esplora = new EsploraClient();
+const clients: Partial<Record<Chain, EsploraClient>> = {};
+/** Esplora client for a chain (default: the chain currently selected in the UI). */
+export function esploraFor(chain: Chain = getChain()): EsploraClient {
+  return (clients[chain] ??= esploraForChain(chain));
+}
+/** @deprecated use esploraFor(chain) — kept for the BTC-only callers. */
+export const esplora = esploraFor('btc');
 
 function extractOpReturnPayload(script: Uint8Array): Uint8Array {
   if (script.length < 2 || script[0] !== 0x6a) return new Uint8Array(0);
@@ -104,12 +113,14 @@ export function anchorsFromTx(tx: EsploraTx): AnchorRecord[] {
 
 // ─── IndexedDB anchor index ─────────────────────────────────────
 
-const DB_NAME = 'nostr-block-chain';
+// One IndexedDB per chain: the BTC index keeps its original name, XBT gets
+// its own, so anchors from the two chains never mix.
 const DB_VERSION = 1;
+const dbName = (chain: Chain) => (chain === 'btc' ? 'nostr-block-chain' : `nostr-block-chain-${chain}`);
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(chain: Chain = getChain()): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName(chain), DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('anchors')) {
@@ -125,8 +136,8 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveAnchors(anchors: AnchorRecord[], blockHeight: number, anchorCount: number): Promise<void> {
-  const db = await openDb();
+export async function saveAnchors(anchors: AnchorRecord[], blockHeight: number, anchorCount: number, chain: Chain = getChain()): Promise<void> {
+  const db = await openDb(chain);
   await new Promise<void>((resolve, reject) => {
     const t = db.transaction(['anchors', 'scannedBlocks'], 'readwrite');
     const store = t.objectStore('anchors');
@@ -137,8 +148,8 @@ export async function saveAnchors(anchors: AnchorRecord[], blockHeight: number, 
   });
 }
 
-export async function loadAllAnchors(): Promise<AnchorRecord[]> {
-  const db = await openDb();
+export async function loadAllAnchors(chain: Chain = getChain()): Promise<AnchorRecord[]> {
+  const db = await openDb(chain);
   return new Promise((resolve, reject) => {
     const req = db.transaction('anchors', 'readonly').objectStore('anchors').getAll();
     req.onsuccess = () => resolve((req.result as AnchorRecord[]).sort((a, b) => b.blockHeight - a.blockHeight || a.txid.localeCompare(b.txid)));
@@ -146,8 +157,8 @@ export async function loadAllAnchors(): Promise<AnchorRecord[]> {
   });
 }
 
-export async function getScannedHeights(): Promise<Set<number>> {
-  const db = await openDb();
+export async function getScannedHeights(chain: Chain = getChain()): Promise<Set<number>> {
+  const db = await openDb(chain);
   return new Promise((resolve, reject) => {
     const req = db.transaction('scannedBlocks', 'readonly').objectStore('scannedBlocks').getAllKeys();
     req.onsuccess = () => resolve(new Set(req.result as number[]));
@@ -167,8 +178,10 @@ export interface ScanProgress {
 /** Scan one block completely; resolves with its anchors (also persisted). */
 export async function scanBlock(
   height: number,
-  onProgress?: (p: ScanProgress) => void
+  onProgress?: (p: ScanProgress) => void,
+  chain: Chain = getChain(),
 ): Promise<AnchorRecord[]> {
+  const esplora = esploraFor(chain);
   const hash = await esplora.getBlockHashAtHeight(height);
   const block = await esplora.getBlock(hash);
   const anchors: AnchorRecord[] = [];
@@ -186,19 +199,32 @@ export async function scanBlock(
     if (txs.length < 25) break;
   }
 
-  await saveAnchors(anchors, height, anchors.length);
+  await saveAnchors(anchors, height, anchors.length, chain);
   return anchors;
 }
 
 /** Fetch a single tx and extract anchors (for txid search / permalinks). */
-export async function anchorsForTxid(txid: string): Promise<AnchorRecord[]> {
-  const tx = await esplora.getTransaction(txid);
+export async function anchorsForTxid(txid: string, chain: Chain = getChain()): Promise<AnchorRecord[]> {
+  const tx = await esploraFor(chain).getTransaction(txid);
   return anchorsFromTx(tx);
 }
 
+/**
+ * Where a txid exists: confirmation status per chain (null = that chain has
+ * never seen it). After the split a pre-fork tx is on both; an ordinary
+ * post-split spend can also land on both (replay); a SIGHASH_UNIFIED spend
+ * is XBT-only.
+ */
+export async function txPresence(txid: string): Promise<Record<Chain, { confirmed: boolean; block_height?: number } | null | 'error'>> {
+  const [btc, xbt] = await Promise.all(
+    (['btc', 'xbt'] as Chain[]).map((c) => esploraFor(c).getTxStatus(txid).catch(() => 'error' as const)),
+  );
+  return { btc, xbt };
+}
+
 /** Discover anchors written by a taproot address (profile pages). */
-export async function anchorsForAddress(address: string): Promise<AnchorRecord[]> {
-  const txs = await esplora.getTransactions(address);
+export async function anchorsForAddress(address: string, chain: Chain = getChain()): Promise<AnchorRecord[]> {
+  const txs = await esploraFor(chain).getTransactions(address);
   const out: AnchorRecord[] = [];
   for (const tx of txs) {
     // only txs the address actually funded (they authored the OP_RETURN)

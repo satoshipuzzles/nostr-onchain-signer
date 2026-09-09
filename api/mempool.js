@@ -1,12 +1,21 @@
 /**
- * Vercel serverless: /api/mempool?path=/address/...
+ * Vercel serverless: /api/mempool?path=/address/...          (BTC, SHA-256 chain)
+ *                    /api/mempool?chain=xbt&path=/address/... (XBT, BLAKE2b chain)
  * Proxies Esplora API calls server-side (no browser CORS/rate limits).
+ *
+ * The XBT upstream (mempool.guide) sends no CORS headers and only answers
+ * over HTTP/1.1, which is what Node's fetch speaks — so the proxy is the
+ * only way a browser reaches it.
  */
 
-const PROVIDERS = [
+const BTC_PROVIDERS = [
   'https://blockstream.info/api',
   'https://mempool.emzy.de/api',
   'https://mempool.space/api',
+];
+
+const XBT_PROVIDERS = [
+  'https://mempool.guide/api',
 ];
 
 export default async function handler(req, res) {
@@ -22,6 +31,8 @@ export default async function handler(req, res) {
   if (!path || typeof path !== 'string' || !path.startsWith('/')) {
     return res.status(400).json({ error: 'path query required (e.g. ?path=/address/...)' });
   }
+  const chain = req.query.chain === 'xbt' ? 'xbt' : 'btc';
+  const PROVIDERS = chain === 'xbt' ? XBT_PROVIDERS : BTC_PROVIDERS;
 
   const isBroadcast = req.method === 'POST' && path === '/tx';
   let body;

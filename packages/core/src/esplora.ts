@@ -12,6 +12,20 @@ export interface EsploraConfig {
   timeoutMs?: number;
 }
 
+/**
+ * A base URL may be a query-style proxy ending in `path=` (e.g.
+ * `https://host/api/mempool?chain=xbt&path=`); the request path is then
+ * URL-encoded and appended instead of concatenated. Needed for the XBT API,
+ * which has no CORS headers.
+ */
+export function esploraUrl(base: string, path: string): string {
+  return base.endsWith('path=') ? `${base}${encodeURIComponent(path)}` : `${base}${path}`;
+}
+
+export const XBT_ESPLORA_URL = 'https://mempool.guide/api';
+/** Vercel proxy of this repo; reaches mempool.guide over HTTP/1.1 and adds CORS. */
+export const XBT_ESPLORA_PROXY = 'https://nostr-onchain-signer.vercel.app/api/mempool?chain=xbt&path=';
+
 export const DEFAULT_ESPLORA_URLS = [
   'https://mempool.space/api',
   'https://blockstream.info/api',
@@ -96,6 +110,16 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
   }
 }
 
+/**
+ * Esplora client for a given chain. BTC talks to the public providers
+ * directly; XBT goes through the proxy (browser) or mempool.guide (node).
+ */
+export function esploraForChain(chain: 'btc' | 'xbt', opts?: { proxyBase?: string; direct?: boolean; timeoutMs?: number }): EsploraClient {
+  if (chain === 'btc') return new EsploraClient({ timeoutMs: opts?.timeoutMs });
+  const base = opts?.direct ? XBT_ESPLORA_URL : (opts?.proxyBase ?? XBT_ESPLORA_PROXY);
+  return new EsploraClient({ baseUrls: [base], timeoutMs: opts?.timeoutMs });
+}
+
 export class EsploraClient {
   private baseUrls: string[];
   private timeoutMs: number;
@@ -109,7 +133,7 @@ export class EsploraClient {
     let lastError: unknown = new Error('All Esplora providers failed');
     for (const base of this.baseUrls) {
       try {
-        const res = await fetchWithTimeout(`${base}${path}`, this.timeoutMs, init);
+        const res = await fetchWithTimeout(esploraUrl(base, path), this.timeoutMs, init);
         if (res.ok) return res;
         // POST bodies (broadcast) return meaningful errors — surface, don't rotate
         if (init?.method === 'POST') return res;
@@ -212,5 +236,19 @@ export class EsploraClient {
       throw new Error(text || 'Broadcast rejected');
     }
     return text;
+  }
+
+  /** Confirmation status of a txid, or null when the chain has never seen it. */
+  async getTxStatus(txid: string): Promise<{ confirmed: boolean; block_height?: number; block_time?: number } | null> {
+    for (const base of this.baseUrls) {
+      try {
+        const res = await fetchWithTimeout(esploraUrl(base, `/tx/${txid}/status`), this.timeoutMs);
+        if (res.status === 404) return null;
+        if (res.ok) return res.json();
+      } catch {
+        // try the next provider
+      }
+    }
+    throw new Error('All Esplora providers failed');
   }
 }

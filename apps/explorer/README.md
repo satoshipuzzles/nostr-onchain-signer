@@ -17,8 +17,10 @@ A block explorer for Nostr events anchored in Bitcoin OP_RETURNs, that is also a
   copy/`lightning:` fallback).
 - **Profiles**: `/p/npub…` shows a user's kind-0 profile plus every anchor published from their
   npub-derived taproot address, discovered directly from the chain.
-- **BIP-110 aware**: every anchor is tagged "both chains" (≤83-byte script) or "main chain only
-  post-BIP110".
+- **Two chains**: a BTC / XBT switch in the header. BTC (SHA-256) is scanned via mempool.space & friends;
+  XBT (BLAKE2b, split at block 961,632) via mempool.guide through the repo's `api/mempool?chain=xbt` proxy. Each
+  chain has its own IndexedDB index. The transaction page shows on which chain(s) a txid exists (pre-split,
+  replayed, or XBT-only via SIGHASH_UNIFIED), and About explains the split and how to separate coins.
 
 ## Development
 

@@ -5,6 +5,7 @@ import { TxPage } from './pages/TxPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { About } from './pages/About';
 import { LoginButton } from './components/LoginButton';
+import { ChainSwitch } from './components/ChainSwitch';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
             </span>
           </Link>
           <div className="flex-1" />
+          <ChainSwitch />
           <Link to="/about" className="btn-ghost px-2" aria-label="About">
             <Info size={18} />
           </Link>
@@ -37,6 +39,7 @@ export default function App() {
 
       <footer className="max-w-feed mx-auto px-4 py-8 text-center text-xs text-zinc-600">
         Every card below is anchored in a Bitcoin OP_RETURN. Nostr is the content layer; Bitcoin is the timestamp.
+        Since block 961,632 there are two Bitcoin chains — BTC (SHA-256) and XBT (BLAKE2b); switch above.
       </footer>
     </div>
   );

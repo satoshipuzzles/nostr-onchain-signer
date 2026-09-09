@@ -3,6 +3,9 @@
  * Powers the top status bar like the original nostronchain app.
  */
 
+import { fetchMempoolApi } from './mempool';
+import type { Chain } from './chain';
+
 const MEMPOOL_API = 'https://mempool.space/api';
 
 export interface BlockchainStatus {
@@ -20,7 +23,8 @@ export interface BlockchainStatus {
 const CACHE_KEY = 'blockchain_status_cache';
 const CACHE_TTL = 60_000; // 1 minute
 
-export async function fetchBlockchainStatus(): Promise<BlockchainStatus> {
+export async function fetchBlockchainStatus(chain: Chain = 'btc'): Promise<BlockchainStatus> {
+  if (chain === 'xbt') return fetchXbtStatus();
   const cached = getCachedStatus();
   if (cached && Date.now() - cached.lastUpdated < CACHE_TTL) {
     return cached;
@@ -43,6 +47,31 @@ export async function fetchBlockchainStatus(): Promise<BlockchainStatus> {
     localStorage.setItem(CACHE_KEY, JSON.stringify(status));
   } catch {}
 
+  return status;
+}
+
+/** XBT (BLAKE2b chain): height and fees via the proxy; no USD quote is published for it. */
+async function fetchXbtStatus(): Promise<BlockchainStatus> {
+  const key = `${CACHE_KEY}_xbt`;
+  let cached: BlockchainStatus | null = null;
+  try { const raw = localStorage.getItem(key); cached = raw ? JSON.parse(raw) : null; } catch {}
+  if (cached && Date.now() - cached.lastUpdated < CACHE_TTL) return cached;
+
+  const [height, fees] = await Promise.allSettled([
+    fetchMempoolApi('/blocks/tip/height', 12_000, 'xbt').then(async (r) => { if (!r.ok) throw new Error('height'); return parseInt(await r.text(), 10); }),
+    fetchMempoolApi('/v1/fees/recommended', 12_000, 'xbt').then(async (r) => {
+      if (!r.ok) throw new Error('fees');
+      const d = await r.json();
+      return { fastest: d.fastestFee, halfHour: d.halfHourFee, hour: d.hourFee, economy: d.economyFee };
+    }),
+  ]);
+  const status: BlockchainStatus = {
+    blockHeight: height.status === 'fulfilled' ? height.value : cached?.blockHeight ?? 0,
+    btcPriceUsd: 0,
+    fees: fees.status === 'fulfilled' ? fees.value : cached?.fees ?? { fastest: 1, halfHour: 1, hour: 1, economy: 1 },
+    lastUpdated: Date.now(),
+  };
+  try { localStorage.setItem(key, JSON.stringify(status)); } catch {}
   return status;
 }
 

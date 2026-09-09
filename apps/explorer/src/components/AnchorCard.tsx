@@ -11,6 +11,7 @@ import {
   type VerificationStatus,
 } from '../lib/nostr';
 import { NoteContent } from './NoteContent';
+import { useChain, chainTicker, SPLIT_HEIGHT } from '../lib/chain';
 
 export function VerifiedBadge({ status }: { status: VerificationStatus }) {
   if (status === 'verified') {
@@ -66,6 +67,8 @@ export function ProfileChip({ profile, time }: { profile: Profile | null; time?:
 }
 
 export function ChainFooter({ anchor }: { anchor: AnchorRecord }) {
+  const [chain] = useChain();
+  const preSplit = anchor.blockHeight > 0 && anchor.blockHeight < SPLIT_HEIGHT;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 font-mono">
       <span className="inline-flex items-center gap-1 text-bitcoin">
@@ -74,9 +77,16 @@ export function ChainFooter({ anchor }: { anchor: AnchorRecord }) {
       <span>{anchor.txid.slice(0, 12)}…</span>
       <span>{anchor.scriptSize}B script</span>
       {anchor.feeSats > 0 && <span>{anchor.feeSats.toLocaleString()} sat fee</span>}
-      <span className={anchor.scriptSize <= 83 ? 'text-green-500' : 'text-amber-500'}>
-        {anchor.scriptSize <= 83 ? 'both chains' : 'main chain only post-BIP110'}
-      </span>
+      {preSplit ? (
+        <span className="text-green-500" title="Mined before the split at block 961,632 — this history is shared by BTC and XBT">
+          pre-split · BTC + XBT
+        </span>
+      ) : (
+        <span className={chain === 'xbt' ? 'text-purple-400' : 'text-bitcoin'}>
+          {chainTicker(chain)}
+          {anchor.scriptSize > 83 && ' · over BIP-110 limit (BTC only)'}
+        </span>
+      )}
     </div>
   );
 }

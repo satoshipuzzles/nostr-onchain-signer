@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Search, RefreshCw, Pickaxe } from 'lucide-react';
 import {
-  esplora,
+  esploraFor,
   scanBlock,
   loadAllAnchors,
   getScannedHeights,
@@ -11,11 +11,13 @@ import {
 } from '../lib/scanner';
 import { parsePubkeyInput } from '../lib/nostr';
 import { AnchorCard } from '../components/AnchorCard';
+import { useChain, chainTicker, chainLabel, SPLIT_HEIGHT } from '../lib/chain';
 
 const AUTO_SCAN_BLOCKS = 2;
 
 export function Feed() {
   const navigate = useNavigate();
+  const [chain] = useChain();
   const [anchors, setAnchors] = useState<AnchorRecord[]>([]);
   const [tipHeight, setTipHeight] = useState<number | null>(null);
   const [scanned, setScanned] = useState<Set<number>>(new Set());
@@ -27,8 +29,8 @@ export function Feed() {
   const scanningRef = useRef(false);
 
   async function refreshFromCache() {
-    setAnchors(await loadAllAnchors());
-    setScanned(await getScannedHeights());
+    setAnchors(await loadAllAnchors(chain));
+    setScanned(await getScannedHeights(chain));
   }
 
   async function scanHeights(heights: number[]) {
@@ -38,7 +40,7 @@ export function Feed() {
     setError('');
     try {
       for (const height of heights) {
-        await scanBlock(height, setProgress);
+        await scanBlock(height, setProgress, chain);
         await refreshFromCache();
       }
     } catch (err) {
@@ -51,12 +53,17 @@ export function Feed() {
   }
 
   useEffect(() => {
+    // Chain switch: drop the other chain's view before the new index loads
+    setAnchors([]);
+    setScanned(new Set());
+    setTipHeight(null);
+    setProgress(null);
     (async () => {
       await refreshFromCache();
       try {
-        const tip = await esplora.getTipHeight();
+        const tip = await esploraFor(chain).getTipHeight();
         setTipHeight(tip);
-        const done = await getScannedHeights();
+        const done = await getScannedHeights(chain);
         const todo: number[] = [];
         for (let h = tip; h > tip - AUTO_SCAN_BLOCKS; h--) {
           if (!done.has(h)) todo.push(h);
@@ -67,7 +74,7 @@ export function Feed() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [chain]);
 
   function nextUnscanned(count: number): number[] {
     if (tipHeight === null) return [];
@@ -107,6 +114,11 @@ export function Feed() {
           Nostr events carved into Bitcoin OP_RETURNs — fetched from relays, verified against the chain, and social.
           Login to comment, react, follow, and zap.
         </p>
+        <p className="text-xs text-zinc-500">
+          Viewing <span className={chain === 'xbt' ? 'text-purple-400 font-semibold' : 'text-bitcoin font-semibold'}>{chainLabel(chain)}</span>
+          {' · '}anchors before block {SPLIT_HEIGHT.toLocaleString()} are shared by BTC and XBT ·{' '}
+          <Link to="/about" className="underline">why two chains?</Link>
+        </p>
       </section>
 
       <form onSubmit={handleSearch} className="flex gap-2">
@@ -140,7 +152,7 @@ export function Feed() {
             <>
               {scanned.size.toLocaleString()} block{scanned.size === 1 ? '' : 's'} indexed
               {oldestScanned && tipHeight ? ` (${oldestScanned.toLocaleString()} → ${tipHeight.toLocaleString()})` : ''} ·{' '}
-              {anchors.length.toLocaleString()} anchors found · scans run in your browser and stay cached
+              {anchors.length.toLocaleString()} {chainTicker(chain)} anchors found · scans run in your browser and stay cached per chain
             </>
           )}
         </div>

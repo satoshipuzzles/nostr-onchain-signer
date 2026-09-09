@@ -11,6 +11,9 @@ import { Transaction } from '@scure/btc-signer';
 import { hex, bech32, bech32m } from '@scure/base';
 import { fetchUTXOs, fetchFeeEstimates, type UTXO as MempoolUTXO } from './mempool';
 import { buildOpReturnScript } from './opreturn';
+import type { Chain } from './chain';
+import { SIGHASH_ALL_UNIFIED, psbtHasUnifiedInputs } from './unified-sighash';
+import { signPsbtAnySighash } from './taproot-sign';
 
 export interface PsbtBuildParams {
   fromAddress: string;
@@ -21,6 +24,12 @@ export interface PsbtBuildParams {
   internalPubkeyHex?: string;
   opReturnData?: Uint8Array;
   selectedUtxos?: MempoolUTXO[];
+  /**
+   * Target chain. 'xbt' fetches coins/fees from the BLAKE2b chain and marks
+   * every input SIGHASH_ALL|UNIFIED (0x21) so the signature can never be
+   * replayed onto BTC. Default 'btc' (ordinary BIP341 signatures).
+   */
+  chain?: Chain;
 }
 
 export interface PsbtResult {
@@ -67,20 +76,28 @@ function addressToScriptPubKey(address: string): Uint8Array {
  * Fetches UTXOs from mempool.space and does coin selection.
  */
 export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
-  const { fromAddress, toAddress, amountSats, feeRate, changeAddress, internalPubkeyHex, opReturnData, selectedUtxos } = params;
-
-  const utxos = selectedUtxos && selectedUtxos.length > 0
-    ? selectedUtxos
-    : await fetchUTXOs(fromAddress);
+  const chain = params.chain ?? 'btc';
+  const utxos = params.selectedUtxos && params.selectedUtxos.length > 0
+    ? params.selectedUtxos
+    : await fetchUTXOs(params.fromAddress, chain);
   if (utxos.length === 0) {
-    throw new Error('No UTXOs available. Fund this address first.');
+    throw new Error(`No UTXOs available on ${chain.toUpperCase()}. Fund this address first.`);
   }
 
-  let actualFeeRate = feeRate;
+  let actualFeeRate = params.feeRate;
   if (!actualFeeRate) {
-    const estimates = await fetchFeeEstimates();
+    const estimates = await fetchFeeEstimates(chain);
     actualFeeRate = estimates.halfHour;
   }
+  return buildPsbtFromUtxos({ ...params, chain }, utxos, actualFeeRate);
+}
+
+/**
+ * Pure PSBT construction from known UTXOs and fee rate (no network).
+ */
+export function buildPsbtFromUtxos(params: PsbtBuildParams, utxos: MempoolUTXO[], actualFeeRate: number): PsbtResult {
+  const { fromAddress, toAddress, amountSats, changeAddress, internalPubkeyHex, opReturnData, selectedUtxos } = params;
+  const chain = params.chain ?? 'btc';
 
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
   // NEVER silently drop OP_RETURN data — include whatever the caller passed.
@@ -139,6 +156,10 @@ export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
     if (internalPubkeyHex) {
       inputData.tapInternalKey = hex.decode(internalPubkeyHex);
     }
+    if (chain === 'xbt') {
+      // Opt in to the unified sighash: valid on XBT only, never replays to BTC.
+      inputData.sighashType = SIGHASH_ALL_UNIFIED;
+    }
     tx.addInput(inputData as any);
   }
 
@@ -189,21 +210,53 @@ function uint8ToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * Build the XBT self-send that splits coins: every unsplit UTXO of `address`
+ * goes back to `address` in one output, signed SIGHASH_ALL|UNIFIED. Once it
+ * confirms on XBT the BTC-side coins can be spent on BTC without replay.
+ */
+export function buildSplitPsbt(params: {
+  address: string;
+  internalPubkeyHex?: string;
+  utxos: MempoolUTXO[];
+  feeRate: number;
+}): PsbtResult {
+  const { address, internalPubkeyHex, utxos, feeRate } = params;
+  if (utxos.length === 0) throw new Error('Nothing to split — no coin of this address exists on both chains.');
+  const total = utxos.reduce((s, u) => s + u.value, 0);
+  const fee = Math.ceil(estimateVsize(utxos.length, 1, 0) * feeRate);
+  if (total - fee < 546) throw new Error(`Unsplit balance (${total} sats) is too small to cover the fee (${fee} sats).`);
+  return buildPsbtFromUtxos(
+    { fromAddress: address, toAddress: address, amountSats: total - fee, internalPubkeyHex, selectedUtxos: utxos, chain: 'xbt' },
+    utxos,
+    feeRate,
+  );
+}
+
+/**
  * Sign a Taproot PSBT with the vault private key, finalize, and return raw tx.
+ * Inputs flagged SIGHASH_UNIFIED (XBT) are signed with the unified message.
  */
 export function signAndFinalizePsbt(
   psbtHex: string,
   privateKeyHex: string
-): { txHex: string; txid: string } {
+): { txHex: string; txid: string; chain: Chain } {
   const tx = Transaction.fromPSBT(hex.decode(psbtHex), { allowUnknownOutputs: true, allowUnknownInputs: true });
   const privKey = hex.decode(privateKeyHex);
-  tx.sign(privKey);
+  const chain: Chain = psbtHasUnifiedInputs(tx) ? 'xbt' : 'btc';
+  signPsbtAnySighash(tx, privKey);
   tx.finalize();
   const txBytes = tx.extract();
   return {
     txHex: hex.encode(txBytes),
     txid: tx.id,
+    chain,
   };
+}
+
+/** Which chain a PSBT is meant for: 'xbt' when any input opted in to SIGHASH_UNIFIED. */
+export function psbtTargetChain(psbtHex: string): Chain {
+  const tx = Transaction.fromPSBT(hex.decode(psbtHex), { allowUnknownOutputs: true, allowUnknownInputs: true });
+  return psbtHasUnifiedInputs(tx) ? 'xbt' : 'btc';
 }
 
 /**

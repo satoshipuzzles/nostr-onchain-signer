@@ -12,9 +12,11 @@ import {
   type Profile,
 } from '../lib/nostr';
 import { AnchorCard } from '../components/AnchorCard';
+import { useChain, explorerAddressUrl, chainTicker } from '../lib/chain';
 
 export function ProfilePage() {
   const { input } = useParams();
+  const [chain] = useChain();
   const pubkey = input ? parsePubkeyInput(input) : null;
   const [profile, setProfile] = useState<Profile | null>(null);
   const [anchors, setAnchors] = useState<AnchorRecord[] | null>(null);
@@ -28,12 +30,14 @@ export function ProfilePage() {
   useEffect(() => {
     if (!pubkey || !address) return;
     fetchProfile(pubkey).then(setProfile);
-    anchorsForAddress(address)
+    setAnchors(null);
+    setError('');
+    anchorsForAddress(address, chain)
       .then((found) => setAnchors(found.sort((a, b) => b.blockHeight - a.blockHeight)))
       .catch((err) => setError(err instanceof Error ? err.message : 'Chain lookup failed'));
     if (me) isFollowing(me, pubkey).then(setFollowing).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pubkey]);
+  }, [pubkey, chain]);
 
   if (!pubkey) {
     return (
@@ -88,8 +92,11 @@ export function ProfilePage() {
         {address && (
           <div className="text-[11px] text-zinc-500 font-mono break-all">
             on-chain identity: {address}{' '}
-            <a href={`https://mempool.space/address/${address}`} target="_blank" rel="noreferrer" className="text-bitcoin inline-flex items-center gap-0.5">
-              <ExternalLink size={10} />
+            <a href={explorerAddressUrl('btc', address)} target="_blank" rel="noreferrer" className="text-bitcoin inline-flex items-center gap-0.5" title="On BTC (mempool.space)">
+              BTC <ExternalLink size={10} />
+            </a>{' '}
+            <a href={explorerAddressUrl('xbt', address)} target="_blank" rel="noreferrer" className="text-purple-400 inline-flex items-center gap-0.5" title="On XBT (mempool.guide)">
+              XBT <ExternalLink size={10} />
             </a>
           </div>
         )}
@@ -97,7 +104,7 @@ export function ProfilePage() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-zinc-300">
-          On-chain anchors {anchors ? `(${anchors.length})` : ''}
+          On-chain anchors on {chainTicker(chain)} {anchors ? `(${anchors.length})` : ''}
         </h2>
         {error && <p className="text-red-400 text-sm">{error}</p>}
         {!anchors && !error && <div className="card h-24 animate-pulse" />}

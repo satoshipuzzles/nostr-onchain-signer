@@ -12,6 +12,7 @@ import { formatSats } from '@/lib/bitcoin/mempool';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { appOrigin } from '@/lib/nostr/public-relay';
 import { sendDM } from '@/lib/nostr/dm';
+import { CHAIN_INFO, type Chain } from '@/lib/bitcoin/chain';
 
 interface Props {
   wallet: ArchivedMultisig;
@@ -21,9 +22,11 @@ interface Props {
   initialRecipient?: string;
   initialAmount?: string;
   initialMemo?: string;
+  /** Target chain; 'xbt' builds the PSBT with SIGHASH_UNIFIED (XBT-only, replay-safe). */
+  initialChain?: Chain;
 }
 
-export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRecipient, initialAmount, initialMemo }: Props) {
+export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRecipient, initialAmount, initialMemo, initialChain }: Props) {
   const { canSignOnchain, handleUpgradeWithNsec } = useAuth();
   const [recipient, setRecipient] = useState(initialRecipient || '');
   const [amountSats, setAmountSats] = useState(initialAmount || '');
@@ -38,6 +41,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
   const [signingLink, setSigningLink] = useState('');
   const [linkCopied, setLinkCopied] = useState(false);
   const [expiryHours, setExpiryHours] = useState(0);
+  const [chain, setChain] = useState<Chain>(initialChain ?? 'btc');
 
   const otherSigners = wallet.keyHolders.filter((h) => !h.isOwnKey);
 
@@ -71,6 +75,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         wallet: wallet.wallet,
         toAddress: recipient,
         amountSats: amount,
+        chain,
       });
 
       let psbtHex = psbtResult.psbtHex;
@@ -373,6 +378,36 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
 
       {/* Transaction form */}
       <form onSubmit={handleSend} className="flex flex-col space-y-3">
+        {/* Target chain */}
+        <div className="card">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[10px] text-gray-500">Chain</p>
+              <p className="text-xs text-gray-300">{CHAIN_INFO[chain].label}</p>
+            </div>
+            <div className="flex rounded-lg bg-surface-700 p-0.5" role="group" aria-label="Chain">
+              {(['btc', 'xbt'] as Chain[]).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setChain(c)}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
+                    chain === c
+                      ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                      : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {CHAIN_INFO[c].ticker}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+            {chain === 'xbt'
+              ? 'Every co-signer signs with SIGHASH_UNIFIED — valid on XBT only. Co-signers need this app version (or Knots) to sign.'
+              : 'Ordinary signatures. If the coins still exist on both chains, this spend replays onto XBT.'}
+          </p>
+        </div>
         <div>
           <label className="text-xs text-gray-400 mb-1 block">Send to</label>
           <input

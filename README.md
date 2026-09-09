@@ -75,6 +75,30 @@ npm run build   # Production build
 ### Load in Safari (iOS/macOS)
 Use Apple's `safari-web-extension-converter` tool to wrap the built extension for Safari.
 
+## BTC / XBT — the chain split
+
+Since block **961,632** (2026-08-08) there are two Bitcoin chains sharing one history:
+**BTC** (SHA-256d, Bitcoin Core) and **XBT** (BLAKE2b proof of work from block 961,640, Bitcoin Knots with the
+BIP-110 rules). Every coin from before the split exists on both, and an ordinary signature is valid on both, so a
+normal spend *replays*: the coins move on BTC and XBT together.
+
+What this repo does about it:
+
+- **Chain selector** in the block explorer, the wallet, the transaction builder and multisig requests
+  (`btc` | `xbt`). XBT data comes from `mempool.guide` through `api/mempool.js?chain=xbt` (it has no CORS and only
+  speaks HTTP/1.1). Explorer links go to mempool.space (BTC) or mempool.guide (XBT).
+- **`SIGHASH_UNIFIED`** (`packages/core/src/unified-sighash.ts`): XBT's opt-in signature hash (bit `0x20`, tag
+  `UnifiedSighash`, Knots PR 357). Every XBT-targeted PSBT is built with hash type `0x21` (ALL|UNIFIED) on all
+  inputs and signed with the unified message — key path, tapscript multisig, vault key, NIP-07 `signSchnorr`. Such a
+  signature verifies only on XBT, so it can never be replayed onto BTC. Verified against the 166 official Knots test
+  vectors (`npm run test:sighash`) and end to end on a Knots regtest node past the activation height
+  (`npm run test:regtest`, see `scripts/regtest-e2e.ts`).
+- **Split status** per UTXO (unsplit / BTC only / XBT only) by comparing both chains' UTXO sets, shown in Coin
+  Control and the explorer's Address tab.
+- **"Split coins on XBT"**: one-click self-send of every unsplit coin on XBT with `SIGHASH_UNIFIED`. Once it confirms,
+  the BTC-side coins can be spent on BTC normally — their XBT twins are already spent, so nothing replays. The builder
+  warns before any BTC spend that would drag unsplit coins along.
+
 ## OP_RETURN Protocol Spec
 
 ```

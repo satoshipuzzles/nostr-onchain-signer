@@ -49,6 +49,35 @@ export function About() {
         </ul>
       </div>
 
+      <div className="card p-5 space-y-3 text-sm text-zinc-300 leading-relaxed">
+        <h2 className="font-semibold">Two chains: BTC and XBT</h2>
+        <p>
+          Bitcoin split in August 2026. Nodes enforcing <strong>BIP-110</strong> (the temporary data-limit rules)
+          rejected the first non-signaling block, so from block <strong>961,632</strong> there are two chains that
+          share every block up to 961,631. On 30 August (block <strong>961,640</strong>) the enforcing chain
+          changed its proof of work to <strong>BLAKE2b</strong> and activated an opt-in signature hash. We call the
+          SHA-256 chain <span className="text-bitcoin font-semibold">BTC</span> and the BLAKE2b chain{' '}
+          <span className="text-purple-400 font-semibold">XBT</span>. Use the switch in the header to explore either.
+        </p>
+        <p>
+          <strong>Every coin from before the split exists on both chains.</strong> A normally signed transaction
+          is valid on both too, so anyone can copy it from one chain to the other ("replay") and your coins move
+          in both places at once.
+        </p>
+        <p>
+          <strong>SIGHASH_UNIFIED</strong> is XBT's fix: a per-signature opt-in (hash type <code>0x21</code>,
+          ALL|UNIFIED) that signs a different message, so the signature only verifies on XBT. It is one-way — a
+          legacy signature still replays.
+        </p>
+        <p>
+          <strong>How to split your coins:</strong> (1) on XBT, send the coins to yourself signed with
+          SIGHASH_UNIFIED and broadcast to XBT only; (2) wait for it to confirm; (3) the BTC-side coins are now
+          spendable on BTC with an ordinary signature and can no longer be replayed, because their XBT twins were
+          already spent. The Nostr Onchain wallet does this with one button ("Split coins on XBT"); this explorer's
+          transaction page shows which chain(s) any txid exists on.
+        </p>
+      </div>
+
       <div className="card p-5 space-y-3 text-sm text-zinc-300">
         <h2 className="font-semibold">It's also a Nostr client</h2>
         <p>
@@ -57,8 +86,9 @@ export function About() {
           from its npub-derived taproot address.
         </p>
         <p className="text-xs text-zinc-500">
-          Scanning happens client-side against public Esplora APIs and is cached in your browser — blocks are immutable,
-          so each block only ever needs to be scanned once. No server, no tracking.
+          Scanning happens client-side against public Esplora APIs (mempool.space for BTC, mempool.guide for XBT via
+          a small CORS proxy) and is cached in your browser per chain — blocks are immutable, so each block only ever
+          needs to be scanned once. No server, no tracking.
         </p>
       </div>
     </div>

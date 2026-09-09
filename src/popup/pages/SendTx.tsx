@@ -2,10 +2,12 @@ import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { createMessageId } from '@/shared/messages';
-import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle, ChevronDown, ChevronUp, DollarSign, Coins } from 'lucide-react';
+import { ArrowLeft, Send, Download, Loader2, Copy, Check, FileDown, ExternalLink, Key, AlertTriangle, ChevronDown, ChevronUp, DollarSign, Coins, GitFork } from 'lucide-react';
 import { fetchBalance, fetchFeeEstimates, fetchUTXOs, formatSats, getMempoolAddressUrl, getMempoolTxUrl, broadcastTransaction, type UTXO } from '@/lib/bitcoin/mempool';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
-import { buildPsbt, downloadPsbtFile, downloadPsbtText, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
+import { buildPsbt, buildSplitPsbt, downloadPsbtFile, downloadPsbtText, type PsbtResult } from '@/lib/bitcoin/psbt-builder';
+import { CHAIN_INFO, explorerHost, isChain, loadChainPreference, saveChainPreference, outpointKey, type Chain } from '@/lib/bitcoin/chain';
+import { classifyAddressUtxos, SPLIT_BADGE, type SplitReport } from '@/lib/bitcoin/split';
 import { encodeCustomOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opreturn';
 import { checkOpReturnCompliance, BIP110_MAX_OP_RETURN_SCRIPT } from '@/lib/bitcoin/bip110';
 import { loadBitcoinNodeConfig } from '@/lib/bitcoin/node';
@@ -32,6 +34,26 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { canSignOnchain, handleUpgradeWithNsec, vaultPassword, setSelectedMultisigWallet } = useAuth();
+  // Target chain: BTC (SHA-256, ordinary signatures) or XBT (BLAKE2b, SIGHASH_UNIFIED — replay-safe)
+  const [chain, setChainState] = useState<Chain>(() => {
+    const q = searchParams.get('chain');
+    return isChain(q) ? q : loadChainPreference();
+  });
+  // 'split' = self-send of every unsplit coin on XBT, so BTC and XBT can be spent separately afterwards
+  const [mode, setMode] = useState<'send' | 'split'>(searchParams.get('mode') === 'split' ? 'split' : 'send');
+  const [split, setSplit] = useState<SplitReport | null>(null);
+  const [splitLoading, setSplitLoading] = useState(false);
+  function setChain(c: Chain) {
+    setChainState(c);
+    saveChainPreference(c);
+    if (c === 'btc' && mode === 'split') setMode('send');
+  }
+  function enterSplitMode() {
+    setMode('split');
+    setChainState('xbt');
+    saveChainPreference('xbt');
+    setError('');
+  }
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
   const [memo, setMemo] = useState('');
@@ -67,8 +89,9 @@ export function SendTx({ publicKey, onBack }: Props) {
   const [multisigWallets, setMultisigWallets] = useState<ArchivedMultisig[]>([]);
   const [showSenderPicker, setShowSenderPicker] = useState(false);
 
-  // BTC price for USD estimate
-  const [btcPriceUsd, setBtcPriceUsd] = useState<number>(0);
+  // BTC price for USD estimate (no public USD quote for XBT — hide USD there)
+  const [btcPriceUsdRaw, setBtcPriceUsd] = useState<number>(0);
+  const btcPriceUsd = chain === 'btc' ? btcPriceUsdRaw : 0;
 
   const personalAddress = pubkeyToTaprootAddress(publicKey);
 
@@ -114,16 +137,18 @@ export function SendTx({ publicKey, onBack }: Props) {
   }, [selectedUtxos, utxos]);
 
   async function signAndBroadcast(psbtHex: string): Promise<{ txid: string; via: 'node' | 'esplora' }> {
+    const nodeMatches = (cfg: Awaited<ReturnType<typeof loadBitcoinNodeConfig>>) =>
+      !!(cfg?.enabled && cfg.rpcUrl && (cfg.chain ?? 'btc') === chain);
     if (!canSignOnchain) {
       await promptExtensionAccess();
       const external = await tryExternalPsbtSign(psbtHex, publicKey);
       if (external) {
         setSignSource(external.source);
         const nodeCfg = await loadBitcoinNodeConfig();
-        const txid = await broadcastTransaction(external.txHex);
+        const txid = await broadcastTransaction(external.txHex, chain);
         return {
           txid,
-          via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
+          via: nodeMatches(nodeCfg) ? 'node' : 'esplora',
         };
       }
       const info = detectBitcoinSigners();
@@ -144,10 +169,10 @@ export function SendTx({ publicKey, onBack }: Props) {
     if (!signResponse.error && signResponse.result?.txHex) {
       setSignSource((signResponse.result.source as BitcoinSignerSource) || 'vault');
       const nodeCfg = await loadBitcoinNodeConfig();
-      const txid = await broadcastTransaction(signResponse.result.txHex);
+      const txid = await broadcastTransaction(signResponse.result.txHex, chain);
       return {
         txid,
-        via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
+        via: nodeMatches(nodeCfg) ? 'node' : 'esplora',
       };
     }
 
@@ -156,10 +181,10 @@ export function SendTx({ publicKey, onBack }: Props) {
     if (nip07) {
       setSignSource(nip07.source);
       const nodeCfg = await loadBitcoinNodeConfig();
-      const txid = await broadcastTransaction(nip07.txHex);
+      const txid = await broadcastTransaction(nip07.txHex, chain);
       return {
         txid,
-        via: nodeCfg?.enabled && nodeCfg.rpcUrl ? 'node' : 'esplora',
+        via: nodeMatches(nodeCfg) ? 'node' : 'esplora',
       };
     }
 
@@ -237,8 +262,28 @@ export function SendTx({ publicKey, onBack }: Props) {
     if (activeAddress) {
       loadBalanceForAddress(activeAddress);
       loadUtxosForAddress(activeAddress);
+      loadSplitStatus(activeAddress);
     }
-  }, [activeAddress]);
+  }, [activeAddress, chain]);
+
+  // Fee estimates belong to the chain being spent on
+  useEffect(() => {
+    fetchFeeEstimates(chain).then((fees) => {
+      setFeeEstimates(fees);
+      setFeeRate(String(fees.halfHour));
+    }).catch(() => {});
+  }, [chain]);
+
+  async function loadSplitStatus(addr: string) {
+    setSplitLoading(true);
+    try {
+      setSplit(await classifyAddressUtxos(addr));
+    } catch {
+      setSplit(null);
+    } finally {
+      setSplitLoading(false);
+    }
+  }
 
   async function fetchBtcPrice() {
     try {
@@ -260,7 +305,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   async function loadBalanceForAddress(addr: string) {
     setLoadingBalance(true);
     try {
-      const bal = await fetchBalance(addr);
+      const bal = await fetchBalance(addr, { chain, force: true });
       setBalance(bal.total);
     } catch {
       toast.error('Failed to fetch balance — check your connection');
@@ -272,7 +317,7 @@ export function SendTx({ publicKey, onBack }: Props) {
   async function loadUtxosForAddress(addr: string) {
     setLoadingUtxos(true);
     try {
-      const fetched = await fetchUTXOs(addr);
+      const fetched = await fetchUTXOs(addr, chain);
       setUtxos(fetched);
       setSelectedUtxos(new Set());
     } catch {
@@ -286,8 +331,8 @@ export function SendTx({ publicKey, onBack }: Props) {
     setLoadingBalance(true);
     try {
       const [bal, fees] = await Promise.allSettled([
-        fetchBalance(activeAddress),
-        fetchFeeEstimates(),
+        fetchBalance(activeAddress, { chain }),
+        fetchFeeEstimates(chain),
       ]);
       if (bal.status === 'fulfilled') setBalance(bal.value.total);
       if (fees.status === 'fulfilled') {
@@ -330,6 +375,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         if (recipient) params.set('to', recipient);
         if (amountSats) params.set('amount', amountSats);
         if (memo) params.set('memo', memo);
+        params.set('chain', chain);
         navigate(`/wallets/sign?${params.toString()}`);
         return;
       }
@@ -340,6 +386,23 @@ export function SendTx({ publicKey, onBack }: Props) {
     setPsbtResult(null);
 
     try {
+      if (mode === 'split') {
+        if (!split) throw new Error('Split status is still loading — both chains must answer first.');
+        const rate = parseFloat(feeRate);
+        if (!rate || rate <= 0) throw new Error('Enter a fee rate');
+        const result = buildSplitPsbt({
+          address: activeAddress,
+          internalPubkeyHex: publicKey,
+          utxos: split.unsplit,
+          feeRate: rate,
+        });
+        setPsbtResult(result);
+        const { txid, via } = await signAndBroadcast(result.psbtHex);
+        setBroadcastTxid(txid);
+        setBroadcastVia(via);
+        return;
+      }
+
       const amount = parseInt(amountSats, 10);
       if (!amount || amount <= 0) throw new Error('Enter a valid amount');
       if (!recipient) throw new Error('Enter a recipient address');
@@ -351,7 +414,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         opReturnData = invoiceOpReturn.script.slice(2);
       } else if (memo.trim()) {
         const encoded = encodeCustomOpReturn(memo, dataFormat);
-        if (dataPolicy === 'bip110' && encoded.size > BIP110_MAX_OP_RETURN_SCRIPT) {
+        if ((dataPolicy === 'bip110' || chain === 'xbt') && encoded.size > BIP110_MAX_OP_RETURN_SCRIPT) {
           throw new Error(
             `OP_RETURN script is ${encoded.size} bytes — over BIP-110's ${BIP110_MAX_OP_RETURN_SCRIPT}-byte limit. ` +
             'Shorten the data, or switch to "Large / main chain only" mode.'
@@ -372,6 +435,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         internalPubkeyHex: publicKey,
         opReturnData,
         selectedUtxos: preSelected,
+        chain,
       });
 
       setPsbtResult(result);
@@ -405,24 +469,31 @@ export function SendTx({ publicKey, onBack }: Props) {
         <button onClick={() => { setPsbtResult(null); setBroadcastTxid(''); }} className="btn-back">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h1>{broadcastTxid ? 'Transaction Sent' : 'Transaction Failed'}</h1>
+          <h1>{broadcastTxid ? (mode === 'split' ? 'Coins Split on XBT' : 'Transaction Sent') : 'Transaction Failed'}</h1>
         </div>
 
         {broadcastTxid && (
           <div className="card mb-3 border-green-500/30 bg-green-500/5">
-            <p className="text-xs text-green-400 font-medium mb-1">Broadcast successful</p>
+            <p className="text-xs text-green-400 font-medium mb-1">Broadcast to {CHAIN_INFO[chain].label}</p>
             <code className="text-[10px] text-gray-400 break-all block">{broadcastTxid}</code>
             <p className="text-[10px] text-gray-500 mt-1">
               Signed via {signSource === 'webbtc' ? 'Alby (WebBTC)' : signSource === 'nip07-schnorr' ? 'NIP-07 signSchnorr' : signSource === 'bitcoin-api' ? 'Nostr Onchain extension' : signSource === 'nip46-amber' ? 'Amber (NIP-46)' : signSource === 'vault' ? 'vault key' : 'signer'}
               {' · '}Broadcast via {broadcastVia === 'node' ? 'your Bitcoin node' : 'public mempool'}
+              {chain === 'xbt' && ' · SIGHASH_UNIFIED (XBT only, cannot replay to BTC)'}
             </p>
+            {mode === 'split' && (
+              <p className="text-[10px] text-gray-400 mt-1">
+                Once this confirms on XBT, the same coins on BTC are yours to spend separately — a BTC spend can no
+                longer be replayed because their XBT twins are already spent.
+              </p>
+            )}
             <a
-              href={getMempoolTxUrl(broadcastTxid)}
+              href={getMempoolTxUrl(broadcastTxid, chain)}
               target="_blank"
               rel="noopener"
               className="text-xs text-bitcoin hover:underline mt-2 inline-flex items-center gap-1"
             >
-              View on mempool.space <ExternalLink className="w-3 h-3" />
+              View on {explorerHost(chain)} <ExternalLink className="w-3 h-3" />
             </a>
           </div>
         )}
@@ -443,8 +514,14 @@ export function SendTx({ publicKey, onBack }: Props) {
         <div className="card mb-3">
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
-              <span className="text-gray-500">Send</span>
-              <span className="text-bitcoin font-semibold">{formatSats(parseInt(amountSats))}</span>
+              <span className="text-gray-500">Chain</span>
+              <span className={chain === 'xbt' ? 'text-purple-400 font-semibold' : 'text-bitcoin font-semibold'}>{CHAIN_INFO[chain].label}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">{mode === 'split' ? 'Split (to self)' : 'Send'}</span>
+              <span className="text-bitcoin font-semibold">
+                {formatSats(mode === 'split' ? psbtResult.totalInputSats - psbtResult.fee : parseInt(amountSats))}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-500">Fee</span>
@@ -599,11 +676,77 @@ export function SendTx({ publicKey, onBack }: Props) {
         <button onClick={onBack} className="btn-back">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h1>Transaction Builder</h1>
+        <h1>{mode === 'split' ? 'Split BTC / XBT' : 'Transaction Builder'}</h1>
         {loadingBalance ? (
           <Loader2 className="w-3 h-3 animate-spin text-gray-500" />
         ) : (
-          <span className="text-xs text-bitcoin font-medium">{formatSats(balance)}</span>
+          <span className={`text-xs font-medium ${chain === 'xbt' ? 'text-purple-400' : 'text-bitcoin'}`}>
+            {formatSats(balance)} {CHAIN_INFO[chain].ticker}
+          </span>
+        )}
+      </div>
+
+      {/* ─── CHAIN ─── */}
+      <div className="card mb-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-[10px] text-gray-500">Chain</p>
+            <p className="text-xs text-gray-300">{CHAIN_INFO[chain].label}</p>
+          </div>
+          <div className="flex rounded-lg bg-surface-700 p-0.5" role="group" aria-label="Chain">
+            {(['btc', 'xbt'] as Chain[]).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setChain(c)}
+                className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
+                  chain === c
+                    ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                {CHAIN_INFO[c].ticker}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+          {chain === 'xbt'
+            ? 'Signed with SIGHASH_UNIFIED: valid on XBT only, can never be replayed onto BTC.'
+            : 'Ordinary signature. Coins that still exist on both chains will move on XBT too (replay) — split first to keep your XBT.'}
+        </p>
+        {split && split.unsplit.length > 0 && mode !== 'split' && (
+          <div className="mt-2 rounded-lg bg-amber-500/10 border border-amber-500/20 p-2">
+            <p className="text-[11px] text-amber-300 leading-relaxed">
+              <GitFork className="w-3 h-3 inline mr-1" />
+              {formatSats(split.unsplitSats)} of this address is <strong>unsplit</strong> (on both chains).
+            </p>
+            <button type="button" onClick={enterSplitMode} className="btn-secondary w-full mt-2 text-xs">
+              Split coins on XBT first
+            </button>
+          </div>
+        )}
+        {splitLoading && !split && <p className="text-[10px] text-gray-600 mt-1">Checking both chains…</p>}
+        {mode === 'split' && (
+          <div className="mt-2 rounded-lg bg-purple-500/10 border border-purple-500/20 p-2 space-y-1">
+            <p className="text-[11px] text-purple-300 leading-relaxed">
+              Sends every unsplit coin back to your own address on XBT, signed with SIGHASH_UNIFIED. Nothing moves on
+              BTC. After it confirms, spend BTC and XBT independently.
+            </p>
+            {split ? (
+              <p className="text-[11px] text-gray-300 font-mono">
+                {split.unsplit.length} coin{split.unsplit.length === 1 ? '' : 's'} · {formatSats(split.unsplitSats)}
+              </p>
+            ) : (
+              <p className="text-[10px] text-gray-500">{splitLoading ? 'Checking both chains…' : 'Could not read both chains — try again.'}</p>
+            )}
+            {split && split.unsplit.length === 0 && (
+              <p className="text-[10px] text-green-400">Already split — nothing to do.</p>
+            )}
+            <button type="button" onClick={() => setMode('send')} className="text-[10px] text-gray-500 hover:text-gray-300 underline">
+              Back to normal send
+            </button>
+          </div>
         )}
       </div>
 
@@ -688,7 +831,7 @@ export function SendTx({ publicKey, onBack }: Props) {
 
       <form onSubmit={handleSendTransaction} className="flex-1 flex flex-col space-y-3">
         {/* Recipient */}
-        <div>
+        <div className={mode === 'split' ? 'hidden' : ''}>
           <label className="text-xs text-gray-400 mb-1 block">Recipient</label>
           <RecipientPicker
             publicKey={publicKey}
@@ -700,7 +843,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         </div>
 
         {/* Amount */}
-        <div>
+        <div className={mode === 'split' ? 'hidden' : ''}>
           <label className="text-xs text-gray-400 mb-1 flex items-center justify-between">
             <span>Amount (sats)</span>
             {balance > 0 && (
@@ -795,7 +938,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         </div>
 
         {/* ─── COIN CONTROL ─── */}
-        <div>
+        <div className={mode === 'split' ? 'hidden' : ''}>
           <button
             type="button"
             onClick={() => setShowCoinControl(!showCoinControl)}
@@ -884,6 +1027,14 @@ export function SendTx({ publicKey, onBack }: Props) {
                           }`}>
                             {utxo.status.confirmed ? 'confirmed' : 'unconfirmed'}
                           </span>
+                          {(() => {
+                            const st = split?.status.get(outpointKey(utxo.txid, utxo.vout));
+                            return st ? (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded ${SPLIT_BADGE[st].cls}`} title={SPLIT_BADGE[st].title}>
+                                {SPLIT_BADGE[st].label}
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
                       </button>
                     );
@@ -895,7 +1046,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         </div>
 
         {/* On-chain data (OP_RETURN) */}
-        <div className="rounded-xl bg-surface-800/30 border border-white/5 p-3">
+        <div className={`rounded-xl bg-surface-800/30 border border-white/5 p-3 ${mode === 'split' ? 'hidden' : ''}`}>
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs text-gray-400">On-chain data — OP_RETURN (optional)</label>
             <div className="flex rounded-lg bg-surface-700 p-0.5">
@@ -934,7 +1085,7 @@ export function SendTx({ publicKey, onBack }: Props) {
                 </span>
                 {opReturnPreview.compliance.bip110Compliant
                   ? 'BIP-110 compliant — relays everywhere and stays valid on both chains after the flag day.'
-                  : 'Over BIP-110\u2019s 83-byte limit — needs Core 30+ nodes to relay, and after activation (~block 965,664, Sep 2026) it confirms on the main chain only. Use this deliberately to send main-chain-only.'}
+                  : 'Over BIP-110\u2019s 83-byte limit — invalid on XBT; confirms on BTC only (needs Core 30+ nodes to relay).'}
               </div>
             ) : (
               <p className="text-[10px] text-red-400 mt-1">
@@ -954,7 +1105,7 @@ export function SendTx({ publicKey, onBack }: Props) {
                   : 'bg-surface-700 border-transparent text-gray-500 hover:text-gray-300'
               }`}
             >
-              BIP-110 compliant (≤83B, both chains)
+              BIP-110 compliant (≤83B, valid on BTC and XBT)
             </button>
             <button
               type="button"
@@ -965,18 +1116,17 @@ export function SendTx({ publicKey, onBack }: Props) {
                   : 'bg-surface-700 border-transparent text-gray-500 hover:text-gray-300'
               }`}
             >
-              Large (main chain only post-fork)
+              Large (BTC only — invalid on XBT)
             </button>
           </div>
           <p className="text-[10px] text-gray-600 mt-1.5">
-            Compliant mode blocks builds over the 83-byte script limit. Large mode allows any size
-            — after BIP-110 activation such transactions are invalid on the enforcing chain,
-            which also makes them a clean way to move coins on the main chain only.
+            Compliant mode blocks builds over the 83-byte script limit. Large mode allows any size, but such
+            transactions are invalid on XBT. When the target chain is XBT the limit is always enforced.
           </p>
         </div>
 
         {/* Optional invoice reference */}
-        <div>
+        <div className={mode === 'split' ? 'hidden' : ''}>
           <label className="text-xs text-gray-400 mb-1 block">Paying Invoice (optional, event ID)</label>
           <input
             value={invoiceEventId}
@@ -1024,15 +1174,17 @@ export function SendTx({ publicKey, onBack }: Props) {
         <div className="mt-auto pt-3 pb-safe">
           <button
             type="submit"
-            disabled={!recipient || !amountSats || loading}
+            disabled={loading || (mode === 'split' ? !split || split.unsplit.length === 0 || !feeRate : !recipient || !amountSats)}
             className="btn-primary w-full flex items-center justify-center gap-2 min-h-[48px]"
           >
             {loading ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Sending...</>
+              <><Loader2 className="w-4 h-4 animate-spin" /> {mode === 'split' ? 'Splitting...' : 'Sending...'}</>
+            ) : mode === 'split' ? (
+              <><GitFork className="w-4 h-4" /> Split coins on XBT</>
             ) : senderSource !== 'personal' ? (
               <><Send className="w-4 h-4" /> Continue to Multisig Signing</>
             ) : (
-              <><Send className="w-4 h-4" /> Send Transaction</>
+              <><Send className="w-4 h-4" /> Send on {CHAIN_INFO[chain].ticker}</>
             )}
           </button>
           <p className="text-[10px] text-gray-600 text-center mt-2">

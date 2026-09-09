@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ArrowLeft, MessageCircle, Heart, Zap, ExternalLink, Copy, Check } from 'lucide-react';
 import { nip19, type Event } from 'nostr-tools';
-import { anchorsForTxid, type AnchorRecord } from '../lib/scanner';
+import { anchorsForTxid, txPresence, type AnchorRecord } from '../lib/scanner';
+import { useChain, CHAIN_INFO, explorerTxUrl, explorerHost, type Chain } from '../lib/chain';
 import {
   resolveAnchoredEvent,
   fetchProfile,
@@ -21,16 +22,83 @@ import {
 import { AnchorCard, ProfileChip, VerifiedBadge, ChainFooter } from '../components/AnchorCard';
 import { NoteContent } from '../components/NoteContent';
 
+type Presence = Awaited<ReturnType<typeof txPresence>>;
+
+function ChainPresence({ txid, presence }: { txid: string; presence: Presence | null }) {
+  const [chain] = useChain();
+  const describe = (c: Chain) => {
+    const p = presence?.[c];
+    if (presence === null || p === undefined) return { text: 'checking…', cls: 'text-zinc-500' };
+    if (p === 'error') return { text: 'unreachable', cls: 'text-zinc-500' };
+    if (p === null) return { text: 'not on this chain', cls: 'text-zinc-500' };
+    if (p.confirmed) return { text: `confirmed · block ${p.block_height?.toLocaleString() ?? '?'}`, cls: 'text-green-400' };
+    return { text: 'in mempool', cls: 'text-amber-400' };
+  };
+  const both = presence && presence.btc && presence.xbt && presence.btc !== 'error' && presence.xbt !== 'error';
+  const onlyOne = presence && (presence.btc === null) !== (presence.xbt === null) && presence.btc !== 'error' && presence.xbt !== 'error';
+  return (
+    <div className="card p-4 space-y-2">
+      <div className="text-xs font-semibold text-zinc-300">Where this transaction lives</div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {(['btc', 'xbt'] as Chain[]).map((c) => {
+          const d = describe(c);
+          return (
+            <a
+              key={c}
+              href={explorerTxUrl(c, txid)}
+              target="_blank"
+              rel="noreferrer"
+              className={`rounded-xl bg-ink-overlay p-3 space-y-1 hover:border-bitcoin/60 border border-transparent ${c === chain ? 'ring-1 ring-zinc-600' : ''}`}
+            >
+              <div className={`font-semibold ${c === 'xbt' ? 'text-purple-400' : 'text-bitcoin'}`}>{CHAIN_INFO[c].label}</div>
+              <div className={d.cls}>{d.text}</div>
+              <div className="text-[10px] text-zinc-500 inline-flex items-center gap-1">
+                {explorerHost(c)} <ExternalLink size={9} />
+              </div>
+            </a>
+          );
+        })}
+      </div>
+      {both && (
+        <p className="text-[11px] text-zinc-500">
+          Present on both chains: either mined before the split at block 961,632, or an ordinary signature that was
+          replayed. Coins spent this way move on BTC and XBT together.
+        </p>
+      )}
+      {onlyOne && presence?.xbt && presence.btc === null && (
+        <p className="text-[11px] text-zinc-500">
+          XBT only — typically a SIGHASH_UNIFIED spend (replay-protected) or coins mined after the split.
+        </p>
+      )}
+      {onlyOne && presence?.btc && presence.xbt === null && (
+        <p className="text-[11px] text-zinc-500">
+          BTC only — coins mined after the split, or a spend whose XBT side was already moved.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function TxPage() {
   const { txid } = useParams();
+  const [chain] = useChain();
   const [anchors, setAnchors] = useState<AnchorRecord[] | null>(null);
+  const [presence, setPresence] = useState<Presence | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (!txid) return;
-    anchorsForTxid(txid)
+    setAnchors(null);
+    setError('');
+    anchorsForTxid(txid, chain)
       .then(setAnchors)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Transaction not found'));
+      .catch((err) => setError(err instanceof Error ? err.message : `Transaction not found on ${CHAIN_INFO[chain].ticker}`));
+  }, [txid, chain]);
+
+  useEffect(() => {
+    if (!txid) return;
+    setPresence(null);
+    txPresence(txid).then(setPresence).catch(() => setPresence({ btc: 'error', xbt: 'error' }));
   }, [txid]);
 
   return (
@@ -39,14 +107,16 @@ export function TxPage() {
         <ArrowLeft size={14} /> Feed
       </Link>
 
+      {txid && <ChainPresence txid={txid} presence={presence} />}
+
       {error && <p className="text-red-400 text-sm">{error}</p>}
       {!anchors && !error && <div className="card h-40 animate-pulse" />}
 
       {anchors && anchors.length === 0 && (
         <div className="card p-6 text-sm text-zinc-400">
           This transaction has no Nostr-onchain OP_RETURN data.{' '}
-          <a className="text-bitcoin underline" href={`https://mempool.space/tx/${txid}`} target="_blank" rel="noreferrer">
-            View raw on mempool.space
+          <a className="text-bitcoin underline" href={explorerTxUrl(chain, txid!)} target="_blank" rel="noreferrer">
+            View raw on {explorerHost(chain)}
           </a>
         </div>
       )}
@@ -62,11 +132,11 @@ export function TxPage() {
       {txid && (
         <a
           className="btn-ghost text-xs"
-          href={`https://mempool.space/tx/${txid}`}
+          href={explorerTxUrl(chain, txid)}
           target="_blank"
           rel="noreferrer"
         >
-          <ExternalLink size={13} /> Raw transaction on mempool.space
+          <ExternalLink size={13} /> Raw transaction on {explorerHost(chain)}
         </a>
       )}
     </div>

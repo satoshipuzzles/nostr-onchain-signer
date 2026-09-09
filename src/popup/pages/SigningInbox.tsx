@@ -12,6 +12,13 @@ import { type ProfileMetadata } from '@/lib/nostr/social';
 import { sendDM } from '@/lib/nostr/dm';
 import { loadSigningRounds, saveSigningRound, recordBroadcast, recordSignature, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
+import { psbtTargetChain } from '@/lib/bitcoin/psbt-builder';
+import { getMempoolTxUrl } from '@/lib/bitcoin/mempool';
+
+/** Chain a PSBT belongs to (XBT when its inputs opted in to SIGHASH_UNIFIED); BTC if unreadable. */
+function chainOfPsbt(psbtHex: string | undefined): 'btc' | 'xbt' {
+  try { return psbtHex ? psbtTargetChain(psbtHex) : 'btc'; } catch { return 'btc'; }
+}
 import { checkInvoiceStatus, type InvoiceStatus } from '@/lib/bitcoin/invoice-tracker';
 import { formatSats } from '@/lib/bitcoin/mempool';
 
@@ -1133,7 +1140,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
                             </div>
                             {round.status === 'broadcast' && round.txid && (
                               <a
-                                href={`https://mempool.space/tx/${round.txid}`}
+                                href={getMempoolTxUrl(round.txid, chainOfPsbt(round.psbtHex))}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}
@@ -1626,7 +1633,7 @@ function RequestDetail({
 
             {broadcastTxid && (
               <a
-                href={`https://mempool.space/tx/${broadcastTxid}`}
+                href={getMempoolTxUrl(broadcastTxid, chainOfPsbt(request.psbt_hex))}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[10px] text-green-400 hover:underline block mb-2 truncate"

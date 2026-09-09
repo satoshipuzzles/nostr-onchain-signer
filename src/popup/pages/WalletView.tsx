@@ -7,6 +7,7 @@ import {
   formatSats, type Transaction,
 } from '@/lib/bitcoin/mempool';
 import { QRCode } from '../components/QRCode';
+import { explorerHost } from '@/lib/bitcoin/chain';
 
 interface Props {
   publicKey: string;
@@ -17,6 +18,7 @@ export function WalletView({ publicKey, onBack }: Props) {
   const navigate = useNavigate();
   const address = pubkeyToTaprootAddress(publicKey);
   const [balance, setBalance] = useState<{ confirmed: number; unconfirmed: number; total: number } | null>(null);
+  const [xbtBalance, setXbtBalance] = useState<{ total: number; unconfirmed: number; error?: string } | null>(null);
   const [txs, setTxs] = useState<Transaction[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -41,12 +43,14 @@ export function WalletView({ publicKey, onBack }: Props) {
     setSyncing(true);
     setError('');
     try {
-      const [bal, transactions] = await Promise.all([
+      const [bal, transactions, xbt] = await Promise.all([
         fetchBalance(address, { force }),
         fetchTransactions(address, 20, { force }),
+        fetchBalance(address, { force, chain: 'xbt' }).catch(() => null),
       ]);
       setBalance(bal);
       setTxs(transactions);
+      setXbtBalance(xbt);
       if (bal.error && !bal.cached) setError(bal.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
@@ -102,6 +106,11 @@ export function WalletView({ publicKey, onBack }: Props) {
         {balance && balance.unconfirmed !== 0 && (
           <p className="text-xs text-yellow-400">+{formatSats(balance.unconfirmed)} unconfirmed</p>
         )}
+        <p className="text-[10px] text-gray-500 mt-0.5">on BTC (SHA-256 chain)</p>
+        <p className="text-sm font-semibold text-purple-400 mt-2">
+          {xbtBalance && !xbtBalance.error ? formatSats(xbtBalance.total) : '—'}
+          <span className="text-[10px] font-normal text-gray-500 ml-1">on XBT (BLAKE2b chain)</span>
+        </p>
         {error && <p className="text-[10px] text-yellow-500 mt-1">API limited — showing cached data</p>}
         <div className="flex gap-2 mt-4">
           <button
@@ -110,6 +119,13 @@ export function WalletView({ publicKey, onBack }: Props) {
           >
             <Send className="w-3.5 h-3.5" />
             Send
+          </button>
+          <button
+            onClick={() => navigate('/send?mode=split&chain=xbt')}
+            title="Separate your BTC and XBT: self-send on XBT with SIGHASH_UNIFIED so later BTC spends cannot replay"
+            className="btn-secondary flex-1 flex items-center justify-center gap-1.5 text-sm py-2"
+          >
+            Split
           </button>
           <button
             onClick={() => receiveRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
@@ -131,10 +147,16 @@ export function WalletView({ publicKey, onBack }: Props) {
           {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-400" />}
           {copied ? 'Copied!' : 'Copy Address'}
         </button>
-        <a href={getMempoolAddressUrl(address)} target="_blank" rel="noopener"
-          className="flex items-center gap-1 text-xs text-bitcoin mt-2 hover:underline">
-          View on mempool.space <ExternalLink className="w-3 h-3" />
-        </a>
+        <div className="flex gap-4 mt-2">
+          <a href={getMempoolAddressUrl(address, 'btc')} target="_blank" rel="noopener"
+            className="flex items-center gap-1 text-xs text-bitcoin hover:underline">
+            BTC · {explorerHost('btc')} <ExternalLink className="w-3 h-3" />
+          </a>
+          <a href={getMempoolAddressUrl(address, 'xbt')} target="_blank" rel="noopener"
+            className="flex items-center gap-1 text-xs text-purple-400 hover:underline">
+            XBT · {explorerHost('xbt')} <ExternalLink className="w-3 h-3" />
+          </a>
+        </div>
       </div>
 
       <div className="flex items-center justify-between mb-2">

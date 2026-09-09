@@ -21,6 +21,7 @@ export function RequestSignatureWrapper() {
       initialRecipient={searchParams.get('to') || undefined}
       initialAmount={searchParams.get('amount') || undefined}
       initialMemo={searchParams.get('memo') || undefined}
+      initialChain={searchParams.get('chain') === 'xbt' ? 'xbt' : 'btc'}
     />
   );
 }

@@ -11,6 +11,7 @@ import { Transaction, getInputType, SigHash } from '@scure/btc-signer';
 import { hex, base64 } from '@scure/base';
 import { concatBytes } from '@noble/hashes/utils';
 import type { VaultData } from '@/lib/crypto/vault';
+import { isUnifiedSighash, unifiedKeyPathSighash } from './unified-sighash';
 
 export type BitcoinSignerSource = 'vault' | 'webbtc' | 'nip07-schnorr' | 'bitcoin-api' | 'nip46-amber';
 
@@ -168,9 +169,13 @@ export async function signPsbtViaNostrSchnorr(
       amount.push(wu.amount as bigint);
     }
 
-    const sighash = inputType.sighash ?? SigHash.DEFAULT;
+    const sighash = input.sighashType ?? inputType.sighash ?? SigHash.DEFAULT;
 
-    const msgHash = tx.preimageWitnessV1(idx, prevOutScript, sighash, amount);
+    // XBT (opted-in) inputs sign the unified message; the 65-byte signature
+    // then verifies only on the BLAKE2b chain.
+    const msgHash = isUnifiedSighash(sighash)
+      ? unifiedKeyPathSighash(tx, idx, sighash)
+      : tx.preimageWitnessV1(idx, prevOutScript, sighash, amount);
     const sigHex = await w.nostr.signSchnorr(hex.encode(msgHash));
     const sigBytes = hex.decode(sigHex.replace(/^0x/, ''));
     if (sigBytes.length !== 64) throw new Error('Signer returned an invalid Schnorr signature');

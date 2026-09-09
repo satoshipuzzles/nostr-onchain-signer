@@ -1,8 +1,16 @@
 /**
- * Esplora API integration — rate-limited, cached, multi-provider.
+ * Esplora API integration — rate-limited, cached, multi-provider, chain-aware.
+ *
+ * Every fetch takes a `chain` ('btc' | 'xbt', default 'btc' so existing
+ * callers keep their behaviour). BTC uses the public providers directly;
+ * XBT (mempool.guide) has no CORS headers and only speaks HTTP/1.1, so it is
+ * always reached through the Vercel proxy.
  */
 
 import { log } from '@/lib/utils/logger';
+import { CHAIN_INFO, explorerAddressUrl, explorerTxUrl, type Chain } from './chain';
+
+export type { Chain };
 
 const PROVIDERS = [
   'https://blockstream.info/api',
@@ -12,6 +20,9 @@ const PROVIDERS = [
 
 /** Vercel serverless proxy — extension uses this (has host_permission in manifest). */
 const VERCEL_MEMPOOL_PROXY = 'https://nostr-onchain-signer.vercel.app/api/mempool';
+
+/** Cache key namespace: BTC keeps the legacy bare-address keys, XBT is prefixed. */
+const ck = (chain: Chain, key: string) => (chain === 'btc' ? key : `${chain}:${key}`);
 
 const BALANCE_CACHE_KEY = 'balance_cache_v1';
 const TX_CACHE_KEY = 'tx_cache_v1';
@@ -137,24 +148,24 @@ function loadBalanceCache(): Record<string, BalanceCacheEntry> {
   } catch { return {}; }
 }
 
-export function getCachedBalance(address: string): BalanceCacheEntry | null {
-  return loadBalanceCache()[address] ?? null;
+export function getCachedBalance(address: string, chain: Chain = 'btc'): BalanceCacheEntry | null {
+  return loadBalanceCache()[ck(chain, address)] ?? null;
 }
 
-function setCachedBalance(address: string, entry: Omit<BalanceCacheEntry, 'updatedAt'>) {
+function setCachedBalance(address: string, entry: Omit<BalanceCacheEntry, 'updatedAt'>, chain: Chain = 'btc') {
   try {
     const all = loadBalanceCache();
-    all[address] = { ...entry, updatedAt: Date.now() };
+    all[ck(chain, address)] = { ...entry, updatedAt: Date.now() };
     localStorage.setItem(BALANCE_CACHE_KEY, JSON.stringify(all));
   } catch {}
 }
 
-function getCachedTransactions(address: string): Transaction[] | null {
+function getCachedTransactions(address: string, chain: Chain = 'btc'): Transaction[] | null {
   try {
     const raw = localStorage.getItem(TX_CACHE_KEY);
     if (!raw) return null;
     const all: Record<string, TxCacheEntry> = JSON.parse(raw);
-    const entry = all[address];
+    const entry = all[ck(chain, address)];
     if (!entry) return null;
     if (Date.now() - entry.updatedAt > TX_CACHE_TTL * 4) return null;
     return entry.txs;
@@ -164,12 +175,13 @@ function getCachedTransactions(address: string): Transaction[] | null {
 const MAX_CACHED_TXS_PER_ADDRESS = 50;
 const MAX_CACHED_ADDRESSES = 10;
 
-function setCachedTransactions(address: string, txs: Transaction[]) {
+function setCachedTransactions(address: string, txs: Transaction[], chain: Chain = 'btc') {
   try {
     const raw = localStorage.getItem(TX_CACHE_KEY);
     let all: Record<string, TxCacheEntry> = raw ? JSON.parse(raw) : {};
+    const key = ck(chain, address);
     // Cap per-address txs and total addresses to stay within mobile quota
-    all[address] = { txs: txs.slice(0, MAX_CACHED_TXS_PER_ADDRESS), updatedAt: Date.now() };
+    all[key] = { txs: txs.slice(0, MAX_CACHED_TXS_PER_ADDRESS), updatedAt: Date.now() };
     const addrs = Object.entries(all);
     if (addrs.length > MAX_CACHED_ADDRESSES) {
       addrs.sort((a, b) => b[1].updatedAt - a[1].updatedAt);
@@ -180,14 +192,14 @@ function setCachedTransactions(address: string, txs: Transaction[]) {
     } catch {
       // Quota exceeded: drop the whole tx cache and store just this address
       localStorage.removeItem(TX_CACHE_KEY);
-      localStorage.setItem(TX_CACHE_KEY, JSON.stringify({ [address]: all[address] }));
+      localStorage.setItem(TX_CACHE_KEY, JSON.stringify({ [key]: all[key] }));
     }
   } catch {}
 }
 
-export function getCachedBlocks<T>(): T[] | null {
+export function getCachedBlocks<T>(chain: Chain = 'btc'): T[] | null {
   try {
-    const raw = localStorage.getItem(BLOCKS_CACHE_KEY);
+    const raw = localStorage.getItem(ck(chain, BLOCKS_CACHE_KEY));
     if (!raw) return null;
     const { data, updatedAt } = JSON.parse(raw);
     if (Date.now() - updatedAt > BLOCKS_CACHE_TTL * 10) return data;
@@ -195,9 +207,9 @@ export function getCachedBlocks<T>(): T[] | null {
   } catch { return null; }
 }
 
-export function setCachedBlocks<T>(data: T[]) {
+export function setCachedBlocks<T>(data: T[], chain: Chain = 'btc') {
   try {
-    localStorage.setItem(BLOCKS_CACHE_KEY, JSON.stringify({ data, updatedAt: Date.now() }));
+    localStorage.setItem(ck(chain, BLOCKS_CACHE_KEY), JSON.stringify({ data, updatedAt: Date.now() }));
   } catch {}
 }
 
@@ -239,9 +251,10 @@ async function fetchWithTimeout(url: string, ms = 20_000, init?: RequestInit): P
   }
 }
 
-async function fetchViaProxy(path: string, ms: number, init?: RequestInit): Promise<Response> {
+async function fetchViaProxy(path: string, ms: number, init?: RequestInit, chain: Chain = 'btc'): Promise<Response> {
   const proxyBase = isWebDeploy() ? '/api/mempool' : VERCEL_MEMPOOL_PROXY;
-  const proxyPath = `${proxyBase}?path=${encodeURIComponent(path)}`;
+  const chainParam = chain === 'btc' ? '' : `chain=${chain}&`;
+  const proxyPath = `${proxyBase}?${chainParam}path=${encodeURIComponent(path)}`;
   return scheduleRequest(() => fetchWithTimeout(proxyPath, ms, init));
 }
 
@@ -269,8 +282,13 @@ async function fetchDirectProviders(path: string, ms: number, init?: RequestInit
   throw new Error(lastError);
 }
 
-async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Promise<Response> {
+async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit, chain: Chain = 'btc'): Promise<Response> {
   const isExtension = !isWebDeploy();
+
+  if (!CHAIN_INFO[chain].browserDirect) {
+    // XBT: proxy only (mempool.guide has no CORS and hangs on HTTP/2)
+    return fetchViaProxy(path, ms, init, chain);
+  }
 
   if (isExtension) {
     // Extension has host_permissions for Esplora APIs — use direct first (no broken chrome-extension:// proxy)
@@ -300,30 +318,32 @@ async function fetchEsplora(path: string, ms = 20_000, init?: RequestInit): Prom
 
 const inflightBalances = new Map<string, Promise<BalanceResult>>();
 
-export async function fetchBalance(address: string, opts?: { force?: boolean }): Promise<BalanceResult> {
-  const cached = getCachedBalance(address);
+export async function fetchBalance(address: string, opts?: { force?: boolean; chain?: Chain }): Promise<BalanceResult> {
+  const chain = opts?.chain ?? 'btc';
+  const cached = getCachedBalance(address, chain);
   const age = cached ? Date.now() - cached.updatedAt : Infinity;
 
   if (!opts?.force && cached && age < BALANCE_CACHE_TTL) {
     return balanceFromCache(cached);
   }
 
-  if (inflightBalances.has(address)) {
-    return inflightBalances.get(address)!;
+  const inflightKey = ck(chain, address);
+  if (inflightBalances.has(inflightKey)) {
+    return inflightBalances.get(inflightKey)!;
   }
 
   const promise = (async (): Promise<BalanceResult> => {
     try {
-      const res = await fetchEsplora(`/address/${address}`);
+      const res = await fetchEsplora(`/address/${address}`, 20_000, undefined, chain);
       const data: AddressInfo = await res.json();
       const confirmed = data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum;
       const unconfirmed = data.mempool_stats.funded_txo_sum - data.mempool_stats.spent_txo_sum;
       const result = { confirmed, unconfirmed, total: confirmed + unconfirmed };
-      setCachedBalance(address, result);
+      setCachedBalance(address, result, chain);
       return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Network error';
-      log.error('Mempool', `fetchBalance ${address.slice(0, 12)}...:`, msg);
+      log.error('Mempool', `fetchBalance[${chain}] ${address.slice(0, 12)}...:`, msg);
       if (cached && age < BALANCE_CACHE_STALE) {
         return balanceFromCache(cached, true);
       }
@@ -331,52 +351,67 @@ export async function fetchBalance(address: string, opts?: { force?: boolean }):
     }
   })();
 
-  inflightBalances.set(address, promise);
+  inflightBalances.set(inflightKey, promise);
   try {
     return await promise;
   } finally {
-    inflightBalances.delete(address);
+    inflightBalances.delete(inflightKey);
   }
 }
 
-export async function fetchTransactions(address: string, limit = 10, opts?: { force?: boolean }): Promise<Transaction[]> {
+export async function fetchTransactions(address: string, limit = 10, opts?: { force?: boolean; chain?: Chain }): Promise<Transaction[]> {
+  const chain = opts?.chain ?? 'btc';
   if (!opts?.force) {
-    const cached = getCachedTransactions(address);
+    const cached = getCachedTransactions(address, chain);
     if (cached) return cached.slice(0, limit);
   }
 
   try {
-    const res = await fetchEsplora(`/address/${address}/txs`);
+    const res = await fetchEsplora(`/address/${address}/txs`, 20_000, undefined, chain);
     if (!res.ok) {
-      const cached = getCachedTransactions(address);
+      const cached = getCachedTransactions(address, chain);
       return cached?.slice(0, limit) ?? [];
     }
     const txs: Transaction[] = await res.json();
-    setCachedTransactions(address, txs);
+    setCachedTransactions(address, txs, chain);
     return txs.slice(0, limit);
   } catch (err) {
     log.error('Mempool', 'fetchTransactions error:', err);
-    return getCachedTransactions(address)?.slice(0, limit) ?? [];
+    return getCachedTransactions(address, chain)?.slice(0, limit) ?? [];
   }
 }
 
-export async function fetchAddressTransactions(address: string): Promise<Transaction[]> {
-  return fetchTransactions(address, 1000, { force: true });
+export async function fetchAddressTransactions(address: string, chain: Chain = 'btc'): Promise<Transaction[]> {
+  return fetchTransactions(address, 1000, { force: true, chain });
 }
 
-export async function fetchUTXOs(address: string): Promise<UTXO[]> {
+export async function fetchUTXOs(address: string, chain: Chain = 'btc'): Promise<UTXO[]> {
   try {
-    const res = await fetchEsplora(`/address/${address}/utxo`);
+    const res = await fetchEsplora(`/address/${address}/utxo`, 20_000, undefined, chain);
     if (!res.ok) return [];
     return await res.json();
   } catch { return []; }
 }
 
-export async function fetchFeeEstimates(): Promise<{
+/**
+ * UTXOs of an address on BOTH chains — throws if either chain is unreachable,
+ * because a missing side would misclassify every coin as chain-exclusive.
+ */
+export async function fetchUTXOsBothChains(address: string): Promise<{ btc: UTXO[]; xbt: UTXO[] }> {
+  const [btcRes, xbtRes] = await Promise.all([
+    fetchEsplora(`/address/${address}/utxo`, 20_000, undefined, 'btc'),
+    fetchEsplora(`/address/${address}/utxo`, 20_000, undefined, 'xbt'),
+  ]);
+  if (!btcRes.ok) throw new Error(`BTC UTXO lookup failed (HTTP ${btcRes.status})`);
+  if (!xbtRes.ok) throw new Error(`XBT UTXO lookup failed (HTTP ${xbtRes.status})`);
+  return { btc: await btcRes.json(), xbt: await xbtRes.json() };
+}
+
+export async function fetchFeeEstimates(chain: Chain = 'btc'): Promise<{
   fastest: number; halfHour: number; hour: number; economy: number;
 }> {
   try {
-    const res = await fetchEsplora('/v1/fees/recommended');
+    const res = await fetchEsplora('/v1/fees/recommended', 20_000, undefined, chain);
     if (!res.ok) return { fastest: 10, halfHour: 5, hour: 3, economy: 1 };
     const data = await res.json();
     return { fastest: data.fastestFee, halfHour: data.halfHourFee, hour: data.hourFee, economy: data.economyFee };
@@ -387,16 +422,24 @@ export async function fetchFeeEstimates(): Promise<{
 
 export const MEMPOOL_API = PROVIDERS[0];
 
-export async function fetchMempoolApi(path: string, ms = 12_000): Promise<Response> {
-  return fetchEsplora(path, ms);
+export async function fetchMempoolApi(path: string, ms = 12_000, chain: Chain = 'btc'): Promise<Response> {
+  return fetchEsplora(path, ms, undefined, chain);
 }
 
-export function getMempoolAddressUrl(address: string): string {
-  return `https://mempool.space/address/${address}`;
+/** Confirmation status of a txid on one chain; null when that chain never saw it. */
+export async function fetchTxStatus(txid: string, chain: Chain): Promise<{ confirmed: boolean; block_height?: number; block_time?: number } | null> {
+  const res = await fetchEsplora(`/tx/${txid}/status`, 15_000, undefined, chain);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
-export function getMempoolTxUrl(txid: string): string {
-  return `https://mempool.space/tx/${txid}`;
+export function getMempoolAddressUrl(address: string, chain: Chain = 'btc'): string {
+  return explorerAddressUrl(chain, address);
+}
+
+export function getMempoolTxUrl(txid: string, chain: Chain = 'btc'): string {
+  return explorerTxUrl(chain, txid);
 }
 
 export function formatSats(sats: number): string {
@@ -406,14 +449,17 @@ export function formatSats(sats: number): string {
   return `${sats.toLocaleString()} sats`;
 }
 
-/** Broadcast a finalized raw transaction hex; returns txid. */
-export async function broadcastTransaction(rawTxHex: string): Promise<string> {
+/**
+ * Broadcast a finalized raw transaction hex to ONE chain; returns txid.
+ * The user's own node is used only when it follows that same chain.
+ */
+export async function broadcastTransaction(rawTxHex: string, chain: Chain = 'btc'): Promise<string> {
   const clean = rawTxHex.replace(/\s/g, '');
 
   try {
     const { loadBitcoinNodeConfig, broadcastViaNode } = await import('./node');
     const node = await loadBitcoinNodeConfig();
-    if (node?.enabled && node.rpcUrl) {
+    if (node?.enabled && node.rpcUrl && (node.chain ?? 'btc') === chain) {
       return await broadcastViaNode(node, clean);
     }
   } catch (err) {
@@ -424,7 +470,7 @@ export async function broadcastTransaction(rawTxHex: string): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
     body: clean,
-  });
+  }, chain);
   const text = (await res.text()).trim();
   if (!/^[a-f0-9]{64}$/i.test(text)) {
     throw new Error(text || 'Invalid broadcast response');
