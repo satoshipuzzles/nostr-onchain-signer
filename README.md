@@ -2,6 +2,19 @@
 
 A Chrome extension that acts as a dual-purpose signer for **Bitcoin on-chain transactions** and **Nostr events (NIP-07)**. Enables social multi-sig wallets derived from Nostr public keys.
 
+## Download & install
+
+**[Download the latest release](https://github.com/satoshipuzzles/nostr-onchain-signer/releases/latest)** (`nostr-onchain-signer-vX.Y.Z.zip`) · install guide: **[nostronchain.com/extension](https://nostronchain.com/extension)**
+
+1. Download the `.zip` from the latest release and unzip it.
+2. Open `chrome://extensions` (Chrome, Brave, Arc, Edge) and turn on **Developer mode**.
+3. Click **Load unpacked** and select the unzipped folder (the one containing `manifest.json`).
+4. Pin the extension and open it to create or import your key.
+
+Chromium browsers only for now (Manifest V3 service worker). Prefer a web app? The same signer runs at [client.nostronchain.com](https://client.nostronchain.com). Hardware-backed signing: [nostronchain.com/signer](https://nostronchain.com/signer).
+
+Build it yourself: `npm install && npm run build:ext` → load `dist/`.
+
 ## Core Features
 
 ### Dual Signer
