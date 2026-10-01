@@ -20,7 +20,7 @@ export interface VaultData {
   label?: string;
   /** True when pubkey comes from a browser extension (no nsec in vault). */
   externalSigner?: boolean;
-  signerType?: 'alby' | 'nos2x' | 'nip07' | 'nostr-onchain' | 'imported';
+  signerType?: 'alby' | 'nos2x' | 'nip07' | 'nostr-onchain' | 'imported' | 'nip46';
 }
 
 export interface EncryptedVault {

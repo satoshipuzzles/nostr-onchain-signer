@@ -225,9 +225,20 @@ export async function signPsbtViaNip46(psbtHex: string): Promise<SignedTxResult 
   if (!(await isRemoteSignerConnected())) return null;
 
   const psbtBase64 = base64.encode(hex.decode(psbtHex));
-  const signedBase64 = await signPsbtBase64ViaRemote(psbtBase64);
+  const signed = (await signPsbtBase64ViaRemote(psbtBase64)).trim();
 
-  const signedBytes = base64.decode(signedBase64.trim());
+  // The Pocket Signer bridge answers a single-sig request with the final raw
+  // transaction hex (it finalizes on the device); Amber and multisig partials
+  // come back as a base64 PSBT. Accept both.
+  if (/^[0-9a-fA-F]+$/.test(signed) && !signed.startsWith('cHNidP')) {
+    const raw = Transaction.fromRaw(hex.decode(signed), {
+      allowUnknownOutputs: true,
+      allowUnknownInputs: true,
+    });
+    return { txHex: signed.toLowerCase(), txid: raw.id, source: 'nip46-amber' };
+  }
+
+  const signedBytes = base64.decode(signed);
   const tx = Transaction.fromPSBT(signedBytes, {
     allowUnknownOutputs: true,
     allowUnknownInputs: true,

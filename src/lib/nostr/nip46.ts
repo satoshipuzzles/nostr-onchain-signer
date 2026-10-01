@@ -31,8 +31,8 @@ export interface RemoteSignerConnection {
 }
 
 const CLIENT_METADATA = {
-  name: 'Nostr Onchain Signer',
-  url: 'https://nostrfreaks.com',
+  name: 'Nostr Onchain',
+  url: 'https://nostronchain.com',
 };
 
 // Reuse one relay pool for all remote-signer traffic.
@@ -100,6 +100,28 @@ export async function connectRemoteSigner(
   await chrome.storage.local.set({ [STORAGE_KEY]: connection });
   activeSigner = signer;
   return connection;
+}
+
+/** Pubkey the persisted remote signer signs as, or null when none is paired. */
+export async function remoteUserPubkey(): Promise<string | null> {
+  const conn = await loadRemoteConnection();
+  return conn?.userPubkey ?? null;
+}
+
+/**
+ * Sign a Nostr event with the paired remote signer (NIP-46 `sign_event`).
+ * Used for accounts that were created by logging in with a bunker: the Pocket
+ * Signer bridge, Amber, nsec.app and friends all answer this.
+ */
+export async function signEventViaRemote(event: {
+  kind: number;
+  content: string;
+  tags: string[][];
+  created_at: number;
+}): Promise<{ id: string; pubkey: string; sig: string; kind: number; content: string; tags: string[][]; created_at: number }> {
+  const signer = await getActiveRemoteSigner();
+  if (!signer) throw new Error('No remote signer connected. Reconnect your bunker in Settings.');
+  return signer.signEvent(event);
 }
 
 /** Rehydrate (or reuse) the BunkerSigner for the persisted connection. */

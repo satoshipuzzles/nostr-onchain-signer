@@ -2,14 +2,15 @@ import { useState, useRef } from 'react';
 import { createMessageId } from '@/shared/messages';
 import { encryptVault, saveVault, clearVault, type VaultData } from '@/lib/crypto/vault';
 import { generateKeyPair, keyPairFromPrivateKey, nsecToPrivkey, isValidNsec, pubkeyToNpub, privkeyToNsec } from '@/lib/nostr/keys';
-import { Shield, Key, Import, Upload, AlertTriangle, FileUp, Globe } from 'lucide-react';
+import { Shield, Key, Import, Upload, AlertTriangle, FileUp, Globe, Radio } from 'lucide-react';
+import { connectRemoteSigner } from '@/lib/nostr/nip46';
 import { detectNostrSignerType, nip07SignerLabel } from '@/lib/bitcoin/psbt-external-sign';
 
 interface Props {
   onCreated: (publicKey: string, password: string) => void;
 }
 
-type Step = 'choose' | 'generate' | 'import' | 'import-file' | 'nip07' | 'password';
+type Step = 'choose' | 'generate' | 'import' | 'import-file' | 'nip07' | 'bunker' | 'password';
 
 export function Setup({ onCreated }: Props) {
   const [step, setStep] = useState<Step>('choose');
@@ -17,6 +18,7 @@ export function Setup({ onCreated }: Props) {
   const [privateKey, setPrivateKey] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [nsecInput, setNsecInput] = useState('');
+  const [bunkerInput, setBunkerInput] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -90,6 +92,36 @@ export function Setup({ onCreated }: Props) {
       setStep('password');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'NIP-07 login failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Login with a NIP-46 bunker: the Pocket Signer bridge, Amber, nsec.app…
+  // The remote signer holds the key; the vault only records the pubkey and
+  // every Nostr event / PSBT is sent to the bunker for approval on-device.
+  async function handleBunkerSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const uri = bunkerInput.trim();
+    if (!uri) return;
+    setLoading(true);
+    try {
+      const conn = await connectRemoteSigner(uri, (url) => {
+        window.open(url, '_blank', 'noopener');
+      });
+      setPublicKey(conn.userPubkey);
+      setKeysToImport([{
+        privateKeyHex: '',
+        publicKeyHex: conn.userPubkey,
+        createdAt: Date.now(),
+        label: 'Bunker (remote signer)',
+        externalSigner: true,
+        signerType: 'nip46',
+      }]);
+      setStep('password');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Bunker connection failed');
     } finally {
       setLoading(false);
     }
@@ -225,6 +257,13 @@ export function Setup({ onCreated }: Props) {
                 {loading ? 'Connecting...' : 'Login with NIP-07 Extension'}
               </button>
             )}
+            <button
+              onClick={() => { setStep('bunker'); setError(''); }}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              <Radio className="w-4 h-4" />
+              Login with Bunker (NIP-46)
+            </button>
             <button onClick={handleGenerate} className="btn-primary w-full flex items-center justify-center gap-2">
               <Key className="w-4 h-4" />
               Generate New Key
@@ -373,6 +412,46 @@ export function Setup({ onCreated }: Props) {
   }
 
   // ─── IMPORT NSEC STEP ───────────────────────────────────────
+
+  if (step === 'bunker') {
+    return (
+      <div className="min-h-screen flex flex-col p-6">
+        <h2 className="text-lg font-bold mb-1">Login with Bunker</h2>
+        <p className="text-gray-400 text-sm mb-4">
+          Paste a <code className="text-gray-300">bunker://</code> link. Your key stays on the signer:
+          the Pocket Signer bridge page (open <code className="text-gray-300">http://10.77.7.1</code> on the
+          computer it is plugged into), Amber, nsec.app, or any NIP-46 signer.
+        </p>
+        <form onSubmit={handleBunkerSubmit} className="space-y-4 flex-1">
+          <div>
+            <label className="text-sm text-gray-400 mb-1 block">bunker link</label>
+            <input
+              type="text"
+              value={bunkerInput}
+              onChange={(e) => { setBunkerInput(e.target.value); setError(''); }}
+              placeholder="bunker://<pubkey>?relay=wss://…&secret=…"
+              className="input-field font-mono text-sm"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              autoFocus
+            />
+          </div>
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          <button type="submit" disabled={loading || !bunkerInput.trim()} className="btn-primary w-full">
+            {loading ? 'Connecting to bunker…' : 'Connect'}
+          </button>
+          <button type="button" onClick={() => { setStep('choose'); setError(''); }} className="btn-secondary w-full">
+            Back
+          </button>
+          <p className="text-xs text-gray-500">
+            Bitcoin transactions are signed by the bunker too (NIP-46 <code>sign_psbt</code>): the
+            Pocket Signer shows every transaction on its screen for a tap to approve.
+          </p>
+        </form>
+      </div>
+    );
+  }
 
   if (step === 'import') {
     return (

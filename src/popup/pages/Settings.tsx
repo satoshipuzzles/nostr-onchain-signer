@@ -557,9 +557,9 @@ export function Settings() {
           <div className="flex items-center gap-3 mb-3">
             <Smartphone className={`w-5 h-5 ${amberNpub ? 'text-bitcoin' : 'text-gray-400'}`} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">Amber (Remote Signer)</p>
+              <p className="text-sm font-medium">Remote signer (NIP-46 bunker)</p>
               <p className="text-xs text-gray-500">
-                {amberNpub ? 'Paired — signs Nostr events & PSBTs on your phone' : 'Sign PSBTs with Amber over NIP-46 — key stays on your device'}
+                {amberNpub ? 'Paired — signs Nostr events & PSBTs on the signer' : 'Pocket Signer bridge, Amber, nsec.app — key stays on the signer'}
               </p>
             </div>
             {amberNpub && (
@@ -593,10 +593,10 @@ export function Settings() {
                 disabled={!amberUri.trim() || amberConnecting}
                 className="mt-2 w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
               >
-                {amberConnecting ? 'Pairing with Amber...' : 'Pair Amber'}
+                {amberConnecting ? 'Pairing…' : 'Pair bunker'}
               </button>
               <p className="text-[10px] text-gray-600 mt-2">
-                In Amber: Applications → add a new connection → copy the <code className="text-gray-500">bunker://</code> string here. Requires Amber v6.1.0+ for PSBT signing.
+                Pocket Signer: open its bridge page and copy the <code className="text-gray-500">bunker://</code> link. Amber: Applications → add a new connection (v6.1.0+ for PSBT signing).
               </p>
             </>
           )}

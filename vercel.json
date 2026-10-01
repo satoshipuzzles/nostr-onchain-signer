@@ -6,17 +6,74 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
       ]
     },
     {
       "source": "/assets/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/nostr.json",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, s-maxage=60"
+        }
       ]
     }
   ],
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/.well-known/nostr.json",
+      "destination": "https://nostr-onchain-eight.vercel.app/.well-known/nostr.json"
+    },
+    {
+      "source": "/api/nip05/:path*",
+      "destination": "https://nostr-onchain-eight.vercel.app/api/nip05/:path*"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/store",
+      "destination": "https://pocketsigner.com/store",
+      "permanent": false
+    },
+    {
+      "source": "/nip05",
+      "destination": "https://pocketsigner.com/nip05",
+      "permanent": false
+    },
+    {
+      "source": "/pocket-signer",
+      "destination": "https://pocketsigner.com/pocket-signer",
+      "permanent": false
+    },
+    {
+      "source": "/signer-link",
+      "destination": "https://pocketsigner.com/signer-link",
+      "permanent": false
+    },
+    {
+      "source": "/nostrtx",
+      "destination": "https://nostrtx.com/",
+      "permanent": false
+    }
   ]
 }

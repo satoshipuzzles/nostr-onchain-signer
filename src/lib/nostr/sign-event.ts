@@ -10,6 +10,28 @@ export async function signEventWithFallback(
   event: Omit<UnsignedEvent, 'pubkey'>,
   pubkey: string,
 ): Promise<SignedEvent> {
+  // A paired remote signer (bunker) that signs as this very pubkey is the
+  // user's chosen signer — ask it first. The Pocket Signer bridge, Amber and
+  // nsec.app all approve on the user's own device.
+  try {
+    const { remoteUserPubkey, signEventViaRemote } = await import('./nip46');
+    if ((await remoteUserPubkey()) === pubkey) {
+      const signed = await signEventViaRemote({
+        kind: event.kind,
+        content: event.content,
+        tags: event.tags,
+        created_at: event.created_at,
+      });
+      if (signed.pubkey !== pubkey) {
+        throw new Error(`Your bunker signed with a different key (${signed.pubkey.slice(0, 8)}...) than expected (${pubkey.slice(0, 8)}...).`);
+      }
+      return signed as SignedEvent;
+    }
+  } catch (remoteErr) {
+    const msg = remoteErr instanceof Error ? remoteErr.message : String(remoteErr);
+    throw new Error(`Bunker signing failed: ${msg}`);
+  }
+
   const response = await chrome.runtime.sendMessage({
     type: 'nip07:signEvent',
     payload: { event },
