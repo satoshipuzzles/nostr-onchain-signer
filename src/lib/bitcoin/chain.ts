@@ -9,9 +9,9 @@ const CHAIN_PREF_KEY = 'onchain_chain';
 export function loadChainPreference(): Chain {
   try {
     const v = localStorage.getItem(CHAIN_PREF_KEY);
-    return isChain(v) ? v : 'btc';
+    return isChain(v) ? v : 'xbt';   // XBT is the default chain across the suite
   } catch {
-    return 'btc';
+    return 'xbt';
   }
 }
 

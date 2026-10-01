@@ -74,6 +74,26 @@
       "source": "/nostrtx",
       "destination": "https://nostrtx.com/",
       "permanent": false
+    },
+    {
+      "source": "/signer",
+      "destination": "https://archive.nostronchain.com/signer",
+      "permanent": false
+    },
+    {
+      "source": "/extension",
+      "destination": "https://archive.nostronchain.com/extension",
+      "permanent": false
+    },
+    {
+      "source": "/extensions",
+      "destination": "https://archive.nostronchain.com/extension",
+      "permanent": false
+    },
+    {
+      "source": "/keys",
+      "destination": "https://archive.nostronchain.com/keys",
+      "permanent": false
     }
   ]
 }
