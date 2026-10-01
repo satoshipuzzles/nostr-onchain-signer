@@ -4,7 +4,7 @@ import { searchMentions, type MentionSearchResult } from '@/lib/nostr/mention-se
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
 import { safeImageUrl } from '@/lib/utils';
-import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { pubkeyToNpub, npubToPubkey, isValidNpub, isValidHexPubkey } from '@/lib/nostr/keys';
 
 type PickerTab = 'search' | 'wallets' | 'invoices';
 
@@ -81,6 +81,30 @@ export function RecipientPicker({ publicKey, value, onChange, onAmountSuggestion
     debounceRef.current = setTimeout(() => handleSearch(query), 300);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, handleSearch]);
+
+  // A pasted address, npub or hex pubkey is the recipient itself — never a
+  // relay search. Without this the Search tab only ever resolved people it
+  // could find on relays, and a bc1 address typed into it left the recipient
+  // empty with the Send button disabled.
+  function acceptDirectInput(raw: string): boolean {
+    const v = raw.trim().replace(/^nostr:/i, '').replace(/^bitcoin:/i, '');
+    if (/^(bc1[a-z0-9]{20,}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/i.test(v)) {
+      onChange(v.startsWith('BC1') || v.startsWith('bc1') ? v.toLowerCase() : v);
+      setSelectedLabel(`${v.slice(0, 10)}…${v.slice(-6)}`);
+      setQuery('');
+      setShowDropdown(false);
+      return true;
+    }
+    if (isValidNpub(v) || isValidHexPubkey(v)) {
+      const pubkey = isValidNpub(v) ? npubToPubkey(v) : v.toLowerCase();
+      onChange(pubkeyToTaprootAddress(pubkey));
+      setSelectedLabel(pubkeyToNpub(pubkey).slice(0, 16) + '...');
+      setQuery('');
+      setShowDropdown(false);
+      return true;
+    }
+    return false;
+  }
 
   function selectNostrUser(result: MentionSearchResult) {
     const address = pubkeyToTaprootAddress(result.pubkey);
@@ -161,6 +185,7 @@ export function RecipientPicker({ publicKey, value, onChange, onAmountSuggestion
           ref={inputRef}
           value={tab === 'search' ? query : value}
           onChange={(e) => {
+            if (acceptDirectInput(e.target.value)) return;
             if (tab === 'search') {
               setQuery(e.target.value);
             } else {
