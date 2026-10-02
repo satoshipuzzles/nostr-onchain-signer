@@ -17,7 +17,7 @@ import { npubToPubkey } from './keys';
 const CACHE_KEY = 'profile_cache_v2';
 const BATCH_DELAY_MS = 300;
 
-function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
+export function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
   return {
     pubkey: pubkey || raw.pubkey || '',
     name: typeof raw.name === 'string' ? raw.name : '',

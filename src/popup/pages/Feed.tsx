@@ -7,7 +7,7 @@ import {
 } from '@/lib/nostr/feed';
 import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-subscribe';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
-import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
+import { getCachedProfile, cacheProfiles, sanitizeProfile } from '@/lib/nostr/cache';
 import { loadMutedPubkeys } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
@@ -39,6 +39,42 @@ const LIVE_POLL_MS = 45_000;
 const ENGAGEMENT_BATCH = 40;
 
 export type { Engagement };
+
+// Relays that aggregate kind-0 profiles for everyone, so names resolve even
+// when the author's own relays are not in the read list.
+const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.nostr.band'];
+
+// Kind-0 lookup over the shared read pool: one subscription across relays,
+// newest profile per pubkey wins, settles at EOSE or after 6 seconds.
+function fetchProfilesViaPool(pubkeys: string[], relays: string[]): Promise<Map<string, ProfileMetadata>> {
+  return new Promise((resolve) => {
+    const newest = new Map<string, { created_at: number; profile: ProfileMetadata }>();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { close(); } catch { /* already closed */ }
+      const out = new Map<string, ProfileMetadata>();
+      for (const [pk, v] of newest) out.set(pk, v.profile);
+      resolve(out);
+    };
+    const timer = setTimeout(finish, 6000);
+    const close = subscribeEvents(
+      relays,
+      { kinds: [0], authors: pubkeys },
+      (ev) => {
+        if (ev.kind !== 0) return;
+        const prev = newest.get(ev.pubkey);
+        if (prev && prev.created_at >= ev.created_at) return;
+        try {
+          newest.set(ev.pubkey, { created_at: ev.created_at, profile: sanitizeProfile(JSON.parse(ev.content), ev.pubkey) });
+        } catch { /* unparsable profile */ }
+      },
+      finish,
+    );
+  });
+}
 
 function displayNameOf(profile: ProfileMetadata | undefined, pubkey: string): string {
   return profile?.displayName || profile?.name || `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}`;
@@ -145,9 +181,10 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           else uncached.push(pk);
         }));
         if (uncached.length > 0) {
-          const relays = (await getRelayUrls()).slice(0, 4);
-          const resolved = await resolveProfiles(uncached, relays);
+          const relays = [...new Set([...(await getRelayUrls()).slice(0, 4), ...PROFILE_RELAYS])];
+          const resolved = await fetchProfilesViaPool(uncached, relays);
           for (const [pk, profile] of resolved) found.set(pk, profile);
+          if (resolved.size > 0) cacheProfiles(resolved).catch(() => {});
         }
         if (found.size > 0) {
           setProfiles((prev) => {
@@ -213,7 +250,9 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
     const flush = () => {
       flushTimer = null;
       if (gen !== loadGenRef.current) return;
-      setNotes(mergeNotes([], collected, mutedRef.current));
+      const merged = mergeNotes([], collected, mutedRef.current);
+      setNotes(merged);
+      hydrate(merged);
     };
 
     cleanupRef.current = subscribeFeed(
