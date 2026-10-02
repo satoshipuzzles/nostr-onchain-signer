@@ -7,7 +7,7 @@ import {
 } from '@/lib/nostr/feed';
 import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-subscribe';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
-import { getCachedProfile, cacheProfiles, sanitizeProfile } from '@/lib/nostr/cache';
+import { loadCache, cacheProfiles, sanitizeProfile } from '@/lib/nostr/cache';
 import { loadMutedPubkeys } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
@@ -46,7 +46,11 @@ const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://relay.nostr.band'];
 
 // Kind-0 lookup over the shared read pool: one subscription across relays,
 // newest profile per pubkey wins, settles at EOSE or after 6 seconds.
-function fetchProfilesViaPool(pubkeys: string[], relays: string[]): Promise<Map<string, ProfileMetadata>> {
+function fetchProfilesViaPool(
+  pubkeys: string[],
+  relays: string[],
+  onProfile?: (pubkey: string, profile: ProfileMetadata) => void,
+): Promise<Map<string, ProfileMetadata>> {
   return new Promise((resolve) => {
     const newest = new Map<string, { created_at: number; profile: ProfileMetadata }>();
     let done = false;
@@ -68,7 +72,9 @@ function fetchProfilesViaPool(pubkeys: string[], relays: string[]): Promise<Map<
         const prev = newest.get(ev.pubkey);
         if (prev && prev.created_at >= ev.created_at) return;
         try {
-          newest.set(ev.pubkey, { created_at: ev.created_at, profile: sanitizeProfile(JSON.parse(ev.content), ev.pubkey) });
+          const profile = sanitizeProfile(JSON.parse(ev.content), ev.pubkey);
+          newest.set(ev.pubkey, { created_at: ev.created_at, profile });
+          onProfile?.(ev.pubkey, profile);
         } catch { /* unparsable profile */ }
       },
       finish,
@@ -173,30 +179,40 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
       try {
         const uncached: string[] = [];
         const found = new Map<string, ProfileMetadata>();
-        await Promise.all(batch.map(async (pk) => {
-          // The discovery cache holds placeholder entries with no name for
-          // pubkeys it has merely seen; those must still be fetched.
-          const cached = await getCachedProfile(pk);
+        // One cache read for the whole batch. The discovery cache holds
+        // placeholder entries with no name for pubkeys it has merely seen;
+        // those must still be fetched.
+        const cache = await loadCache();
+        for (const pk of batch) {
+          const cached = cache.profiles[pk]?.profile;
           if (cached && (cached.name || cached.displayName || cached.picture)) found.set(pk, cached);
           else uncached.push(pk);
-        }));
+        }
+        const paint = (entries: Map<string, ProfileMetadata>) => {
+          if (entries.size === 0) return;
+          setProfiles((prev) => {
+            const next = new Map(prev);
+            for (const [pk, profile] of entries) next.set(pk, profile);
+            return next;
+          });
+        };
+        paint(found);
         if (uncached.length > 0) {
           const relays = [...new Set([...(await getRelayUrls()).slice(0, 4), ...PROFILE_RELAYS])];
-          const resolved = await fetchProfilesViaPool(uncached, relays);
-          console.info('[feed] profiles batch', { requested: batch.length, cached: found.size, uncached: uncached.length, relays: relays.length, resolved: resolved.size });
+          // Paint names as they arrive rather than when the whole batch settles.
+          let pending = new Map<string, ProfileMetadata>();
+          let paintTimer: ReturnType<typeof setTimeout> | null = null;
+          const resolved = await fetchProfilesViaPool(uncached, relays, (pk, profile) => {
+            pending.set(pk, profile);
+            if (!paintTimer) paintTimer = setTimeout(() => { paintTimer = null; const p = pending; pending = new Map(); paint(p); }, 200);
+          });
+          if (paintTimer) { clearTimeout(paintTimer); paintTimer = null; }
+          paint(pending);
           for (const [pk, profile] of resolved) found.set(pk, profile);
           if (resolved.size > 0) cacheProfiles(resolved).catch(() => {});
         }
-        if (found.size > 0) {
-          setProfiles((prev) => {
-            const next = new Map(prev);
-            for (const [pk, profile] of found) next.set(pk, profile);
-            return next;
-          });
-        }
         for (const pk of batch) if (!found.has(pk)) profileFetchingRef.current.delete(pk);
-      } catch (err) {
-        console.warn('[feed] profiles batch failed', err);
+      } catch {
         for (const pk of batch) profileFetchingRef.current.delete(pk);
       }
     }, 250);
