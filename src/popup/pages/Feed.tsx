@@ -183,6 +183,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
         if (uncached.length > 0) {
           const relays = [...new Set([...(await getRelayUrls()).slice(0, 4), ...PROFILE_RELAYS])];
           const resolved = await fetchProfilesViaPool(uncached, relays);
+          console.info('[feed] profiles batch', { requested: batch.length, cached: found.size, uncached: uncached.length, relays: relays.length, resolved: resolved.size });
           for (const [pk, profile] of resolved) found.set(pk, profile);
           if (resolved.size > 0) cacheProfiles(resolved).catch(() => {});
         }
@@ -194,7 +195,8 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           });
         }
         for (const pk of batch) if (!found.has(pk)) profileFetchingRef.current.delete(pk);
-      } catch {
+      } catch (err) {
+        console.warn('[feed] profiles batch failed', err);
         for (const pk of batch) profileFetchingRef.current.delete(pk);
       }
     }, 250);
