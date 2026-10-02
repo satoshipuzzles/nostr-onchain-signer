@@ -53,3 +53,12 @@ export function subscribeRelays(options: RelaySubOptions): () => void {
 
   return () => closer.close();
 }
+
+/** Which read relays currently hold an open socket (url -> connected). */
+export function relayConnectionStatus(): Map<string, boolean> {
+  try {
+    return getReadPool().listConnectionStatus();
+  } catch {
+    return new Map();
+  }
+}

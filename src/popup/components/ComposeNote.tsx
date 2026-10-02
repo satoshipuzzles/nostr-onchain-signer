@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Loader2, ImageIcon, X, Search } from 'lucide-react';
 import { useAuth } from '@/popup/context/AuthContext';
-import { createMessageId } from '@/shared/messages';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 import { searchMentions, mentionLabel, type MentionSearchResult } from '@/lib/nostr/mention-search';
@@ -15,7 +14,7 @@ interface Props {
 }
 
 export function ComposeNote({ onPublished, mentionPubkey, placeholder }: Props) {
-  const { publicKey, myProfile } = useAuth();
+  const { publicKey, myProfile, confirmAndSign } = useAuth();
   const [content, setContent] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -148,25 +147,16 @@ export function ComposeNote({ onPublished, mentionPubkey, placeholder }: Props) 
         tags.push(['p', mentionPubkey]);
       }
 
-      const event = {
+      // confirmAndSign routes through the account's own signer: vault key,
+      // NIP-07 extension, or the paired NIP-46 bunker (Pocket Signer, Amber).
+      const signed = await confirmAndSign({
         kind: 1,
-        pubkey: publicKey,
         created_at: Math.floor(Date.now() / 1000),
         tags,
         content: fullContent,
-      };
-
-      const response = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event },
-        id: createMessageId(),
       });
 
-      if (response.error) {
-        throw new Error(response.error);
-      }
-
-      await publishWithFeedback(response.result, 'Note published!');
+      await publishWithFeedback(signed, 'Note published!');
       setContent('');
       setImageUrls([]);
       setMentionedPubkeys(new Map());

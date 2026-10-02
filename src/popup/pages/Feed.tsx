@@ -1,14 +1,21 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { subscribeFeed, subscribeEvents, type FeedNote, type NostrEvent, type FeedMode, type FeedFilter } from '@/lib/nostr/feed';
-import { DEFAULT_READ_RELAYS } from '@/lib/nostr/relay-subscribe';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import {
+  subscribeFeed, subscribeEvents, mergeNotes, parseRepost, longFormMeta, isLongForm,
+  tallyEngagement, loadFeedTab, saveFeedTab, loadFeedHashtag, saveFeedHashtag,
+  PRESET_HASHTAGS, FEED_MAX_NOTES, FEED_PAGE_SIZE, KIND_REPOST, EMPTY_ENGAGEMENT,
+  type FeedNote, type FeedMode, type FeedFilter, type Engagement,
+} from '@/lib/nostr/feed';
+import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-subscribe';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
 import { loadMutedPubkeys } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
+import { ComposeNote } from '@/popup/components/ComposeNote';
+import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonFeed } from '@/popup/components/Skeleton';
-import { Globe, Users, Image, Bitcoin, Hash, Layers, Loader2, Inbox } from 'lucide-react';
+import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio } from 'lucide-react';
 
 interface Props {
   publicKey: string;
@@ -20,153 +27,114 @@ interface Props {
 }
 
 const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
-  { mode: 'global', label: 'Global', icon: Globe },
   { mode: 'following', label: 'Following', icon: Users },
-  { mode: 'media', label: 'Media', icon: Image },
-  { mode: 'onchain', label: 'On-Chain', icon: Bitcoin },
-  { mode: 'hashtag', label: 'Hashtag', icon: Hash },
-  { mode: 'kind', label: 'Kind', icon: Layers },
+  { mode: 'global', label: 'Global', icon: Globe },
+  { mode: 'onchain', label: 'On-chain', icon: Bitcoin },
+  { mode: 'hashtag', label: '#Tags', icon: Hash },
 ];
 
-export interface Engagement {
-  replies: number;
-  reposts: number;
-  reactions: number;
-  zapSats: number;
+/** How often the page quietly asks the relays for anything newer. */
+const LIVE_POLL_MS = 45_000;
+/** Engagement is fetched for notes as they scroll into view, in batches. */
+const ENGAGEMENT_BATCH = 40;
+
+export type { Engagement };
+
+function displayNameOf(profile: ProfileMetadata | undefined, pubkey: string): string {
+  return profile?.displayName || profile?.name || `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}`;
+}
+
+function timeAgo(ts: number): string {
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d`;
+  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken }: Props) {
-  const [activeMode, setActiveMode] = useState<FeedMode>('global');
+  const [activeMode, setActiveMode] = useState<FeedMode>(() => loadFeedTab());
   const [notes, setNotes] = useState<FeedNote[]>([]);
+  const [pendingNew, setPendingNew] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hashtag, setHashtag] = useState('');
-  const [kindInput, setKindInput] = useState('');
-  const [hashtagSubmitted, setHashtagSubmitted] = useState('');
-  const [kindSubmitted, setKindSubmitted] = useState<number | null>(null);
+  const [exhausted, setExhausted] = useState(false);
+  const [hashtag, setHashtag] = useState(() => loadFeedHashtag());
+  const [hashtagSubmitted, setHashtagSubmitted] = useState(() => loadFeedHashtag());
   const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
   const [engagement, setEngagement] = useState<Map<string, Engagement>>(new Map());
+  const [showComposer, setShowComposer] = useState(false);
+  const [relayStatus, setRelayStatus] = useState<{ up: number; total: number }>({ up: 0, total: 0 });
+  const [loadError, setLoadError] = useState('');
+
   const cleanupRef = useRef<(() => void) | null>(null);
-  const engagementCleanupRef = useRef<(() => void) | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const listTopRef = useRef<HTMLDivElement>(null);
   const mutedRef = useRef<Set<string>>(new Set());
-  // Keep latest notes in a ref so pagination doesn't rely on a stale closure
   const notesRef = useRef<FeedNote[]>([]);
   notesRef.current = notes;
+  const relayUrlsRef = useRef<string[]>([]);
+  const loadGenRef = useRef(0);
 
+  // ─── Mute list ────────────────────────────────────────────────
   useEffect(() => {
-    loadMutedPubkeys().then((m) => { mutedRef.current = m; }).catch(() => {});
+    loadMutedPubkeys()
+      .then((m) => {
+        mutedRef.current = m;
+        // Anything that slipped in before the list arrived
+        setNotes((prev) => prev.filter((n) => !m.has(n.pubkey)));
+      })
+      .catch(() => {});
   }, []);
 
-  const loadFeed = useCallback(async (mode: FeedMode, append = false) => {
-    if (cleanupRef.current) {
-      cleanupRef.current();
-      cleanupRef.current = null;
-    }
-
-    if (!append) {
-      setNotes([]);
-      setLoading(true);
-    } else {
-      setLoadingMore(true);
-    }
-
+  // ─── Relays ───────────────────────────────────────────────────
+  const getRelayUrls = useCallback(async () => {
+    if (relayUrlsRef.current.length > 0) return relayUrlsRef.current;
     const relayList = await loadRelayList();
     const relays = getReadRelays(relayList);
-    const relayUrls = [...new Set([...relays, ...DEFAULT_READ_RELAYS])].slice(0, 8);
+    relayUrlsRef.current = [...new Set([...relays, ...DEFAULT_READ_RELAYS])].slice(0, 8);
+    return relayUrlsRef.current;
+  }, []);
 
-    if (mode === 'following' && followingPubkeys.size === 0) {
-      setNotes([]);
-      setLoading(false);
-      return;
-    }
-
-    const filter: FeedFilter = {
-      mode,
-      limit: 50,
-    };
-
-    if (mode === 'following') {
-      filter.pubkeys = [...new Set([publicKey, ...Array.from(followingPubkeys)])];
-    }
-
-    if (mode === 'hashtag') {
-      if (!hashtagSubmitted) {
-        setLoading(false);
-        return;
-      }
-      filter.hashtag = hashtagSubmitted;
-    }
-
-    if (mode === 'kind') {
-      if (kindSubmitted === null) {
-        setLoading(false);
-        return;
-      }
-      filter.kind = kindSubmitted;
-    }
-
-    const currentNotes = notesRef.current;
-    if (append && currentNotes.length > 0) {
-      const oldest = Math.min(...currentNotes.map((n) => n.created_at));
-      filter.until = oldest - 1;
-    }
-
-    const collected: FeedNote[] = [];
-
-    const cleanup = subscribeFeed(
-      relayUrls,
-      filter,
-      (note) => {
-        if (mutedRef.current.has(note.pubkey)) return;
-        collected.push(note);
-        const sorted = [...collected].sort((a, b) => b.created_at - a.created_at);
-        if (append) {
-          setNotes((prev) => {
-            const ids = new Set(prev.map((n) => n.id));
-            const newNotes = sorted.filter((n) => !ids.has(n.id));
-            return [...prev, ...newNotes];
-          });
-        } else {
-          setNotes(sorted);
+  useEffect(() => {
+    const tick = () => {
+      const status = relayConnectionStatus();
+      const wanted = relayUrlsRef.current;
+      if (wanted.length === 0) return;
+      let up = 0;
+      for (const url of wanted) {
+        const key = url.replace(/\/+$/, '');
+        for (const [u, ok] of status) {
+          if (ok && u.replace(/\/+$/, '') === key) { up += 1; break; }
         }
-        resolveProfile(note.pubkey);
-      },
-      () => {
-        setLoading(false);
-        setLoadingMore(false);
       }
-    );
+      setRelayStatus({ up, total: wanted.length });
+    };
+    const t = setInterval(tick, 3000);
+    tick();
+    return () => clearInterval(t);
+  }, []);
 
-    cleanupRef.current = cleanup;
-  }, [followingPubkeys, hashtagSubmitted, kindSubmitted, publicKey]);
-
-  const followingKey = Array.from(followingPubkeys).sort().join(',');
-
-  const profileFetchingRef = useRef<Set<string>>(new Set());
-
+  // ─── Profiles (batched, cached) ───────────────────────────────
   const profilesRef = useRef<Map<string, ProfileMetadata>>(new Map());
   profilesRef.current = profiles;
+  const profileFetchingRef = useRef<Set<string>>(new Set());
   const pendingProfileRef = useRef<Set<string>>(new Set());
   const profileFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Batches unknown pubkeys and resolves them in one relay query instead of
-  // opening a subscription per author.
   const resolveProfile = useCallback((pubkey: string) => {
     if (profilesRef.current.has(pubkey) || profileFetchingRef.current.has(pubkey)) return;
     profileFetchingRef.current.add(pubkey);
     pendingProfileRef.current.add(pubkey);
-
     if (profileFlushTimerRef.current) return;
     profileFlushTimerRef.current = setTimeout(async () => {
       profileFlushTimerRef.current = null;
       const batch = Array.from(pendingProfileRef.current);
       pendingProfileRef.current.clear();
       if (batch.length === 0) return;
-
       try {
-        // Serve cached profiles immediately, then fetch the rest in one query
         const uncached: string[] = [];
         const found = new Map<string, ProfileMetadata>();
         await Promise.all(batch.map(async (pk) => {
@@ -174,17 +142,11 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           if (cached) found.set(pk, cached);
           else uncached.push(pk);
         }));
-
         if (uncached.length > 0) {
-          const relayList = await loadRelayList();
-          const relays = getReadRelays(relayList);
-          const relayUrls = relays.length > 0
-            ? relays.slice(0, 3)
-            : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://purplepag.es'];
-          const resolved = await resolveProfiles(uncached, relayUrls);
+          const relays = (await getRelayUrls()).slice(0, 4);
+          const resolved = await resolveProfiles(uncached, relays);
           for (const [pk, profile] of resolved) found.set(pk, profile);
         }
-
         if (found.size > 0) {
           setProfiles((prev) => {
             const next = new Map(prev);
@@ -192,271 +154,502 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
             return next;
           });
         }
-        // Allow retry for pubkeys that didn't resolve
-        for (const pk of batch) {
-          if (!found.has(pk)) profileFetchingRef.current.delete(pk);
-        }
+        for (const pk of batch) if (!found.has(pk)) profileFetchingRef.current.delete(pk);
       } catch {
         for (const pk of batch) profileFetchingRef.current.delete(pk);
       }
     }, 250);
-  }, []);
+  }, [getRelayUrls]);
 
   useEffect(() => () => {
     if (profileFlushTimerRef.current) clearTimeout(profileFlushTimerRef.current);
   }, []);
 
+  // ─── Filter for the current tab ───────────────────────────────
+  const followingKey = Array.from(followingPubkeys).sort().join(',');
+
+  const buildFilter = useCallback((mode: FeedMode): FeedFilter | null => {
+    const filter: FeedFilter = { mode, limit: FEED_PAGE_SIZE };
+    if (mode === 'following') {
+      if (followingPubkeys.size === 0) return null;
+      filter.pubkeys = [...new Set([publicKey, ...Array.from(followingPubkeys)])];
+    }
+    if (mode === 'hashtag') {
+      if (!hashtagSubmitted.trim()) return null;
+      filter.hashtag = hashtagSubmitted.trim();
+    }
+    return filter;
+  }, [followingKey, hashtagSubmitted, publicKey]);
+
+  const hydrate = useCallback((list: FeedNote[]) => {
+    for (const n of list) {
+      resolveProfile(n.pubkey);
+      const rp = parseRepost(n);
+      if (rp?.inner) resolveProfile(rp.inner.pubkey);
+    }
+  }, [resolveProfile]);
+
+  // ─── Initial load / tab change ────────────────────────────────
+  const loadFeed = useCallback(async (mode: FeedMode) => {
+    const gen = ++loadGenRef.current;
+    if (cleanupRef.current) { cleanupRef.current(); cleanupRef.current = null; }
+    setNotes([]);
+    setPendingNew([]);
+    setEngagement(new Map());
+    setExhausted(false);
+    setLoadError('');
+    setLoading(true);
+
+    const filter = buildFilter(mode);
+    if (!filter) { setLoading(false); return; }
+
+    const relayUrls = await getRelayUrls();
+    if (gen !== loadGenRef.current) return;
+
+    const collected: FeedNote[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      flushTimer = null;
+      if (gen !== loadGenRef.current) return;
+      setNotes(mergeNotes([], collected, mutedRef.current));
+    };
+
+    cleanupRef.current = subscribeFeed(
+      relayUrls,
+      filter,
+      (note) => {
+        if (mutedRef.current.has(note.pubkey)) return;
+        collected.push(note);
+        if (!flushTimer) flushTimer = setTimeout(flush, 120);
+      },
+      () => {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        if (gen !== loadGenRef.current) return;
+        const merged = mergeNotes([], collected, mutedRef.current);
+        setNotes(merged);
+        hydrate(merged);
+        setLoading(false);
+        if (merged.length === 0) {
+          const status = relayConnectionStatus();
+          const anyUp = relayUrls.some((u) => [...status].some(([k, ok]) => ok && k.replace(/\/+$/, '') === u.replace(/\/+$/, '')));
+          if (!anyUp) setLoadError('None of your relays answered.');
+        }
+      },
+    );
+  }, [buildFilter, getRelayUrls, hydrate]);
+
   useEffect(() => {
     loadFeed(activeMode);
-    return () => {
-      if (cleanupRef.current) cleanupRef.current();
-    };
-  }, [activeMode, hashtagSubmitted, kindSubmitted, followingKey, loadFeed, refreshToken]);
+    return () => { if (cleanupRef.current) cleanupRef.current(); };
+  }, [activeMode, loadFeed, refreshToken]);
 
-  // Fetch engagement after initial feed load settles
+  // ─── Quiet polling for new notes (buffered, never jumps the list) ──
   useEffect(() => {
-    if (notes.length === 0 || loading) return;
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+    const filter = buildFilter(activeMode);
+    if (!filter) return;
 
-    if (engagementCleanupRef.current) {
-      engagementCleanupRef.current();
-      engagementCleanupRef.current = null;
-    }
-
-    const noteIds = notes.map((n) => n.id);
-    const engMap = new Map<string, Engagement>();
-    for (const id of noteIds) {
-      engMap.set(id, { replies: 0, reposts: 0, reactions: 0, zapSats: 0 });
-    }
-
-    // Throttle engagement re-renders: relays can stream hundreds of
-    // reactions in a burst, and re-rendering the feed per event is slow.
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleFlush = () => {
-      if (flushTimer) return;
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        setEngagement(new Map(engMap));
-      }, 300);
-    };
-
-    async function fetchEngagement() {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays.slice(0, 3)
-        : ['wss://relay.damus.io', 'wss://nos.lol'];
-
-      const cleanup = subscribeEvents(
+    pollTimerRef.current = setInterval(async () => {
+      if (document.hidden) return;
+      const current = notesRef.current;
+      const newest = current.length > 0 ? Math.max(...current.map((n) => n.created_at)) : Math.floor(Date.now() / 1000) - 300;
+      const relayUrls = await getRelayUrls();
+      const found: FeedNote[] = [];
+      const close = subscribeFeed(
         relayUrls,
-        { kinds: [1, 6, 7, 9735], '#e': noteIds, limit: 500 },
-        (event: NostrEvent) => {
-          const eTag = event.tags.find((t) => t[0] === 'e');
-          if (!eTag) return;
-          const targetId = eTag[1];
-          const entry = engMap.get(targetId);
-          if (!entry) return;
-
-          if (event.kind === 1) entry.replies++;
-          else if (event.kind === 6) entry.reposts++;
-          else if (event.kind === 7) entry.reactions++;
-          else if (event.kind === 9735) {
-            let amount = 0;
-            const descTag = event.tags.find((t) => t[0] === 'description');
-            if (descTag && descTag[1]) {
-              try {
-                const zapReq = JSON.parse(descTag[1]);
-                const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
-                if (amountTag) amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
-              } catch { /* ignore */ }
-            }
-            if (amount === 0) {
-              const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
-              if (bolt11Tag && bolt11Tag[1]) {
-                const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
-                if (match) {
-                  const value = parseInt(match[1], 10);
-                  const unit = match[2];
-                  if (unit === 'm') amount = value * 100_000;
-                  else if (unit === 'u') amount = value * 100;
-                  else if (unit === 'n') amount = Math.floor(value / 10);
-                  else if (unit === 'p') amount = Math.floor(value / 10_000);
-                  else amount = value * 100_000_000;
-                }
-              }
-            }
-            entry.zapSats += amount;
+        { ...filter, since: newest + 1, limit: 60 },
+        (note) => { if (!mutedRef.current.has(note.pubkey)) found.push(note); },
+        () => {
+          close();
+          if (found.length === 0) return;
+          const known = new Set(notesRef.current.map((n) => n.id));
+          const fresh = found.filter((n) => !known.has(n.id) && n.pubkey !== publicKey);
+          const mine = found.filter((n) => !known.has(n.id) && n.pubkey === publicKey);
+          // Your own posts go straight in; other people's wait behind the pill.
+          if (mine.length > 0) setNotes((prev) => mergeNotes(prev, mine, mutedRef.current));
+          if (fresh.length > 0) {
+            setPendingNew((prev) => mergeNotes(prev, fresh, mutedRef.current));
+            hydrate(fresh);
           }
-
-          scheduleFlush();
         },
       );
+    }, LIVE_POLL_MS);
 
-      engagementCleanupRef.current = cleanup;
-    }
+    return () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current); };
+  }, [activeMode, buildFilter, getRelayUrls, hydrate, publicKey]);
 
-    fetchEngagement();
+  function showPending() {
+    setNotes((prev) => mergeNotes(prev, pendingNew, mutedRef.current));
+    setPendingNew([]);
+    listTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
-    return () => {
-      if (flushTimer) clearTimeout(flushTimer);
-      if (engagementCleanupRef.current) {
-        engagementCleanupRef.current();
-        engagementCleanupRef.current = null;
+  // ─── Load older ───────────────────────────────────────────────
+  async function handleLoadMore() {
+    if (loadingMore || exhausted) return;
+    const filter = buildFilter(activeMode);
+    const current = notesRef.current;
+    if (!filter || current.length === 0) return;
+    if (current.length >= FEED_MAX_NOTES) { setExhausted(true); return; }
+    setLoadingMore(true);
+    const oldest = Math.min(...current.map((n) => n.created_at));
+    const relayUrls = await getRelayUrls();
+    const found: FeedNote[] = [];
+    const close = subscribeFeed(
+      relayUrls,
+      { ...filter, until: oldest - 1 },
+      (note) => { if (!mutedRef.current.has(note.pubkey)) found.push(note); },
+      () => {
+        close();
+        const known = new Set(notesRef.current.map((n) => n.id));
+        const older = found.filter((n) => !known.has(n.id));
+        if (older.length === 0) setExhausted(true);
+        else {
+          setNotes((prev) => mergeNotes(prev, older, mutedRef.current).slice(0, FEED_MAX_NOTES));
+          hydrate(older);
+        }
+        setLoadingMore(false);
+      },
+    );
+  }
+
+  // ─── Engagement for visible notes only ────────────────────────
+  const engagementFetchedRef = useRef<Set<string>>(new Set());
+  const visibleRef = useRef<Set<string>>(new Set());
+  const engagementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const engagementClosersRef = useRef<(() => void)[]>([]);
+  const engagementMapRef = useRef<Map<string, Engagement>>(new Map());
+
+  useEffect(() => {
+    engagementFetchedRef.current = new Set();
+    engagementMapRef.current = new Map();
+    for (const close of engagementClosersRef.current) close();
+    engagementClosersRef.current = [];
+  }, [activeMode, refreshToken]);
+
+  const scheduleEngagement = useCallback(() => {
+    if (engagementTimerRef.current) return;
+    engagementTimerRef.current = setTimeout(async () => {
+      engagementTimerRef.current = null;
+      const ids: string[] = [];
+      for (const id of visibleRef.current) {
+        if (!engagementFetchedRef.current.has(id)) ids.push(id);
+        if (ids.length >= ENGAGEMENT_BATCH) break;
       }
-    };
-  }, [loading, notes.map((n) => n.id).join(',')]);
+      if (ids.length === 0) return;
+      for (const id of ids) {
+        engagementFetchedRef.current.add(id);
+        if (!engagementMapRef.current.has(id)) engagementMapRef.current.set(id, { ...EMPTY_ENGAGEMENT });
+      }
+      const relayUrls = (await getRelayUrls()).slice(0, 4);
+      let flush: ReturnType<typeof setTimeout> | null = null;
+      const close = subscribeEvents(
+        relayUrls,
+        { kinds: [1, KIND_REPOST, 7, 9735], '#e': ids, limit: 400 },
+        (event) => {
+          if (tallyEngagement(event, engagementMapRef.current) && !flush) {
+            flush = setTimeout(() => {
+              flush = null;
+              setEngagement(new Map(engagementMapRef.current));
+            }, 300);
+          }
+        },
+        () => setEngagement(new Map(engagementMapRef.current)),
+      );
+      engagementClosersRef.current.push(close);
+      // More may have scrolled into view meanwhile
+      if ([...visibleRef.current].some((id) => !engagementFetchedRef.current.has(id))) scheduleEngagement();
+    }, 400);
+  }, [getRelayUrls]);
 
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  useEffect(() => {
+    observerRef.current = new IntersectionObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.noteId;
+        if (!id) continue;
+        if (entry.isIntersecting) { visibleRef.current.add(id); changed = true; }
+        else visibleRef.current.delete(id);
+      }
+      if (changed) scheduleEngagement();
+    }, { rootMargin: '300px 0px' });
+    return () => {
+      observerRef.current?.disconnect();
+      if (engagementTimerRef.current) clearTimeout(engagementTimerRef.current);
+      for (const close of engagementClosersRef.current) close();
+    };
+  }, [scheduleEngagement]);
+
+  const observe = useCallback((el: HTMLDivElement | null) => {
+    if (el && observerRef.current) observerRef.current.observe(el);
+  }, []);
+
+  // ─── Tab handling ─────────────────────────────────────────────
   function handleTabChange(mode: FeedMode) {
+    if (mode === activeMode) return;
     setActiveMode(mode);
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
-    }
+    saveFeedTab(mode);
+    setShowComposer(false);
+    listTopRef.current?.scrollIntoView({ block: 'start' });
+  }
+
+  function submitHashtag(tag: string) {
+    const clean = tag.trim().replace(/^#/, '').toLowerCase();
+    setHashtag(clean);
+    setHashtagSubmitted(clean);
+    saveFeedHashtag(clean);
   }
 
   function handleHashtagSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (hashtag.trim()) {
-      setHashtagSubmitted(hashtag.trim());
+    if (hashtag.trim()) submitHashtag(hashtag);
+  }
+
+  // ─── Derived view state ───────────────────────────────────────
+  const needsHashtag = activeMode === 'hashtag' && !hashtagSubmitted;
+  const noFollows = activeMode === 'following' && followingPubkeys.size === 0;
+  const showEmptyState = !loading && notes.length === 0 && !needsHashtag && !noFollows;
+  const canCompose = activeMode === 'following' || activeMode === 'global';
+
+  const emptyMessage = useMemo(() => {
+    if (loadError) return loadError + ' Check Settings → Relays, or try again.';
+    switch (activeMode) {
+      case 'following': return 'Nobody you follow has posted in a while.';
+      case 'onchain': return 'No on-chain notes found yet — notes tagged #xbt, #onchain or #bip110 and payment invoices show up here.';
+      case 'hashtag': return `Nothing tagged #${hashtagSubmitted} on your relays.`;
+      default: return 'No notes came back from your relays.';
     }
-  }
-
-  function handleKindSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const num = parseInt(kindInput, 10);
-    if (!isNaN(num) && num >= 0) {
-      setKindSubmitted(num);
-    }
-  }
-
-  function handleLoadMore() {
-    loadFeed(activeMode, true);
-  }
-
-  const showEmptyState = !loading && notes.length === 0;
-  const needsInput = (activeMode === 'hashtag' && !hashtagSubmitted) ||
-                     (activeMode === 'kind' && kindSubmitted === null);
+  }, [activeMode, hashtagSubmitted, loadError]);
 
   return (
     <div className="flex flex-col min-h-full">
       {/* Sticky tab bar */}
       <div className="sticky top-0 z-20 bg-black/90 backdrop-blur-md border-b border-white/5">
-        <div className="flex gap-1 overflow-x-auto scrollbar-none px-3 py-2">
-          {TABS.map(({ mode, label, icon: Icon }) => (
-            <button
-              key={mode}
-              onClick={() => handleTabChange(mode)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                activeMode === mode
-                  ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30'
-                  : 'text-gray-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {label}
-            </button>
-          ))}
+        <div className="flex items-center gap-1 px-3 py-2">
+          <div className="flex gap-1 overflow-x-auto scrollbar-none flex-1">
+            {TABS.map(({ mode, label, icon: Icon }) => (
+              <button
+                key={mode}
+                onClick={() => handleTabChange(mode)}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[13px] font-medium whitespace-nowrap transition-all ${
+                  activeMode === mode
+                    ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30'
+                    : 'text-gray-400 hover:text-white hover:bg-white/5 border border-transparent'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+              </button>
+            ))}
+          </div>
+          <span
+            className={`flex items-center gap-1 text-[11px] whitespace-nowrap pl-2 ${
+              relayStatus.total === 0 ? 'text-gray-600' : relayStatus.up === 0 ? 'text-red-400' : 'text-gray-500'
+            }`}
+            title="Relays connected"
+          >
+            <Radio className="w-3 h-3" />
+            {relayStatus.total > 0 ? `${relayStatus.up}/${relayStatus.total} relays` : '…'}
+          </span>
         </div>
 
-        {/* Hashtag Input */}
+        {/* Hashtag chips + box */}
         {activeMode === 'hashtag' && (
-          <form onSubmit={handleHashtagSubmit} className="px-3 pb-2">
-            <div className="flex gap-2">
+          <div className="px-3 pb-2.5">
+            <div className="flex gap-1.5 flex-wrap mb-2">
+              {PRESET_HASHTAGS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => submitHashtag(t)}
+                  className={`px-3 py-1.5 rounded-full text-[13px] font-medium border transition-colors ${
+                    hashtagSubmitted === t
+                      ? 'bg-purple-600/25 text-purple-200 border-purple-500/40'
+                      : 'bg-white/5 text-gray-300 border-white/10 hover:border-white/25'
+                  }`}
+                >
+                  #{t}
+                </button>
+              ))}
+            </div>
+            <form onSubmit={handleHashtagSubmit} className="flex gap-2">
               <input
                 type="text"
                 value={hashtag}
                 onChange={(e) => setHashtag(e.target.value)}
-                placeholder="Enter hashtag (e.g. bitcoin)"
+                placeholder="any hashtag, e.g. lightning"
                 className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm outline-none focus:border-purple-500/50"
               />
-              <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-xs font-medium">
-                Search
+              <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-[13px] font-medium">
+                Show
               </button>
-            </div>
-          </form>
-        )}
-
-        {/* Kind Input */}
-        {activeMode === 'kind' && (
-          <form onSubmit={handleKindSubmit} className="px-3 pb-2">
-            <div className="flex gap-2">
-              <input
-                type="number"
-                value={kindInput}
-                onChange={(e) => setKindInput(e.target.value)}
-                placeholder="Kind number (e.g. 30023)"
-                className="flex-1 bg-white/5 border border-white/10 rounded-full px-4 py-2 text-sm outline-none focus:border-purple-500/50"
-                min="0"
-              />
-              <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-xs font-medium">
-                Search
-              </button>
-            </div>
-          </form>
+            </form>
+          </div>
         )}
       </div>
 
-      {/* Feed Content */}
-      <div ref={scrollRef}>
+      <div ref={listTopRef} />
+
+      {/* Composer */}
+      {canCompose && (
+        <div className="px-4 pt-3">
+          {showComposer ? (
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+              <ComposeNote
+                onPublished={() => {
+                  setShowComposer(false);
+                  // Fetch our own fresh note straight away rather than waiting for the poll
+                  setTimeout(async () => {
+                    const filter = buildFilter(activeMode);
+                    if (!filter) return;
+                    const relayUrls = await getRelayUrls();
+                    const found: FeedNote[] = [];
+                    const close = subscribeFeed(
+                      relayUrls,
+                      { mode: 'following', pubkeys: [publicKey], limit: 5 },
+                      (n) => found.push(n),
+                      () => { close(); if (found.length) setNotes((prev) => mergeNotes(prev, found, mutedRef.current)); },
+                    );
+                  }, 1500);
+                }}
+              />
+              <button onClick={() => setShowComposer(false)} className="mt-2 text-xs text-gray-500 hover:text-gray-300">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowComposer(true)}
+              className="w-full flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] px-4 py-3 text-left transition-colors"
+            >
+              <PenLine className="w-4 h-4 text-purple-300 flex-shrink-0" />
+              <span className="text-[15px] text-gray-400">What's on your mind?</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* New notes pill */}
+      {pendingNew.length > 0 && (
+        <div className="sticky top-[52px] z-10 flex justify-center pt-3 pointer-events-none">
+          <button
+            onClick={showPending}
+            className="pointer-events-auto flex items-center gap-1.5 px-4 py-2 rounded-full bg-purple-600 text-white text-[13px] font-semibold shadow-lg shadow-purple-500/30 hover:bg-purple-500 transition-colors"
+          >
+            <ArrowUp className="w-3.5 h-3.5" />
+            {pendingNew.length} new {pendingNew.length === 1 ? 'note' : 'notes'}
+          </button>
+        </div>
+      )}
+
+      {/* Feed content */}
+      <div>
         {loading && notes.length === 0 && <SkeletonFeed count={7} />}
 
-        {!loading && needsInput && (
-          <div className="flex flex-col items-center justify-center py-16">
-            {activeMode === 'hashtag' ? (
-              <>
-                <Hash className="w-12 h-12 text-gray-700 mb-3" />
-                <p className="text-sm text-gray-400 text-center">Enter a hashtag to search</p>
-              </>
-            ) : (
-              <>
-                <Layers className="w-12 h-12 text-gray-700 mb-3" />
-                <p className="text-sm text-gray-400 text-center">Enter a kind number</p>
-              </>
-            )}
+        {!loading && needsHashtag && (
+          <div className="flex flex-col items-center justify-center py-16 px-6">
+            <Hash className="w-10 h-10 text-gray-700 mb-3" />
+            <p className="text-[15px] text-gray-400 text-center">Pick a tag above, or type one, to see what people are saying.</p>
           </div>
         )}
 
-        {showEmptyState && !needsInput && (
-          <div className="flex flex-col items-center justify-center py-16">
-            <Inbox className="w-12 h-12 text-gray-700 mb-3" />
-            <p className="text-sm text-gray-400 text-center">
-              {activeMode === 'following' && followingPubkeys.size === 0
-                ? 'Follow some people to see their notes here'
-                : 'No notes found'}
-            </p>
+        {!loading && noFollows && (
+          <div className="flex flex-col items-center justify-center py-16 px-6">
+            <Users className="w-10 h-10 text-gray-700 mb-3" />
+            <p className="text-[15px] text-gray-400 text-center">You don't follow anyone yet — find people in Discover, or read Global meanwhile.</p>
+            <button onClick={() => handleTabChange('global')} className="mt-4 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-[13px] text-gray-200 hover:bg-white/10">
+              Open Global
+            </button>
           </div>
         )}
 
-        {/* Notes — full-width cards */}
+        {showEmptyState && (
+          <div className="flex flex-col items-center justify-center py-16 px-6">
+            <Inbox className="w-10 h-10 text-gray-700 mb-3" />
+            <p className="text-[15px] text-gray-400 text-center">{emptyMessage}</p>
+            <button
+              onClick={() => loadFeed(activeMode)}
+              className="mt-4 flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-[13px] text-gray-200 hover:bg-white/10"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Try again
+            </button>
+          </div>
+        )}
+
         <div className="divide-y divide-white/5">
-          {notes.map((note) => (
-            <div key={note.id} className="px-4 py-3">
-              <NoteCard
-                note={note}
-                profile={profiles.get(note.pubkey)}
-                engagement={engagement.get(note.id)}
-                onSelectNote={setSelectedNote}
-                onViewProfile={onViewProfile}
-              />
-            </div>
-          ))}
+          {notes.map((note) => {
+            const repost = parseRepost(note);
+            if (repost) {
+              const byName = displayNameOf(profiles.get(repost.by), repost.by);
+              return (
+                <div key={note.id} className="px-4 py-3" data-note-id={repost.inner?.id ?? note.id} ref={observe}>
+                  <button
+                    onClick={() => onViewProfile?.(repost.by)}
+                    className="flex items-center gap-1.5 text-[12px] text-gray-500 hover:text-gray-300 mb-2 ml-1"
+                  >
+                    <Repeat2 className="w-3.5 h-3.5 text-green-500/80" />
+                    {byName} reposted · {timeAgo(note.created_at)}
+                  </button>
+                  {repost.inner ? (
+                    <NoteCard
+                      note={repost.inner}
+                      profile={profiles.get(repost.inner.pubkey)}
+                      engagement={engagement.get(repost.inner.id)}
+                      onSelectNote={setSelectedNote}
+                      onViewProfile={onViewProfile}
+                    />
+                  ) : (
+                    <p className="text-[13px] text-gray-500 ml-1">
+                      Reposted a note this relay set doesn't have{repost.innerId ? ` (${repost.innerId.slice(0, 12)}…)` : ''}.
+                    </p>
+                  )}
+                </div>
+              );
+            }
+
+            if (isLongForm(note)) {
+              return (
+                <div key={note.id} className="px-4 py-3" data-note-id={note.id} ref={observe}>
+                  <LongFormCard
+                    note={note}
+                    profile={profiles.get(note.pubkey)}
+                    engagement={engagement.get(note.id)}
+                    onViewProfile={onViewProfile}
+                  />
+                </div>
+              );
+            }
+
+            return (
+              <div key={note.id} className="px-4 py-3" data-note-id={note.id} ref={observe}>
+                <NoteCard
+                  note={note}
+                  profile={profiles.get(note.pubkey)}
+                  engagement={engagement.get(note.id)}
+                  onSelectNote={setSelectedNote}
+                  onViewProfile={onViewProfile}
+                />
+              </div>
+            );
+          })}
         </div>
 
-        {/* Load More */}
+        {/* Load older */}
         {!loading && notes.length > 0 && (
           <div className="px-4 py-4">
-            <button
-              onClick={handleLoadMore}
-              disabled={loadingMore}
-              className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-medium text-gray-300 transition-colors flex items-center justify-center gap-2"
-            >
-              {loadingMore ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading...
-                </>
-              ) : (
-                'Load more'
-              )}
-            </button>
+            {exhausted ? (
+              <p className="text-center text-[13px] text-gray-600 py-2">
+                {notes.length >= FEED_MAX_NOTES ? `Showing the latest ${FEED_MAX_NOTES} notes.` : "That's everything your relays have."}
+              </p>
+            ) : (
+              <button
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-[14px] font-medium text-gray-300 transition-colors flex items-center justify-center gap-2"
+              >
+                {loadingMore ? (<><Loader2 className="w-4 h-4 animate-spin" /> Loading older notes…</>) : 'Load older'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -470,6 +663,54 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           onViewProfile={onViewProfile}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Long-form (kind 30023) card ────────────────────────────────
+
+function LongFormCard({ note, profile, engagement, onViewProfile }: {
+  note: FeedNote;
+  profile?: ProfileMetadata;
+  engagement?: Engagement;
+  onViewProfile?: (pubkey: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const meta = useMemo(() => longFormMeta(note), [note]);
+  const name = displayNameOf(profile, note.pubkey);
+
+  return (
+    <div className="flex gap-3">
+      <div className="flex-shrink-0 pt-0.5">
+        <ClickableAvatar pubkey={note.pubkey} picture={profile?.picture} name={name} size="lg" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 mb-1.5 text-[13px]">
+          <button onClick={() => onViewProfile?.(note.pubkey)} className="font-semibold text-white truncate">{name}</button>
+          {profile?.nip05 && <span className="text-gray-500 truncate hidden sm:inline">{profile.nip05}</span>}
+          <span className="text-gray-600">· {timeAgo(meta.publishedAt)}</span>
+          <span className="ml-auto flex items-center gap-1 text-[11px] text-purple-300/80"><BookOpen className="w-3 h-3" /> Article</span>
+        </div>
+        <button onClick={() => setOpen((v) => !v)} className="block w-full text-left rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.05] overflow-hidden transition-colors">
+          {meta.image && (
+            <img src={meta.image} alt="" className="w-full max-h-48 object-cover" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          )}
+          <div className="p-3.5">
+            <p className="text-[16px] font-semibold text-white leading-snug mb-1">{meta.title}</p>
+            <p className="text-[14px] text-gray-400 leading-relaxed whitespace-pre-wrap">
+              {open ? note.content : (meta.summary || meta.excerpt)}
+            </p>
+            <p className="text-[12px] text-purple-300 mt-2">{open ? 'Show less' : 'Read more'}</p>
+          </div>
+        </button>
+        {engagement && (engagement.replies > 0 || engagement.reactions > 0 || engagement.zapSats > 0) && (
+          <p className="text-[12px] text-gray-500 mt-2 ml-1">
+            {engagement.replies > 0 && `${engagement.replies} replies · `}
+            {engagement.reactions > 0 && `${engagement.reactions} reactions · `}
+            {engagement.zapSats > 0 && `⚡ ${engagement.zapSats.toLocaleString()} sats`}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
