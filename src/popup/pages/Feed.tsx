@@ -138,8 +138,10 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
         const uncached: string[] = [];
         const found = new Map<string, ProfileMetadata>();
         await Promise.all(batch.map(async (pk) => {
+          // The discovery cache holds placeholder entries with no name for
+          // pubkeys it has merely seen; those must still be fetched.
           const cached = await getCachedProfile(pk);
-          if (cached) found.set(pk, cached);
+          if (cached && (cached.name || cached.displayName || cached.picture)) found.set(pk, cached);
           else uncached.push(pk);
         }));
         if (uncached.length > 0) {
