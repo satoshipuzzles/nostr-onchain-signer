@@ -84,7 +84,13 @@ export function PushTxPage() {
       const txid = await broadcastTransaction(p.hex, p.chain);
       setStatus({ kind: 'sent', txid });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      let msg = e instanceof Error ? e.message : String(e);
+      try {
+        const j = JSON.parse(msg);
+        if (typeof j?.error === 'string') msg = j.error;
+      } catch {
+        /* plain text */
+      }
       // Already known means a previous tap went through.
       if (/already|txn-mempool-conflict|known/i.test(msg)) setStatus({ kind: 'sent', txid: p.txid });
       else setStatus({ kind: 'failed', message: msg });

@@ -78,6 +78,12 @@ export default async function handler(req, res) {
         lastError = `HTTP ${resp.status}`;
         continue;
       }
+      // A node rejecting a transaction is final: pass its reason through
+      // instead of trying the next provider.
+      if (isBroadcast && resp.status === 400) {
+        const reason = (await resp.text()).trim();
+        return res.status(400).json({ error: reason || 'rejected by the node' });
+      }
       lastError = `HTTP ${resp.status}`;
     } catch (err) {
       lastError = err?.message || 'Network error';
