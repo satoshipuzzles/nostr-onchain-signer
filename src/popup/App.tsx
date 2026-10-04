@@ -29,6 +29,7 @@ const ConnectedApps = lazy(() => import('./pages/ConnectedApps').then((m) => ({ 
 const SignedEventsLog = lazy(() => import('./pages/SignedEventsLog').then((m) => ({ default: m.SignedEventsLog })));
 const SignedEventDetail = lazy(() => import('./pages/SignedEventDetail').then((m) => ({ default: m.SignedEventDetail })));
 const InvoicePage = lazy(() => import('./pages/InvoicePage').then((m) => ({ default: m.InvoicePage })));
+const PushTxPage = lazy(() => import('./pages/PushTxPage').then((m) => ({ default: m.PushTxPage })));
 const SignPage = lazy(() => import('./pages/SignPage').then((m) => ({ default: m.SignPage })));
 const SocialUnlocks = lazy(() => import('./pages/SocialUnlocks').then((m) => ({ default: m.SocialUnlocks })));
 const SocialUnlockPage = lazy(() => import('./pages/SocialUnlockPage').then((m) => ({ default: m.SocialUnlockPage })));
@@ -178,6 +179,10 @@ export function App() {
   return (
     <Routes>
       {/* Public pages — no vault required */}
+      <Route
+        path="/pushtx"
+        element={<Suspense fallback={<PageFallback />}><PushTxPage /></Suspense>}
+      />
       <Route
         path="/sign/:roundId"
         element={
