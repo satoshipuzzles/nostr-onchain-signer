@@ -162,8 +162,8 @@ export function Landing({ onGetStarted }: Props) {
               text="Blocks and addresses on both chains, with a chain-split monitor and per-coin split status." />
             <Card icon={<Users className="w-6 h-6" />} title="Multisig"
               text="Taproot multisig built from npubs. Co-signers do nothing until it is time to spend." />
-            <Card icon={<Cpu className="w-6 h-6" />} title="Pocket Signer hardware"
-              text="A USB-C signer with a touch screen. Tap to approve every note and every transaction."
+            <Card icon={<Cpu className="w-6 h-6" />} title="Pocket Signer firmware"
+              text="Free firmware that turns an ESP32 touch-screen board into a signer. Tap to approve every note and every transaction."
               href="https://pocketsigner.com" />
           </div>
         </div>
