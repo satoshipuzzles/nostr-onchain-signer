@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server, Smartphone } from 'lucide-react';
+import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
 import { parseNwcUri, loadNwcConnection, saveNwcConnection, type NwcConnection } from '@/lib/nostr/nwc';
-import { connectRemoteSigner, disconnectRemoteSigner, loadRemoteConnection } from '@/lib/nostr/nip46';
+import { loadRemoteConnection } from '@/lib/nostr/nip46';
 import { loadVault, decryptVault } from '@/lib/crypto/vault';
 import { replaceAccountNsec } from '@/lib/accounts';
 import { privkeyToNsec, pubkeyToNpub } from '@/lib/nostr/keys';
@@ -39,11 +39,9 @@ export function Settings() {
   const [nodeTesting, setNodeTesting] = useState(false);
   const [nodeSaving, setNodeSaving] = useState(false);
 
-  // Remote signer (Amber / NIP-46)
-  const [amberUri, setAmberUri] = useState('');
-  const [amberNpub, setAmberNpub] = useState('');
-  const [amberConnecting, setAmberConnecting] = useState(false);
-  const [amberError, setAmberError] = useState('');
+  // Pairing status of the active account's bunker, if it is a bunker account
+  const isBunkerAccount = activeAccount?.signerType === 'nip46';
+  const [bunkerPaired, setBunkerPaired] = useState(true);
 
   // Reveal nsec state machine: 'idle' | 'warning' | 'revealed'
   const [revealState, setRevealState] = useState<'idle' | 'warning' | 'revealed'>('idle');
@@ -72,10 +70,11 @@ export function Settings() {
         setNodeRpcPassword(cfg.rpcPassword || '');
       }
     });
-    loadRemoteConnection().then((conn) => {
-      if (conn?.userPubkey) setAmberNpub(pubkeyToNpub(conn.userPubkey));
-    });
   }, []);
+
+  useEffect(() => {
+    loadRemoteConnection().then((conn) => setBunkerPaired(conn?.userPubkey === publicKey));
+  }, [publicKey]);
 
   useEffect(() => {
     return () => {
@@ -221,31 +220,6 @@ export function Settings() {
     setNwcUri('');
   }
 
-  async function handleAmberConnect() {
-    setAmberError('');
-    if (!amberUri.trim()) return;
-    setAmberConnecting(true);
-    try {
-      const conn = await connectRemoteSigner(amberUri.trim(), (url) => {
-        // Some bunkers require approving the connection at a URL first
-        window.open(url, '_blank', 'noopener');
-      });
-      setAmberNpub(pubkeyToNpub(conn.userPubkey));
-      setAmberUri('');
-    } catch (err) {
-      setAmberError(err instanceof Error ? err.message : 'Failed to connect to Amber');
-    } finally {
-      setAmberConnecting(false);
-    }
-  }
-
-  async function handleAmberDisconnect() {
-    await disconnectRemoteSigner();
-    setAmberNpub('');
-    setAmberUri('');
-    setAmberError('');
-  }
-
   async function handleNodeSave() {
     setNodeSaving(true);
     setNodeStatus('');
@@ -378,6 +352,20 @@ export function Settings() {
             onSwitch={handleSwitchAccount}
             onAddAccount={handleAddAccount}
           />
+          {isBunkerAccount && (
+            <div className="flex items-center gap-2 mt-2 px-2 text-xs">
+              <Radio className={`w-3.5 h-3.5 ${bunkerPaired ? 'text-green-400' : 'text-red-400'}`} />
+              <span className="flex-1 text-gray-500">
+                {bunkerPaired ? 'Signs on your bunker — approve each request on the device' : 'Bunker not paired on this device'}
+              </span>
+              <button
+                onClick={() => handleAddAccount('bunker')}
+                className="text-bitcoin hover:text-bitcoin/80 transition-colors"
+              >
+                {bunkerPaired ? 'Re-pair' : 'Reconnect'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -552,55 +540,6 @@ export function Settings() {
           </div>
         </div>
 
-        {/* Remote signer: Amber (NIP-46) */}
-        <div className="card mt-3">
-          <div className="flex items-center gap-3 mb-3">
-            <Smartphone className={`w-5 h-5 ${amberNpub ? 'text-bitcoin' : 'text-gray-400'}`} />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">Remote signer (NIP-46 bunker)</p>
-              <p className="text-xs text-gray-500">
-                {amberNpub ? 'Paired — signs Nostr events & PSBTs on the signer' : 'Pocket Signer bridge, Amber, nsec.app — key stays on the signer'}
-              </p>
-            </div>
-            {amberNpub && (
-              <div className="flex items-center gap-1.5">
-                <Check className="w-4 h-4 text-green-400" />
-                <button
-                  onClick={handleAmberDisconnect}
-                  className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                >
-                  Disconnect
-                </button>
-              </div>
-            )}
-          </div>
-          {amberNpub ? (
-            <p className="text-[10px] text-gray-500 font-mono break-all">
-              {amberNpub.slice(0, 18)}...{amberNpub.slice(-6)}
-            </p>
-          ) : (
-            <>
-              <input
-                type="text"
-                value={amberUri}
-                onChange={(e) => { setAmberUri(e.target.value); setAmberError(''); }}
-                placeholder="bunker://..."
-                className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none border border-surface-200/10 focus:border-bitcoin/30 font-mono"
-              />
-              {amberError && <p className="text-xs text-red-400 mt-1.5">{amberError}</p>}
-              <button
-                onClick={handleAmberConnect}
-                disabled={!amberUri.trim() || amberConnecting}
-                className="mt-2 w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
-              >
-                {amberConnecting ? 'Pairing…' : 'Pair bunker'}
-              </button>
-              <p className="text-[10px] text-gray-600 mt-2">
-                Pocket Signer: open its bridge page and copy the <code className="text-gray-500">bunker://</code> link. Amber: Applications → add a new connection (v6.1.0+ for PSBT signing).
-              </p>
-            </>
-          )}
-        </div>
       </div>
 
       {/* Security section */}

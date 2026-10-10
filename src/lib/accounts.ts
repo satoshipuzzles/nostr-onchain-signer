@@ -162,6 +162,46 @@ export async function addNip07AccountToVault(
 }
 
 /**
+ * Add an account that signs on a NIP-46 bunker (Pocket Signer bridge, Amber,
+ * nsec.app). The vault records only the pubkey; the pairing itself lives in
+ * nip46.ts. Re-pairing a bunker that is already an account just switches to it.
+ */
+export async function addBunkerAccountToVault(
+  password: string,
+  pubkey: string,
+): Promise<{ accounts: Account[]; newIndex: number }> {
+  const vault = await loadVault();
+  if (!vault) throw new Error('No vault exists');
+
+  const existingData = await decryptVault(vault, password);
+  const dupIdx = existingData.findIndex((d) => d.publicKeyHex === pubkey);
+  if (dupIdx !== -1) {
+    const existing = existingData[dupIdx];
+    // An extension-only entry for the same npub now signs on the bunker
+    if (!existing.privateKeyHex && existing.signerType !== 'nip46') {
+      const upgraded = [...existingData];
+      upgraded[dupIdx] = { ...existing, externalSigner: true, signerType: 'nip46' };
+      await saveVault(await encryptVault(upgraded, password));
+      return { accounts: getAccountsFromVault(upgraded), newIndex: dupIdx };
+    }
+    return { accounts: getAccountsFromVault(existingData), newIndex: dupIdx };
+  }
+
+  const newKeyData: VaultData = {
+    privateKeyHex: '',
+    publicKeyHex: pubkey,
+    createdAt: Date.now(),
+    label: 'Bunker (remote signer)',
+    externalSigner: true,
+    signerType: 'nip46',
+  };
+
+  const updatedData = [...existingData, newKeyData];
+  await saveVault(await encryptVault(updatedData, password));
+  return { accounts: getAccountsFromVault(updatedData), newIndex: updatedData.length - 1 };
+}
+
+/**
  * Add an account by importing nsec.
  */
 export async function addNsecAccountToVault(

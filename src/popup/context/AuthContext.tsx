@@ -5,7 +5,7 @@ import { type ArchivedMultisig, migrateUnownedWallets } from '@/lib/bitcoin/wall
 import {
   type Account, getAccountsFromVault, loadActiveAccountIndex,
   saveActiveAccountIndex, loadAccountMeta, updateAccountMeta, addAccountToVault,
-  addNip07AccountToVault, addNsecAccountToVault,
+  addNip07AccountToVault, addNsecAccountToVault, addBunkerAccountToVault,
   upgradeAccountWithNsec,
 } from '@/lib/accounts';
 import { decryptVault, loadVault } from '@/lib/crypto/vault';
@@ -16,6 +16,8 @@ import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { toast } from 'sonner';
+
+export type AddAccountMode = 'generated' | 'nip07' | 'nsec' | 'bunker';
 
 interface AuthState {
   publicKey: string;
@@ -38,7 +40,7 @@ interface AuthActions {
   handleFollow: (pubkey: string) => Promise<void>;
   handleUnfollow: (pubkey: string) => Promise<void>;
   handleSwitchAccount: (index: number) => Promise<void>;
-  handleAddAccount: (mode?: 'generated' | 'nip07' | 'nsec') => Promise<void>;
+  handleAddAccount: (mode?: AddAccountMode) => Promise<void>;
   handleBackupKeys: () => Promise<void>;
   confirmAndSign: (event: Omit<UnsignedEvent, 'pubkey'>) => Promise<SignedEvent>;
   signingRequest: SigningRequest | null;
@@ -283,6 +285,11 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }
 
     activePubkeyRef.current = acct.publicKeyHex;
+    // Only the active account's own bunker may sign
+    try {
+      const { selectRemoteConnectionFor } = await import('@/lib/nostr/nip46');
+      await selectRemoteConnectionFor(acct.publicKeyHex);
+    } catch {}
     await saveActiveAccountIndex(index);
     setActiveAccountIndex(index);
     setPublicKey(acct.publicKeyHex);
@@ -409,7 +416,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }
   }
 
-  async function handleAddAccount(mode: 'generated' | 'nip07' | 'nsec' = 'generated') {
+  async function handleAddAccount(mode: AddAccountMode = 'generated') {
     let pw = vaultPassword;
     if (!pw) {
       const entered = prompt('Enter your vault password to add an account');
@@ -436,6 +443,15 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
         const nsec = prompt('Paste nsec for the new account');
         if (!nsec?.trim()) return;
         ({ accounts: newAccounts, newIndex } = await addNsecAccountToVault(pw, nsec.trim()));
+      } else if (mode === 'bunker') {
+        const uri = prompt('Paste your bunker:// link (Pocket Signer bridge, Amber, nsec.app)');
+        if (!uri?.trim()) return;
+        const { connectRemoteSigner } = await import('@/lib/nostr/nip46');
+        const conn = await connectRemoteSigner(uri.trim(), (url) => {
+          // Some bunkers require approving the connection at a URL first
+          window.open(url, '_blank', 'noopener');
+        });
+        ({ accounts: newAccounts, newIndex } = await addBunkerAccountToVault(pw, conn.userPubkey));
       } else {
         ({ accounts: newAccounts, newIndex } = await addAccountToVault(pw));
       }

@@ -18,7 +18,11 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { SimplePool } from 'nostr-tools/pool';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
+// The connection for the active account. Pairings for every bunker account
+// are kept in CONNECTIONS_KEY (by user pubkey) and swapped in on account
+// switch, so a bunker only signs while its own account is the active one.
 const STORAGE_KEY = 'nip46_connection';
+const CONNECTIONS_KEY = 'nip46_connections';
 
 export interface RemoteSignerConnection {
   /** Local client key used to encrypt the NIP-46 channel (hex). */
@@ -97,9 +101,50 @@ export async function connectRemoteSigner(
     connectedAt: Date.now(),
   };
 
-  await chrome.storage.local.set({ [STORAGE_KEY]: connection });
+  const all = await loadAllConnections();
+  all[userPubkey] = connection;
+  await closeActiveSigner();
+  await chrome.storage.local.set({ [STORAGE_KEY]: connection, [CONNECTIONS_KEY]: all });
   activeSigner = signer;
   return connection;
+}
+
+async function loadAllConnections(): Promise<Record<string, RemoteSignerConnection>> {
+  try {
+    const result = await chrome.storage.local.get(CONNECTIONS_KEY);
+    return (result[CONNECTIONS_KEY] as Record<string, RemoteSignerConnection>) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+async function closeActiveSigner(): Promise<void> {
+  try {
+    await activeSigner?.close();
+  } catch {
+    /* best effort */
+  }
+  activeSigner = null;
+}
+
+/**
+ * Make the bunker paired for `pubkey` the live connection, or clear the live
+ * connection when that account has none. Called whenever the active account
+ * changes so a bunker never signs for some other account.
+ */
+export async function selectRemoteConnectionFor(pubkey: string): Promise<void> {
+  const current = await loadRemoteConnection();
+  if (current?.userPubkey === pubkey) return;
+  const all = await loadAllConnections();
+  // Pairings made before the per-account map existed live only in STORAGE_KEY.
+  if (current?.userPubkey && !all[current.userPubkey]) {
+    all[current.userPubkey] = current;
+    await chrome.storage.local.set({ [CONNECTIONS_KEY]: all });
+  }
+  await closeActiveSigner();
+  const next = all[pubkey];
+  if (next) await chrome.storage.local.set({ [STORAGE_KEY]: next });
+  else await chrome.storage.local.remove(STORAGE_KEY);
 }
 
 /** Pubkey the persisted remote signer signs as, or null when none is paired. */
@@ -120,7 +165,7 @@ export async function signEventViaRemote(event: {
   created_at: number;
 }): Promise<{ id: string; pubkey: string; sig: string; kind: number; content: string; tags: string[][]; created_at: number }> {
   const signer = await getActiveRemoteSigner();
-  if (!signer) throw new Error('No remote signer connected. Reconnect your bunker in Settings.');
+  if (!signer) throw new Error('No bunker paired for this account. Reconnect it from Settings → Accounts.');
   return signer.signEvent(event);
 }
 
@@ -138,12 +183,13 @@ export async function getActiveRemoteSigner(): Promise<BunkerSigner | null> {
 }
 
 export async function disconnectRemoteSigner(): Promise<void> {
-  try {
-    await activeSigner?.close();
-  } catch {
-    /* best effort */
+  const current = await loadRemoteConnection();
+  await closeActiveSigner();
+  if (current?.userPubkey) {
+    const all = await loadAllConnections();
+    delete all[current.userPubkey];
+    await chrome.storage.local.set({ [CONNECTIONS_KEY]: all });
   }
-  activeSigner = null;
   await chrome.storage.local.remove(STORAGE_KEY);
 }
 
@@ -153,7 +199,7 @@ export async function disconnectRemoteSigner(): Promise<void> {
  */
 export async function signPsbtBase64ViaRemote(psbtBase64: string): Promise<string> {
   const signer = await getActiveRemoteSigner();
-  if (!signer) throw new Error('No remote signer connected. Pair Amber in Settings first.');
+  if (!signer) throw new Error('No bunker paired for this account. Reconnect it from Settings → Accounts.');
 
   const result = await signer.sendRequest('sign_psbt', [psbtBase64]);
   if (!result || typeof result !== 'string') {

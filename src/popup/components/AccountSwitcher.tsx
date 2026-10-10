@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { ChevronDown, Plus, Check, User, Key, Plug } from 'lucide-react';
+import { ChevronDown, Plus, Check, User, Key, Plug, Radio } from 'lucide-react';
 import { type Account } from '@/lib/accounts';
-
-type AddMode = 'generated' | 'nip07' | 'nsec';
+import { type AddAccountMode as AddMode } from '../context/AuthContext';
 
 interface Props {
   accounts: Account[];
@@ -60,7 +59,9 @@ export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount 
                   <p className="text-sm truncate">{account.displayName || account.label}</p>
                   <p className="text-[10px] text-gray-500 font-mono truncate">
                     {account.npub.slice(0, 16)}...
-                    {account.externalSigner && (
+                    {account.signerType === 'nip46' ? (
+                      <span className="ml-1 text-amber-500">bunker</span>
+                    ) : account.externalSigner && (
                       <span className="ml-1 text-amber-500">ext</span>
                     )}
                   </p>
@@ -90,6 +91,16 @@ export function AccountSwitcher({ accounts, activeIndex, onSwitch, onAddAccount 
                     <div>
                       <p className="text-sm">Extension account</p>
                       <p className="text-[10px] text-gray-500">Alby, nos2x, etc.</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => { onAddAccount('bunker'); setOpen(false); setAddMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-surface-700 text-gray-300"
+                  >
+                    <Radio className="w-4 h-4 text-nostr" />
+                    <div>
+                      <p className="text-sm">Bunker (NIP-46)</p>
+                      <p className="text-[10px] text-gray-500">Pocket Signer, Amber, nsec.app</p>
                     </div>
                   </button>
                   <button
