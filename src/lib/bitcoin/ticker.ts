@@ -50,24 +50,54 @@ export async function fetchBlockchainStatus(chain: Chain = 'btc'): Promise<Block
   return status;
 }
 
-/** XBT (BLAKE2b chain): height and fees via the proxy; no USD quote is published for it. */
+// XBT/USD as published by the Flippening tracker (NeoxEX BTCB2/BTC × Coinbase BTC/USD).
+const XBT_PRICE_API = 'https://the-flippening.vercel.app/api/summary';
+
+const STATUS_BAR_CHAIN_KEY = 'status_bar_chain';
+export const STATUS_BAR_CHAIN_EVENT = 'status-bar-chain';
+
+/** Which chain the top status bar shows. XBT unless changed in Settings. */
+export function loadStatusBarChain(): Chain {
+  try {
+    return localStorage.getItem(STATUS_BAR_CHAIN_KEY) === 'btc' ? 'btc' : 'xbt';
+  } catch {
+    return 'xbt';
+  }
+}
+
+export function saveStatusBarChain(chain: Chain): void {
+  try { localStorage.setItem(STATUS_BAR_CHAIN_KEY, chain); } catch {}
+  window.dispatchEvent(new Event(STATUS_BAR_CHAIN_EVENT));
+}
+
+async function fetchXbtPrice(): Promise<number> {
+  const res = await fetch(XBT_PRICE_API, { signal: AbortSignal.timeout(12_000) });
+  if (!res.ok) throw new Error('Failed to fetch XBT price');
+  const data = await res.json();
+  const usd = Number(data?.xbt?.usd);
+  if (!(usd > 0)) throw new Error('No XBT price');
+  return usd;
+}
+
+/** XBT (BLAKE2b chain): height and fees via the proxy, USD price from the Flippening tracker. */
 async function fetchXbtStatus(): Promise<BlockchainStatus> {
   const key = `${CACHE_KEY}_xbt`;
   let cached: BlockchainStatus | null = null;
   try { const raw = localStorage.getItem(key); cached = raw ? JSON.parse(raw) : null; } catch {}
   if (cached && Date.now() - cached.lastUpdated < CACHE_TTL) return cached;
 
-  const [height, fees] = await Promise.allSettled([
+  const [height, fees, price] = await Promise.allSettled([
     fetchMempoolApi('/blocks/tip/height', 12_000, 'xbt').then(async (r) => { if (!r.ok) throw new Error('height'); return parseInt(await r.text(), 10); }),
     fetchMempoolApi('/v1/fees/recommended', 12_000, 'xbt').then(async (r) => {
       if (!r.ok) throw new Error('fees');
       const d = await r.json();
       return { fastest: d.fastestFee, halfHour: d.halfHourFee, hour: d.hourFee, economy: d.economyFee };
     }),
+    fetchXbtPrice(),
   ]);
   const status: BlockchainStatus = {
     blockHeight: height.status === 'fulfilled' ? height.value : cached?.blockHeight ?? 0,
-    btcPriceUsd: 0,
+    btcPriceUsd: price.status === 'fulfilled' ? price.value : cached?.btcPriceUsd ?? 0,
     fees: fees.status === 'fulfilled' ? fees.value : cached?.fees ?? { fastest: 1, halfHour: 1, hour: 1, economy: 1 },
     lastUpdated: Date.now(),
   };

@@ -292,7 +292,9 @@ function StatsBar({
   difficulty,
   hashrate,
   latestBlockTime,
+  chain,
 }: {
+  chain: Chain;
   status: BlockchainStatus | null;
   difficulty: DifficultyData | null;
   hashrate: HashrateData | null;
@@ -305,7 +307,7 @@ function StatsBar({
     { label: 'Difficulty', value: hashrate ? formatDifficulty(hashrate.currentDifficulty) : '—' },
     { label: 'Avg Fee', value: status ? `${status.fees.hour} sat/vB` : '—' },
     { label: 'Hashrate', value: hashrate ? formatHashrate(hashrate.currentHashrate) : '—' },
-    { label: 'BTC Price', value: status?.btcPriceUsd ? formatUsd(status.btcPriceUsd) : '—' },
+    { label: `${chain.toUpperCase()} Price`, value: status?.btcPriceUsd ? formatUsd(status.btcPriceUsd) : '—' },
   ];
   return (
     <div className="flex gap-3 overflow-x-auto px-4 py-3 bg-surface-800 border-b border-white/5 scrollbar-hide">
@@ -627,7 +629,7 @@ export function OnchainExplorer() {
       </div>
 
       {/* Stats bar */}
-      <StatsBar status={status} difficulty={difficulty} hashrate={hashrate} latestBlockTime={latestBlockTime} />
+      <StatsBar chain={chain} status={status} difficulty={difficulty} hashrate={hashrate} latestBlockTime={latestBlockTime} />
 
       {/* Tab bar */}
       <div className="flex border-b border-white/10 px-4 overflow-x-auto scrollbar-hide">

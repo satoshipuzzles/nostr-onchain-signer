@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server } from 'lucide-react';
+import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server, Blocks } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
@@ -11,6 +11,7 @@ import { replaceAccountNsec } from '@/lib/accounts';
 import { privkeyToNsec, pubkeyToNpub } from '@/lib/nostr/keys';
 import { loadMultisigWallets, walletToSyncConfig, syncConfigToWallet, saveMultisigWallet } from '@/lib/bitcoin/wallet-store';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
+import { loadStatusBarChain, saveStatusBarChain } from '@/lib/bitcoin/ticker';
 import { loadBitcoinNodeConfig, saveBitcoinNodeConfig, testNodeConnection, type BitcoinNodeConfig } from '@/lib/bitcoin/node';
 
 export function Settings() {
@@ -30,6 +31,8 @@ export function Settings() {
   const [nwcError, setNwcError] = useState('');
   const [nwcSaving, setNwcSaving] = useState(false);
   const [showNwcUri, setShowNwcUri] = useState(false);
+
+  const [statusBarChain, setStatusBarChain] = useState(loadStatusBarChain);
 
   const [nodeEnabled, setNodeEnabled] = useState(false);
   const [nodeRpcUrl, setNodeRpcUrl] = useState('http://127.0.0.1:8332');
@@ -383,6 +386,25 @@ export function Settings() {
             <p className="text-xs text-gray-500">Manage Nostr relay connections</p>
           </div>
         </button>
+
+        <div className="w-full flex items-center gap-3 px-4 py-3 rounded-xl">
+          <Blocks className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Status bar chain</p>
+            <p className="text-xs text-gray-500">Price, block height and fees shown at the top</p>
+          </div>
+          <div className="flex rounded-lg bg-surface-700 p-0.5 text-xs font-medium">
+            {(['xbt', 'btc'] as const).map((c) => (
+              <button
+                key={c}
+                onClick={() => { saveStatusBarChain(c); setStatusBarChain(c); }}
+                className={`px-3 py-1 rounded-md transition-colors ${statusBarChain === c ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'}`}
+              >
+                {c.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
 
         <button
           onClick={() => navigate('/settings/profile')}
