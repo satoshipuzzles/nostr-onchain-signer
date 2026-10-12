@@ -25,6 +25,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
   const [about, setAbout] = useState(profile?.about || '');
   const [nip05, setNip05] = useState(profile?.nip05 || '');
   const [lud16, setLud16] = useState(profile?.lud16 || '');
+  const [lud16Xbt, setLud16Xbt] = useState(profile?.lud16Xbt || '');
   const [website, setWebsite] = useState(profile?.website || '');
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -53,6 +54,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
         about: about || undefined,
         nip05: nip05 || undefined,
         lud16: lud16 || undefined,
+        lud16Xbt: lud16Xbt || undefined,
         website: website || undefined,
       };
       await chrome.storage.local.set({ [`profile_${publicKey}`]: newProfile });
@@ -60,12 +62,12 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
       setAutoSaved(true);
       setTimeout(() => setAutoSaved(false), 2000);
     }, AUTOSAVE_DELAY);
-  }, [name, displayName, picture, banner, about, nip05, lud16, website, publicKey, onSaved, publishing]);
+  }, [name, displayName, picture, banner, about, nip05, lud16, lud16Xbt, website, publicKey, onSaved, publishing]);
 
   useEffect(() => {
     autoSave();
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current); };
-  }, [name, displayName, picture, banner, about, nip05, lud16, website]);
+  }, [name, displayName, picture, banner, about, nip05, lud16, lud16Xbt, website]);
 
   function triggerUpload(target: 'picture' | 'banner') {
     uploadTarget.current = target;
@@ -120,6 +122,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
         about: about || undefined,
         nip05: nip05 || undefined,
         lud16: lud16 || undefined,
+        lud16Xbt: lud16Xbt || undefined,
         website: website || undefined,
       };
 
@@ -259,7 +262,13 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
         </div>
 
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Lightning Address</label>
+          <label className="text-xs text-gray-400 mb-1 block">XBT Lightning Address</label>
+          <input value={lud16Xbt} onChange={(e) => setLud16Xbt(e.target.value)} placeholder="you@your-xbt-node.com" className="input-field text-sm" />
+          <p className="text-[10px] text-gray-600 mt-1">A Lightning address served by a node on the XBT chain. XBT zaps go here.</p>
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-400 mb-1 block">BTC Lightning Address</label>
           <input value={lud16} onChange={(e) => setLud16(e.target.value)} placeholder="you@getalby.com" className="input-field text-sm" />
         </div>
 

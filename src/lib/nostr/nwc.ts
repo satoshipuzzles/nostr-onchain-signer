@@ -158,17 +158,27 @@ export async function sendNwcPayment(
   });
 }
 
-export async function loadNwcConnection(): Promise<NwcConnection | null> {
-  const result = await chrome.storage.local.get('nwc_connection');
-  return result.nwc_connection ?? null;
+/** Lightning network a wallet pays on. XBT and BTC Lightning share the
+ *  `lnbc` invoice prefix, so the wallet, not the invoice, decides the chain. */
+export type LightningChain = 'xbt' | 'btc';
+
+// The original single connection predates XBT Lightning and is the BTC wallet.
+const NWC_KEYS: Record<LightningChain, string> = { btc: 'nwc_connection', xbt: 'nwc_connection_xbt' };
+
+export async function loadNwcConnection(chain: LightningChain = 'btc'): Promise<NwcConnection | null> {
+  const key = NWC_KEYS[chain];
+  const result = await chrome.storage.local.get(key);
+  return result[key] ?? null;
 }
 
 export async function saveNwcConnection(
   connection: NwcConnection | null,
+  chain: LightningChain = 'btc',
 ): Promise<void> {
+  const key = NWC_KEYS[chain];
   if (connection) {
-    await chrome.storage.local.set({ nwc_connection: connection });
+    await chrome.storage.local.set({ [key]: connection });
   } else {
-    await chrome.storage.local.remove('nwc_connection');
+    await chrome.storage.local.remove(key);
   }
 }

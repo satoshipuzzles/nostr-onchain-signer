@@ -137,6 +137,7 @@ async function fetchProfilesForUsers(
                 about: content.about,
                 nip05: content.nip05,
                 lud16: content.lud16,
+                lud16Xbt: content.lud16_xbt,
                 website: content.website,
               };
             } catch {}
@@ -213,6 +214,7 @@ export async function searchUsers(
                 about: content.about,
                 nip05: content.nip05,
                 lud16: content.lud16,
+                lud16Xbt: content.lud16_xbt,
                 website: content.website,
               },
             });
@@ -264,6 +266,7 @@ export function createProfileEvent(
   if (profileData.about) content.about = profileData.about;
   if (profileData.nip05) content.nip05 = profileData.nip05;
   if (profileData.lud16) content.lud16 = profileData.lud16;
+  if (profileData.lud16Xbt) content.lud16_xbt = profileData.lud16Xbt;
   if (profileData.website) content.website = profileData.website;
   if (profileData.banner) content.banner = profileData.banner;
 
@@ -325,6 +328,7 @@ export async function fetchMyProfile(
             about: content.about,
             nip05: content.nip05,
             lud16: content.lud16,
+            lud16Xbt: content.lud16_xbt,
             website: content.website,
           });
         } else if (data[0] === 'EOSE') {

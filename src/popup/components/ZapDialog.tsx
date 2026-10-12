@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { X, Zap, Loader2, Check, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/popup/context/AuthContext';
-import { createMessageId } from '@/shared/messages';
+import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
-import { loadNwcConnection, sendNwcPayment } from '@/lib/nostr/nwc';
+import { loadNwcConnection, sendNwcPayment, type LightningChain } from '@/lib/nostr/nwc';
 import {
   fetchLnurlPayInfo,
   requestZapInvoice,
@@ -31,15 +31,21 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   const [comment, setComment] = useState('');
   const [status, setStatus] = useState<ZapStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
-  const [hasNwc, setHasNwc] = useState<boolean | null>(null);
+  // Which Lightning wallets are connected; null while loading
+  const [wallets, setWallets] = useState<Record<LightningChain, boolean> | null>(null);
+  const [chain, setChain] = useState<LightningChain>('xbt');
 
   useEffect(() => {
-    loadNwcConnection().then((conn) => setHasNwc(conn !== null));
+    Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')]).then(([x, b]) => {
+      setWallets({ xbt: !!x, btc: !!b });
+      // XBT first, like everywhere else in the suite
+      setChain(x || !b ? 'xbt' : 'btc');
+    });
   }, []);
 
-  if (hasNwc === null) return null;
+  if (wallets === null) return null;
 
-  if (hasNwc === false) {
+  if (!wallets.xbt && !wallets.btc) {
     return (
       <div
         className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
@@ -61,8 +67,8 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
             </button>
           </div>
           <p className="text-xs text-gray-400 mb-4">
-            To send zaps, connect a Lightning wallet via Nostr Wallet Connect in
-            Settings.
+            To send zaps, connect an XBT or BTC Lightning wallet via Nostr Wallet
+            Connect in Settings.
           </p>
           <button
             onClick={() => {
@@ -78,11 +84,15 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     );
   }
 
+  // XBT zaps go to the XBT Lightning address; without one, the regular address
+  // is tried over XBT, which only routes if that node is on the XBT network.
+  const xbtFallback = chain === 'xbt' && !profile?.lud16Xbt;
+  const lud16 = chain === 'xbt' ? (profile?.lud16Xbt || profile?.lud16) : profile?.lud16;
+
   async function handleZap() {
-    const lud16 = profile?.lud16;
     if (!lud16) {
       setStatus('error');
-      setStatusMessage('This user has no lightning address set');
+      setStatusMessage(`This user has no ${chain.toUpperCase()} Lightning address set`);
       return;
     }
 
@@ -117,19 +127,18 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       const zapReq = createZapRequestEvent(
         recipientPubkey, note?.id, publicKey, amountMsats, relays, comment,
       );
+      // Rides inside the receipt, so clients can tell XBT zaps from BTC ones
+      zapReq.tags.push(['chain', chain]);
 
-      const response = await chrome.runtime.sendMessage({
-        type: 'nip07:signEvent',
-        payload: { event: zapReq },
-        id: createMessageId(),
-      });
-
-      if (response.error) {
+      try {
+        // Vault, extension or bunker: whichever signs for this account
+        const signed = await signEventWithFallback(zapReq, publicKey);
+        zapRequestJson = JSON.stringify(signed);
+      } catch (err) {
         setStatus('error');
-        setStatusMessage('Failed to sign zap request');
+        setStatusMessage(`Failed to sign zap request: ${err instanceof Error ? err.message : err}`);
         return;
       }
-      zapRequestJson = JSON.stringify(response.result);
     }
 
     setStatusMessage('Requesting invoice...');
@@ -143,24 +152,28 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     }
 
     setStatus('paying');
-    setStatusMessage('Paying via NWC...');
+    setStatusMessage(`Paying on ${chain.toUpperCase()} Lightning...`);
 
-    const nwc = await loadNwcConnection();
+    const nwc = await loadNwcConnection(chain);
     if (!nwc) {
       setStatus('error');
-      setStatusMessage('NWC connection not found');
+      setStatusMessage(`No ${chain.toUpperCase()} Lightning wallet connected`);
       return;
     }
 
     const payResult = await sendNwcPayment(nwc, invoiceResult.invoice);
     if (payResult.error) {
       setStatus('error');
-      setStatusMessage(payResult.error);
+      setStatusMessage(
+        xbtFallback
+          ? `${payResult.error}. ${lud16} may not be on XBT Lightning; they haven't set an XBT Lightning address.`
+          : payResult.error,
+      );
       return;
     }
 
     setStatus('success');
-    setStatusMessage(`Zapped ${amount.toLocaleString()} sats!`);
+    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${chain.toUpperCase()}!`);
     setTimeout(onClose, 2000);
   }
 
@@ -190,6 +203,23 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
 
         {status === 'idle' && (
           <>
+            <div className="flex rounded-lg bg-surface-700 p-0.5 text-xs font-medium mb-3">
+              {(['xbt', 'btc'] as const).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setChain(c)}
+                  disabled={!wallets[c]}
+                  title={wallets[c] ? undefined : `Connect a ${c.toUpperCase()} Lightning wallet in Settings`}
+                  className={`flex-1 py-1.5 rounded-md transition-colors disabled:opacity-40 ${chain === c ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'}`}
+                >
+                  {c.toUpperCase()} Lightning
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-500 mb-3 truncate" title={lud16}>
+              {lud16 ? <>To {lud16}{xbtFallback && <span className="text-amber-500"> (no XBT address listed)</span>}</> : `No ${chain.toUpperCase()} Lightning address`}
+            </p>
+
             <div className="grid grid-cols-3 gap-2 mb-4">
               {ZAP_AMOUNTS.map((a) => (
                 <button

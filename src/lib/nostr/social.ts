@@ -21,6 +21,8 @@ export interface ProfileMetadata {
   about?: string;
   nip05?: string;
   lud16?: string;
+  /** Lightning address on the XBT Lightning network (kind-0 `lud16_xbt`) */
+  lud16Xbt?: string;
   website?: string;
   /** Onchain bitcoin address declared in kind-0 metadata (if any) */
   bitcoinAddress?: string;
@@ -226,6 +228,7 @@ async function fetchProfilesFromRelay(
               about: content.about,
               nip05: content.nip05,
               lud16: content.lud16,
+              lud16Xbt: content.lud16_xbt,
               website: content.website,
               bitcoinAddress: content.bitcoin_address || content.btc_address || content.bitcoin,
               silentPaymentAddress:
