@@ -71,9 +71,14 @@ export function Setup({ onCreated }: Props) {
     setError('');
     setLoading(true);
     try {
-      const nostr = (window as any).nostr;
+      // Extensions inject window.nostr asynchronously; give a slow one a moment
+      let nostr = (window as any).nostr;
+      for (let i = 0; !nostr && i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        nostr = (window as any).nostr;
+      }
       if (!nostr) {
-        setError('No NIP-07 extension found. Install Alby, nos2x, or another Nostr signer extension.');
+        setError('No NIP-07 extension found. Install Alby, nos2x, Pocket Signer Link or another Nostr signer extension, then reload.');
         return;
       }
       const pubkey = await nostr.getPublicKey();
@@ -251,12 +256,10 @@ export function Setup({ onCreated }: Props) {
 
           {/* Auth Actions */}
           <div className="w-full space-y-3 mb-8">
-            {typeof (window as any).nostr !== 'undefined' && (
-              <button onClick={handleNip07Login} disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2">
-                <Globe className="w-4 h-4" />
-                {loading ? 'Connecting...' : 'Login with NIP-07 Extension'}
-              </button>
-            )}
+            <button onClick={handleNip07Login} disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2">
+              <Globe className="w-4 h-4" />
+              {loading ? 'Connecting...' : 'Login with NIP-07 Extension'}
+            </button>
             <button
               onClick={() => { setStep('bunker'); setError(''); }}
               className="btn-primary w-full flex items-center justify-center gap-2"
