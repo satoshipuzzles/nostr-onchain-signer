@@ -37,6 +37,14 @@
   ],
   "rewrites": [
     {
+      "source": "/.well-known/lnurlp/:name",
+      "destination": "https://puzzl35.com/lnrelay/pay.php?p=:name&d=nostronchain.com"
+    },
+    {
+      "source": "/.well-known/lnurlp/:name/callback",
+      "destination": "https://puzzl35.com/lnrelay/pay.php?p=:name/callback&d=nostronchain.com"
+    },
+    {
       "source": "/.well-known/nostr.json",
       "destination": "https://nostr-onchain-eight.vercel.app/.well-known/nostr.json"
     },
