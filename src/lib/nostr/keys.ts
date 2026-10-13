@@ -56,10 +56,32 @@ export function privkeyToNsec(privkeyHex: string): string {
   return bech32.encode('nsec', words);
 }
 
-export function nsecToPrivkey(nsec: string): string {
-  const decoded = bech32.decode(nsec as `${string}1${string}`);
-  if (!nsec.startsWith('nsec1')) throw new Error('Invalid nsec');
-  return bytesToHex(bech32.fromWords(decoded.words));
+/**
+ * Read a secret key however it was pasted: nsec1…, NSEC1… (QR codes), with a
+ * nostr: prefix, wrapped in quotes or whitespace, or as 64-char hex. Anything
+ * else gets an error that says what was actually pasted, because "Invalid
+ * nsec" for an npub or a bunker link leaves people guessing.
+ */
+export function nsecToPrivkey(input: string): string {
+  const v = input.trim().replace(/^["'`]+|["'`]+$/g, '').replace(/^nostr:/i, '').replace(/\s+/g, '');
+  const lower = v.toLowerCase();
+  if (lower.startsWith('nsec1')) {
+    let words: number[];
+    try {
+      words = bech32.decode(lower as `${string}1${string}`).words;
+    } catch {
+      throw new Error('That nsec is mistyped or cut off — check you copied all of it');
+    }
+    const key = bech32.fromWords(words);
+    if (key.length !== 32) throw new Error('That nsec has the wrong length');
+    return bytesToHex(Uint8Array.from(key));
+  }
+  if (/^[0-9a-f]{64}$/.test(lower)) return lower;
+  if (lower.startsWith('npub1')) throw new Error('That is a public key (npub). Paste the secret key — it starts with nsec1');
+  if (lower.startsWith('ncryptsec1')) throw new Error('That is a password-encrypted key (ncryptsec). Decrypt it in the app that made it, then paste the nsec');
+  if (lower.startsWith('bunker://') || lower.startsWith('nostrconnect://')) throw new Error('That is a remote-signer link. Use Add account → "Bunker (NIP-46)" instead');
+  if (!v) throw new Error('Paste your nsec');
+  throw new Error('Not a secret key. Paste an nsec1… key or 64-character hex');
 }
 
 export function isValidNpub(input: string): boolean {

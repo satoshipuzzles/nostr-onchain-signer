@@ -136,12 +136,13 @@ export function Setup({ onCreated }: Props) {
     e.preventDefault();
     setError('');
 
-    if (!isValidNsec(nsecInput)) {
-      setError('Invalid nsec key');
+    let privHex: string;
+    try {
+      privHex = nsecToPrivkey(nsecInput);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Invalid nsec key');
       return;
     }
-
-    const privHex = nsecToPrivkey(nsecInput);
     const pair = keyPairFromPrivateKey(privHex);
     setPrivateKey(pair.privateKeyHex);
     setPublicKey(pair.publicKeyHex);

@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowLeft, Search, Loader2, UserPlus, UserMinus, BadgeCheck, Zap, Globe, Database, RefreshCw, Clock, Filter } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
+import { parseSearchQuery, noteFilters, searchRelaysFor, type SearchTarget } from '@/lib/nostr/search';
+import { subscribeEvents, type FeedNote } from '@/lib/nostr/feed';
+import { NoteCard } from '@/popup/components/NoteCard';
+import { NoteThread } from '@/popup/components/NoteThread';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { safeImageUrl } from '@/lib/utils';
 import {
   fullDiscoverySync, searchProfilesNip50, getAllCachedProfiles,
-  getCacheStats, searchLocalCache, type ActivityWindow, type CachedProfile,
+  getCacheStats, searchLocalCache, resolveProfiles, type ActivityWindow, type CachedProfile,
 } from '@/lib/nostr/cache';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
@@ -32,6 +36,56 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   const [showFilters, setShowFilters] = useState(false);
   const [syncError, setSyncError] = useState(false);
   const globalSearchTimer = useRef<ReturnType<typeof setTimeout>>();
+  // Notes / events search
+  const [tab, setTab] = useState<'people' | 'notes'>('people');
+  const [notes, setNotes] = useState<FeedNote[]>([]);
+  const [noteProfiles, setNoteProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
+  const [noteSearching, setNoteSearching] = useState(false);
+  const [noteSearched, setNoteSearched] = useState('');
+  const [threadNote, setThreadNote] = useState<FeedNote | null>(null);
+  const noteSubRef = useRef<(() => void) | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => {
+    noteSubRef.current?.();
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+  }, []);
+
+  /** Look up notes/events. Resolves true if anything was found. */
+  function runNoteSearch(target: SearchTarget): Promise<boolean> {
+    noteSubRef.current?.();
+    setNotes([]);
+    setNoteSearching(true);
+    setNoteSearched('');
+    return new Promise((resolve) => {
+      loadRelayList().then((list) => {
+        const relays = searchRelaysFor(target, getReadRelays(list));
+        const found = new Map<string, FeedNote>();
+        const filters = noteFilters(target);
+        let pending = filters.length;
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          setNoteSearching(false);
+          setNoteSearched(found.size === 0 ? 'none' : 'ok');
+          resolve(found.size > 0);
+          const authors = [...new Set([...found.values()].map((n) => n.pubkey))];
+          if (authors.length) {
+            resolveProfiles(authors, getReadRelays(list).slice(0, 3)).then((m) => {
+              setNoteProfiles((prev) => new Map([...prev, ...m]));
+            }).catch(() => {});
+          }
+        };
+        const unsubs = filters.map((f) => subscribeEvents(relays, f, (e) => {
+          found.set(e.id, { id: e.id, pubkey: e.pubkey, content: e.content, created_at: e.created_at, tags: e.tags, kind: e.kind });
+          setNotes([...found.values()].sort((a, b) => b.created_at - a.created_at));
+        }, () => { if (--pending <= 0) finish(); }));
+        noteSubRef.current = () => unsubs.forEach((u) => u());
+        setTimeout(finish, 12000);
+      });
+    });
+  }
 
   useEffect(() => {
     init();
@@ -96,6 +150,11 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
+    if (tab === 'notes') {
+      const target = parseSearchQuery(searchQuery);
+      if (target) runNoteSearch(target);
+      return;
+    }
     if (!searchQuery.trim()) {
       await loadFromCache(activityWindow);
       return;
@@ -119,6 +178,27 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   const handleLocalSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
     if (globalSearchTimer.current) clearTimeout(globalSearchTimer.current);
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+
+    const target = parseSearchQuery(query);
+    // A pasted note1/nevent1/naddr1 names one event: go straight to it.
+    if (target && (target.type === 'event' || target.type === 'addr')) {
+      setTab('notes');
+      runNoteSearch(target);
+      return;
+    }
+    // 64 hex could be an event id or a pubkey: try the event, keep the people lookup too.
+    if (target?.type === 'hex') {
+      runNoteSearch(target).then((hit) => { if (hit) setTab('notes'); });
+    }
+    if (target?.type === 'profile' && !query.trim().startsWith('npub1')) {
+      query = pubkeyToNpub(target.pubkey);   // nprofile → npub lookup below
+    }
+    if (tab === 'notes' && target && target.type !== 'hex') {
+      if (target.type === 'text' && target.text.length < 3) return;
+      noteTimer.current = setTimeout(() => runNoteSearch(target), 700);
+      return;
+    }
 
     if (!query.trim()) {
       await loadFromCache(activityWindow);
@@ -167,7 +247,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
         }
       }, 800);
     }
-  }, [activityWindow, publicKey]);
+  }, [activityWindow, publicKey, tab]);
 
   function getWindowCount(window: ActivityWindow): number {
     switch (window) {
@@ -256,7 +336,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
         <input
           value={searchQuery}
           onChange={(e) => handleLocalSearch(e.target.value)}
-          placeholder="Search names, NIP-05, npubs, about..."
+          placeholder={tab === 'notes' ? 'Search notes, #hashtags, note1 / nevent1 / event id…' : 'Search names, NIP-05, npubs, about… or paste a note id'}
           className="input-field pl-9 pr-24 text-sm"
         />
         <button
@@ -264,11 +344,29 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
           disabled={searching}
           className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] bg-nostr/20 text-nostr px-2 py-1 rounded font-medium disabled:opacity-50"
         >
-          {searching ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Global Search'}
+          {searching || noteSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Global Search'}
         </button>
       </form>
 
-      {searchQuery && (
+      <div className="flex gap-1 mb-2">
+        {(['people', 'notes'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => {
+              setTab(t);
+              const target = parseSearchQuery(searchQuery);
+              if (t === 'notes' && target && target.type !== 'profile' && !noteSearched) runNoteSearch(target);
+            }}
+            className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              tab === t ? 'bg-nostr/20 text-nostr' : 'text-gray-500 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            {t === 'people' ? 'People' : `Notes${notes.length ? ` (${notes.length})` : ''}`}
+          </button>
+        ))}
+      </div>
+
+      {searchQuery && tab === 'people' && (
         <p className="text-[10px] text-gray-500 mb-2 px-1">
           {searchQuery.startsWith('npub1')
             ? 'Direct npub lookup — will search multiple relays'
@@ -276,8 +374,37 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
         </p>
       )}
 
+      {tab === 'notes' && (
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {notes.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+              {noteSearching ? (
+                <><Loader2 className="w-6 h-6 animate-spin text-nostr mb-2" /><p className="text-sm text-gray-400">Searching relays…</p></>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  {noteSearched === 'none'
+                    ? 'Nothing found on the search relays.'
+                    : 'Search note text, #hashtags, or paste a note1, nevent1, naddr1 or 64-character event id.'}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="divide-y divide-white/5">
+              {notes.map((n) => (
+                <div key={n.id} className="py-3">
+                  <NoteCard note={n} profile={noteProfiles.get(n.pubkey)} onSelectNote={setThreadNote} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {threadNote && (
+        <NoteThread note={threadNote} profiles={noteProfiles} onClose={() => setThreadNote(null)} />
+      )}
+
       {/* User list */}
-      <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
+      <div className={`flex-1 overflow-y-auto space-y-1 min-h-0 ${tab === 'notes' ? 'hidden' : ''}`}>
         {loading ? (
           <div className="flex flex-col items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin text-bitcoin mb-2" />

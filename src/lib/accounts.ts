@@ -5,7 +5,7 @@
  */
 
 import { type VaultData, decryptVault, encryptVault, loadVault, saveVault } from '@/lib/crypto/vault';
-import { keyPairFromPrivateKey, generateKeyPair, pubkeyToNpub, nsecToPrivkey, isValidNsec } from '@/lib/nostr/keys';
+import { keyPairFromPrivateKey, generateKeyPair, pubkeyToNpub, nsecToPrivkey } from '@/lib/nostr/keys';
 import { detectNostrSignerType, nip07SignerLabel } from '@/lib/bitcoin/psbt-external-sign';
 
 export interface Account {
@@ -125,6 +125,11 @@ export async function addNip07AccountToVault(
 ): Promise<{ accounts: Account[]; newIndex: number }> {
   const w = window as { nostr?: { getPublicKey?: () => Promise<string> } };
   if (!w.nostr?.getPublicKey) {
+    // Signer extensions inject window.nostr into web pages only, never into
+    // another extension's popup, so this can only work on the web app.
+    if (location.protocol === 'chrome-extension:' || location.protocol === 'moz-extension:') {
+      throw new Error('Other NIP-07 signers cannot reach this extension popup. Add the account at nostronchain.com instead, or use Import nsec or Bunker (NIP-46) here.');
+    }
     throw new Error('No NIP-07 extension found. Install Alby, nos2x, or another Nostr signer.');
   }
 
@@ -209,7 +214,6 @@ export async function addNsecAccountToVault(
   nsec: string,
   label?: string
 ): Promise<{ accounts: Account[]; newIndex: number }> {
-  if (!isValidNsec(nsec)) throw new Error('Invalid nsec');
   const privHex = nsecToPrivkey(nsec);
   const pair = keyPairFromPrivateKey(privHex);
   return addAccountToVault(password, pair.privateKeyHex, label || `Imported ${pair.npub.slice(5, 11)}`);
@@ -282,7 +286,6 @@ export async function replaceAccountNsec(
   publicKeyHex: string,
   nsec: string
 ): Promise<{ accounts: Account[]; newPublicKeyHex: string }> {
-  if (!isValidNsec(nsec)) throw new Error('Invalid nsec');
   const privHex = nsecToPrivkey(nsec);
   const pair = keyPairFromPrivateKey(privHex);
 
@@ -319,7 +322,6 @@ export async function upgradeAccountWithNsec(
   publicKeyHex: string,
   nsec: string
 ): Promise<Account[]> {
-  if (!isValidNsec(nsec)) throw new Error('Invalid nsec');
   const privHex = nsecToPrivkey(nsec);
   const pair = keyPairFromPrivateKey(privHex);
   if (pair.publicKeyHex !== publicKeyHex) {
