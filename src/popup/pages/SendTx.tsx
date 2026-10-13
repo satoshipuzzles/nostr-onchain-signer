@@ -707,7 +707,7 @@ export function SendTx({ publicKey, onBack }: Props) {
                 onClick={() => setChain(c)}
                 className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
                   chain === c
-                    ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                    ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-black'
                     : 'text-gray-400 hover:text-white'
                 }`}
               >
@@ -1080,7 +1080,7 @@ export function SendTx({ publicKey, onBack }: Props) {
                   type="button"
                   onClick={() => setDataFormat(f)}
                   className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors ${
-                    dataFormat === f ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'
+                    dataFormat === f ? 'bg-bitcoin text-black' : 'text-gray-400 hover:text-white'
                   }`}
                 >
                   {f === 'text' ? 'Text' : 'Hex'}

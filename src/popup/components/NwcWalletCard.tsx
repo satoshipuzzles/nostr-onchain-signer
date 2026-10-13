@@ -95,7 +95,7 @@ export function NwcWalletCard({ chain, className = '' }: { chain: LightningChain
           <button
             onClick={handleSave}
             disabled={!uri.trim() || saving}
-            className="mt-2 w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
+            className="mt-2 w-full py-2 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
           >
             {saving ? 'Connecting...' : 'Connect Wallet'}
           </button>

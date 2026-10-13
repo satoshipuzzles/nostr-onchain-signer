@@ -509,7 +509,7 @@ export function Messages() {
                 {dm.invoice && (
                   <Link
                     to={buildSendPathFromInvoice(dm.invoice)}
-                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-2 bg-bitcoin/90 text-white rounded-lg text-xs font-semibold hover:bg-bitcoin transition-colors"
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-2 bg-bitcoin/90 text-black rounded-lg text-xs font-semibold hover:bg-bitcoin transition-colors"
                   >
                     <Bitcoin className="w-3.5 h-3.5" />
                     Pay {dm.invoice.amount_sats ? `${dm.invoice.amount_sats.toLocaleString()} sats` : 'Invoice'}

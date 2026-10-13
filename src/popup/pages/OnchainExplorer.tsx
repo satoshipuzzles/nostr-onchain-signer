@@ -618,7 +618,7 @@ export function OnchainExplorer() {
               title={`${CHAIN_INFO[c].label} — ${CHAIN_INFO[c].pow}`}
               className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
                 chain === c
-                  ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                  ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-black'
                   : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -1961,7 +1961,7 @@ function InvoicesTab({
               {!item.isSent && status !== 'paid' && !isExpired && (
                 <button
                   onClick={() => navigate(`/send?to=${encodeURIComponent(item.invoice.address)}${item.invoice.amount_sats ? `&amount=${item.invoice.amount_sats}` : ''}`)}
-                  className="ml-auto px-2.5 py-1 bg-bitcoin/90 hover:bg-bitcoin text-white rounded-lg text-[10px] font-semibold transition-colors"
+                  className="ml-auto px-2.5 py-1 bg-bitcoin/90 hover:bg-bitcoin text-black rounded-lg text-[10px] font-semibold transition-colors"
                 >
                   Pay
                 </button>

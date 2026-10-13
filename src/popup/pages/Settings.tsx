@@ -361,7 +361,7 @@ export function Settings() {
               <button
                 key={c}
                 onClick={() => { saveStatusBarChain(c); setStatusBarChain(c); }}
-                className={`px-3 py-1 rounded-md transition-colors ${statusBarChain === c ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'}`}
+                className={`px-3 py-1 rounded-md transition-colors ${statusBarChain === c ? 'bg-bitcoin text-black' : 'text-gray-400 hover:text-white'}`}
               >
                 {c.toUpperCase()}
               </button>
@@ -468,7 +468,7 @@ export function Settings() {
             <button
               onClick={handleNodeSave}
               disabled={nodeSaving}
-              className="flex-1 py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90"
+              className="flex-1 py-2 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90"
             >
               {nodeSaving ? 'Saving...' : 'Save'}
             </button>
@@ -621,7 +621,7 @@ export function Settings() {
               <button
                 type="submit"
                 disabled={editNsecSaving || !editNsecInput.trim()}
-                className="w-full py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
+                className="w-full py-2 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
               >
                 {editNsecSaving ? 'Saving...' : 'Save Secret Key'}
               </button>

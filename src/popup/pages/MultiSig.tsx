@@ -555,7 +555,7 @@ function ContactRow({
         </div>
         {isSelected && (
           <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-bitcoin flex items-center justify-center">
-            <Check className="w-2.5 h-2.5 text-white" />
+            <Check className="w-2.5 h-2.5 text-black" />
           </div>
         )}
       </div>

@@ -206,7 +206,7 @@ export function ReplyComposer({
             <button
               onClick={handlePublish}
               disabled={!content.trim() || publishing}
-              className="flex items-center gap-1 px-3 py-1.5 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 min-h-[36px]"
+              className="flex items-center gap-1 px-3 py-1.5 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 min-h-[36px]"
             >
               {publishing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
               {mode === 'reply' ? 'Reply' : 'Quote'}

@@ -87,7 +87,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
               onClose();
               navigate('/settings');
             }}
-            className="w-full py-2 bg-bitcoin text-white rounded-lg text-sm font-medium hover:bg-bitcoin/90 transition-colors"
+            className="w-full py-2 bg-bitcoin text-black rounded-lg text-sm font-medium hover:bg-bitcoin/90 transition-colors"
           >
             Go to Settings
           </button>
@@ -236,7 +236,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
                   onClick={() => setChain(c)}
                   disabled={!wallets[c]}
                   title={wallets[c] ? undefined : `Connect a ${c.toUpperCase()} Lightning wallet in Settings`}
-                  className={`flex-1 py-1.5 rounded-md transition-colors disabled:opacity-40 ${chain === c ? 'bg-bitcoin text-white' : 'text-gray-400 hover:text-white'}`}
+                  className={`flex-1 py-1.5 rounded-md transition-colors disabled:opacity-40 ${chain === c ? 'bg-bitcoin text-black' : 'text-gray-400 hover:text-white'}`}
                 >
                   {c.toUpperCase()} Lightning
                 </button>
@@ -285,7 +285,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
             <button
               onClick={handleZap}
               disabled={wrongNetwork || (xbtFallback && lud16Chain === 'checking')}
-              className="w-full py-2.5 bg-bitcoin text-white rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
+              className="w-full py-2.5 bg-bitcoin text-black rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
             >
               <Zap className="w-4 h-4" />
               Zap {amount.toLocaleString()} sats

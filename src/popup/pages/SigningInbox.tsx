@@ -732,7 +732,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
           }`}
         >
           <Send className="w-3.5 h-3.5" />
-          Sent {rounds.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{rounds.length}</span>}
+          Sent {rounds.length > 0 && <span className="text-[9px] bg-nostr/80 text-black px-1 rounded-full">{rounds.length}</span>}
         </button>
         <button
           onClick={() => setActiveTab('invoices')}
@@ -743,7 +743,7 @@ export function SigningInbox({ publicKey, onBack }: Props) {
           }`}
         >
           <FileText className="w-3.5 h-3.5" />
-          Invoices {invoices.length > 0 && <span className="text-[9px] bg-nostr/80 text-white px-1 rounded-full">{invoices.length}</span>}
+          Invoices {invoices.length > 0 && <span className="text-[9px] bg-nostr/80 text-black px-1 rounded-full">{invoices.length}</span>}
         </button>
       </div>
 

@@ -492,7 +492,7 @@ export function SignPage() {
             href={`https://mempool.space/tx/${broadcastTxid}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-3 bg-bitcoin text-white rounded-xl text-sm font-medium hover:bg-bitcoin/90 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-3 bg-bitcoin text-black rounded-xl text-sm font-medium hover:bg-bitcoin/90 transition-colors"
           >
             <ExternalLink className="w-4 h-4" />
             View on Mempool
@@ -645,7 +645,7 @@ export function SignPage() {
               <button
                 onClick={handleSign}
                 disabled={signing}
-                className="w-full py-3.5 bg-bitcoin text-white rounded-xl font-bold text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2"
+                className="w-full py-3.5 bg-bitcoin text-black rounded-xl font-bold text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2"
               >
                 {signing ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Signing &amp; Publishing...</>
@@ -669,7 +669,7 @@ export function SignPage() {
             <button
               onClick={handleRestoreWallet}
               disabled={restoring}
-              className="w-full py-2.5 bg-nostr/80 text-white rounded-xl font-medium text-sm hover:bg-nostr transition-colors flex items-center justify-center gap-2"
+              className="w-full py-2.5 bg-nostr/80 text-black rounded-xl font-medium text-sm hover:bg-nostr transition-colors flex items-center justify-center gap-2"
             >
               {restoring ? (
                 <><Loader2 className="w-4 h-4 animate-spin" /> Restoring...</>

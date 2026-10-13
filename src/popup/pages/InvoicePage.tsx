@@ -215,7 +215,7 @@ export function InvoicePage() {
               {error && <p className="text-red-400 text-xs">{error}</p>}
               <button
                 type="submit"
-                className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors"
+                className="w-full py-3 bg-bitcoin text-black rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors"
               >
                 Unlock Invoice
               </button>
@@ -329,7 +329,7 @@ export function InvoicePage() {
         {eventId && (
           <Link
             to={`/send?invoice=${eventId}&to=${encodeURIComponent(invoice.address)}${invoice.amount_sats ? `&amount=${invoice.amount_sats}` : ''}`}
-            className="w-full py-3 bg-nostr text-white rounded-xl font-medium text-sm hover:bg-nostr/90 transition-colors flex items-center justify-center gap-2 mb-3 min-h-[48px]"
+            className="w-full py-3 bg-nostr text-black rounded-xl font-medium text-sm hover:bg-nostr/90 transition-colors flex items-center justify-center gap-2 mb-3 min-h-[48px]"
           >
             <Bitcoin className="w-4 h-4" />
             Pay in App (OP_RETURN included)
@@ -339,7 +339,7 @@ export function InvoicePage() {
         {/* Copy Address Button */}
         <button
           onClick={copyAddress}
-          className="w-full py-3 bg-bitcoin text-white rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 mb-3"
+          className="w-full py-3 bg-bitcoin text-black rounded-xl font-medium text-sm hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 mb-3"
         >
           {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
           {copied ? 'Copied!' : 'Copy Address'}

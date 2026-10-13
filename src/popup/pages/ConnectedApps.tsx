@@ -182,7 +182,7 @@ export function ConnectedApps() {
                         />
                         <button
                           onClick={() => handleKindsSave(app.origin)}
-                          className="px-3 py-2 bg-bitcoin text-white rounded-lg text-xs font-medium hover:bg-bitcoin/90 transition-colors"
+                          className="px-3 py-2 bg-bitcoin text-black rounded-lg text-xs font-medium hover:bg-bitcoin/90 transition-colors"
                         >
                           Save
                         </button>

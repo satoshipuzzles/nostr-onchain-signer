@@ -304,7 +304,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
                 onClick={() => setActivityWindow(w)}
                 className={`text-xs py-1.5 px-2 rounded-lg font-medium transition-colors ${
                   activityWindow === w
-                    ? 'bg-bitcoin text-white'
+                    ? 'bg-bitcoin text-black'
                     : 'bg-surface-600 text-gray-400 hover:bg-surface-500'
                 }`}
               >

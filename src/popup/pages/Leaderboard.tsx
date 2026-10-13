@@ -347,7 +347,7 @@ export function Leaderboard() {
               onClick={() => setRankChain(c)}
               className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${
                 rankChain === c
-                  ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                  ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-black'
                   : 'text-gray-400 hover:text-white'
               }`}
             >
@@ -373,7 +373,7 @@ export function Leaderboard() {
         <button
           onClick={searchNostr}
           disabled={!searchTerm.trim() || !!processing}
-          className="px-4 py-2.5 bg-bitcoin text-white rounded-xl text-sm font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
+          className="px-4 py-2.5 bg-bitcoin text-black rounded-xl text-sm font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors"
         >
           Search
         </button>

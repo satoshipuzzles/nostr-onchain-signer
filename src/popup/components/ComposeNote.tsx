@@ -272,7 +272,7 @@ export function ComposeNote({ onPublished, mentionPubkey, placeholder }: Props) 
             <button
               onClick={handlePublish}
               disabled={(!content.trim() && imageUrls.length === 0) || publishing}
-              className="flex items-center gap-1.5 px-4 py-2 bg-bitcoin text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors flex-shrink-0 min-h-[44px]"
+              className="flex items-center gap-1.5 px-4 py-2 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-bitcoin/90 transition-colors flex-shrink-0 min-h-[44px]"
             >
               {publishing ? (
                 <Loader2 className="w-3 h-3 animate-spin" />

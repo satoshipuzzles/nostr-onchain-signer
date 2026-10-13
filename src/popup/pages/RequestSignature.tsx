@@ -393,7 +393,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
                   onClick={() => setChain(c)}
                   className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${
                     chain === c
-                      ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-white'
+                      ? c === 'xbt' ? 'bg-purple-600 text-white' : 'bg-bitcoin text-black'
                       : 'text-gray-400 hover:text-white'
                   }`}
                 >

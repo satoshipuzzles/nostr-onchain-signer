@@ -220,7 +220,7 @@ export function EditProfile({ publicKey, privateKeyHex, profile, onSaved, onBack
               disabled={uploading === 'picture'}
               className="absolute -bottom-1 -right-1 w-6 h-6 bg-bitcoin rounded-full flex items-center justify-center shadow-lg"
             >
-              {uploading === 'picture' ? <Loader2 className="w-3 h-3 animate-spin text-white" /> : <Upload className="w-3 h-3 text-white" />}
+              {uploading === 'picture' ? <Loader2 className="w-3 h-3 animate-spin text-black" /> : <Upload className="w-3 h-3 text-black" />}
             </button>
           </div>
           <div className="pt-8">
