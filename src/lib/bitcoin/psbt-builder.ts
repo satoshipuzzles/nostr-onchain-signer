@@ -30,6 +30,12 @@ export interface PsbtBuildParams {
    * replayed onto BTC. Default 'btc' (ordinary BIP341 signatures).
    */
   chain?: Chain;
+  /**
+   * Take the network fee out of amountSats instead of adding it on top: the
+   * recipient gets amountSats - fee and the wallet spends exactly amountSats.
+   * Lets "Max" empty a wallet without guessing the fee.
+   */
+  subtractFeeFromAmount?: boolean;
 }
 
 export interface PsbtResult {
@@ -41,6 +47,8 @@ export interface PsbtResult {
   outputCount: number;
   totalInputSats: number;
   changeSats: number;
+  /** What the recipient output actually pays (amountSats, or amountSats - fee). */
+  recipientSats: number;
 }
 
 function addressToScriptPubKey(address: string): Uint8Array {
@@ -97,6 +105,7 @@ export async function buildPsbt(params: PsbtBuildParams): Promise<PsbtResult> {
  */
 export function buildPsbtFromUtxos(params: PsbtBuildParams, utxos: MempoolUTXO[], actualFeeRate: number): PsbtResult {
   const { fromAddress, toAddress, amountSats, changeAddress, internalPubkeyHex, opReturnData, selectedUtxos } = params;
+  const subtract = !!params.subtractFeeFromAmount;
   const chain = params.chain ?? 'btc';
 
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
@@ -125,20 +134,33 @@ export function buildPsbtFromUtxos(params: PsbtBuildParams, utxos: MempoolUTXO[]
       const vsize = estimateVsize(selected.length, 2, opReturnScript?.length ?? 0);
       fee = Math.ceil(vsize * actualFeeRate);
 
-      if (totalInput >= amountSats + fee + 546) break;
+      if (subtract ? totalInput >= amountSats : totalInput >= amountSats + fee + 546) break;
     }
   }
 
-  const hasChange = totalInput - amountSats - fee >= 546;
+  // With the fee taken from the amount, change is whatever the amount leaves
+  // behind and does not depend on the fee.
+  const hasChange = (subtract ? totalInput - amountSats : totalInput - amountSats - fee) >= 546;
   const numOutputs = 1 + (hasChange ? 1 : 0) + (opReturnScript ? 1 : 0);
   const vsize = estimateVsize(selected.length, 1 + (hasChange ? 1 : 0), opReturnScript?.length ?? 0);
   fee = Math.ceil(vsize * actualFeeRate);
 
-  if (totalInput < amountSats + fee) {
+  let recipientSats = amountSats;
+  if (subtract) {
+    if (totalInput < amountSats) {
+      throw new Error(`Insufficient funds. Have ${totalInput} sats, trying to send ${amountSats}`);
+    }
+    recipientSats = amountSats - fee;
+    if (recipientSats < 546) {
+      throw new Error(`Amount (${amountSats} sats) is too small to cover the ${fee} sat fee and still leave a spendable output`);
+    }
+  } else if (totalInput < amountSats + fee) {
     throw new Error(`Insufficient funds. Have ${totalInput} sats, need ${amountSats + fee} (amount + fee)`);
   }
 
-  const changeSats = totalInput - amountSats - fee;
+  const changeSats = totalInput - recipientSats - fee;
+  // Change below dust is not created; it goes to the miners, so count it as fee.
+  if (changeSats < 546) fee += changeSats;
 
   // Build PSBT
   const fromScript = addressToScriptPubKey(fromAddress);
@@ -164,7 +186,7 @@ export function buildPsbtFromUtxos(params: PsbtBuildParams, utxos: MempoolUTXO[]
   }
 
   // Recipient
-  tx.addOutputAddress(toAddress, BigInt(amountSats));
+  tx.addOutputAddress(toAddress, BigInt(recipientSats));
 
   // Change
   if (changeSats >= 546) {
@@ -189,6 +211,7 @@ export function buildPsbtFromUtxos(params: PsbtBuildParams, utxos: MempoolUTXO[]
     outputCount: numOutputs,
     totalInputSats: totalInput,
     changeSats: changeSats >= 546 ? changeSats : 0,
+    recipientSats,
   };
 }
 

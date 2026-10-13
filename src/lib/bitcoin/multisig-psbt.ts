@@ -133,6 +133,7 @@ export async function buildMultisigPsbt(params: {
     outputCount: numOutputs,
     totalInputSats: totalInput,
     changeSats: changeSats >= 546 ? changeSats : 0,
+    recipientSats: amountSats,
   };
 }
 

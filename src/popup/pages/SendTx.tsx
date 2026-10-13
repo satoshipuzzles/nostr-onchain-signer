@@ -56,6 +56,8 @@ export function SendTx({ publicKey, onBack }: Props) {
   }
   const [recipient, setRecipient] = useState('');
   const [amountSats, setAmountSats] = useState('');
+  // Take the network fee out of the amount instead of adding it on top.
+  const [subtractFee, setSubtractFee] = useState(false);
   const [memo, setMemo] = useState('');
   const [feeRate, setFeeRate] = useState('');
   const [feeEstimates, setFeeEstimates] = useState<FeeEstimate | null>(null);
@@ -436,6 +438,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         opReturnData,
         selectedUtxos: preSelected,
         chain,
+        subtractFeeFromAmount: subtractFee,
       });
 
       setPsbtResult(result);
@@ -518,9 +521,12 @@ export function SendTx({ publicKey, onBack }: Props) {
               <span className={chain === 'xbt' ? 'text-purple-400 font-semibold' : 'text-bitcoin font-semibold'}>{CHAIN_INFO[chain].label}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-500">{mode === 'split' ? 'Split (to self)' : 'Send'}</span>
+              <span className="text-gray-500">{mode === 'split' ? 'Split (to self)' : 'Recipient gets'}</span>
               <span className="text-bitcoin font-semibold">
-                {formatSats(mode === 'split' ? psbtResult.totalInputSats - psbtResult.fee : parseInt(amountSats))}
+                {formatSats(mode === 'split' ? psbtResult.totalInputSats - psbtResult.fee : psbtResult.recipientSats)}
+                {mode !== 'split' && psbtResult.recipientSats !== parseInt(amountSats) && (
+                  <span className="text-[10px] text-gray-500 font-normal ml-1">(fee taken from amount)</span>
+                )}
               </span>
             </div>
             <div className="flex justify-between">
@@ -849,7 +855,7 @@ export function SendTx({ publicKey, onBack }: Props) {
           <label className="text-xs text-gray-400 mb-1 flex items-center justify-between">
             <span>Amount (sats)</span>
             {balance > 0 && (
-              <button type="button" onClick={() => setAmountSats(String(balance))} className="text-[10px] text-bitcoin hover:underline">
+              <button type="button" onClick={() => { setAmountSats(String(balance)); setSubtractFee(true); }} className="text-[10px] text-bitcoin hover:underline">
                 Max: {formatSats(balance)}
               </button>
             )}
@@ -887,6 +893,22 @@ export function SendTx({ publicKey, onBack }: Props) {
               </p>
             )}
           </div>
+          <label className="mt-2 flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={subtractFee}
+              onChange={(e) => setSubtractFee(e.target.checked)}
+              className="mt-0.5 accent-bitcoin"
+            />
+            <span className="text-xs text-gray-300">
+              Pay the fee from this amount
+              <span className="block text-[10px] text-gray-500">
+                {subtractFee
+                  ? 'The recipient gets this amount minus the network fee. Use this to send everything.'
+                  : 'The fee is added on top; the recipient gets exactly this amount.'}
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Fee rate with sub-sat support */}
@@ -1159,17 +1181,30 @@ export function SendTx({ publicKey, onBack }: Props) {
                 )}
               </span>
             </div>
-            <div className="flex items-center justify-between text-[11px] mt-1">
-              <span className="text-gray-500">Total cost</span>
-              <span className="text-bitcoin font-medium">
-                {formatSats(parseInt(amountSats) + Math.ceil(estimatedVsize * parseFloat(feeRate)))}
-                {btcPriceUsd > 0 && (
-                  <span className="text-gray-500 ml-1">
-                    ≈ ${(((parseInt(amountSats) + Math.ceil(estimatedVsize * parseFloat(feeRate))) / 1e8) * btcPriceUsd).toFixed(2)}
-                  </span>
-                )}
-              </span>
-            </div>
+            {(() => {
+              const amt = parseInt(amountSats) || 0;
+              const estFee = Math.ceil(estimatedVsize * parseFloat(feeRate));
+              const total = subtractFee ? amt : amt + estFee;
+              return (
+                <>
+                  {subtractFee && (
+                    <div className="flex items-center justify-between text-[11px] mt-1">
+                      <span className="text-gray-500">Recipient gets</span>
+                      <span className="text-gray-300">≈ {formatSats(Math.max(0, amt - estFee))}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between text-[11px] mt-1">
+                    <span className="text-gray-500">Total cost</span>
+                    <span className="text-bitcoin font-medium">
+                      {formatSats(total)}
+                      {btcPriceUsd > 0 && (
+                        <span className="text-gray-500 ml-1">≈ ${((total / 1e8) * btcPriceUsd).toFixed(2)}</span>
+                      )}
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
