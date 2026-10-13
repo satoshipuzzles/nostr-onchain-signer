@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Search, User, Wallet, FileText, X, Loader2, ChevronDown } from 'lucide-react';
+import { Search, User, Wallet, FileText, X, Loader2, ChevronDown, ScanLine } from 'lucide-react';
+import { toast } from 'sonner';
+import { QrScanner } from './QrScanner';
+import { parsePaymentUri } from '@/lib/bitcoin/payment-uri';
 import { searchMentions, type MentionSearchResult } from '@/lib/nostr/mention-search';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
@@ -33,6 +36,7 @@ export function RecipientPicker({ publicKey, value, onChange, onAmountSuggestion
   const [wallets, setWallets] = useState<ArchivedMultisig[]>([]);
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [selectedLabel, setSelectedLabel] = useState('');
+  const [scanning, setScanning] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -104,6 +108,22 @@ export function RecipientPicker({ publicKey, value, onChange, onAmountSuggestion
       return true;
     }
     return false;
+  }
+
+  function handleScan(text: string) {
+    setScanning(false);
+    const pay = parsePaymentUri(text);
+    if (!pay || !acceptDirectInput(pay.target)) {
+      toast.error('That QR code is not a Bitcoin address or npub');
+      return;
+    }
+    if (pay.label) setSelectedLabel(pay.label);
+    if (pay.amountSats && onAmountSuggestion) {
+      onAmountSuggestion(pay.amountSats);
+      toast.success(`Scanned — amount set to ${Number(pay.amountSats).toLocaleString()} sats`);
+    } else {
+      toast.success('Address scanned');
+    }
   }
 
   function selectNostrUser(result: MentionSearchResult) {
@@ -201,12 +221,23 @@ export function RecipientPicker({ publicKey, value, onChange, onAmountSuggestion
             : tab === 'wallets' ? 'Select a wallet or paste address...'
             : 'Select an invoice or paste address...'
           }
-          className="input-field text-sm pl-9 pr-8"
+          className="input-field text-sm pl-9 pr-10"
         />
-        {searching && (
+        {searching ? (
           <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-gray-500" />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setScanning(true)}
+            className="absolute right-1 top-1/2 -translate-y-1/2 p-2 rounded-lg text-gray-400 hover:text-bitcoin hover:bg-white/5"
+            aria-label="Scan QR code"
+            title="Scan QR code"
+          >
+            <ScanLine className="w-4 h-4" />
+          </button>
         )}
       </div>
+      {scanning && <QrScanner onResult={handleScan} onClose={() => setScanning(false)} />}
 
       {/* Dropdown */}
       {showDropdown && (
