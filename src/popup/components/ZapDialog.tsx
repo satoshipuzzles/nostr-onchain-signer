@@ -10,6 +10,7 @@ import {
   createZapRequestEvent,
 } from '@/lib/nostr/zap';
 import { type FeedNote } from '@/lib/nostr/feed';
+import { detectAddressChain, invoiceChain, type LnChain } from '@/lib/nostr/lightning-chain';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { useNavigate } from 'react-router-dom';
 
@@ -34,6 +35,17 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   // Which Lightning wallets are connected; null while loading
   const [wallets, setWallets] = useState<Record<LightningChain, boolean> | null>(null);
   const [chain, setChain] = useState<LightningChain>('xbt');
+  // Which network the recipient's plain lud16 is actually on (see lightning-chain.ts)
+  const [lud16Chain, setLud16Chain] = useState<LnChain | 'checking' | 'unknown' | null>(null);
+
+  useEffect(() => {
+    const addr = profile?.lud16;
+    if (!addr) { setLud16Chain(null); return; }
+    let live = true;
+    setLud16Chain('checking');
+    detectAddressChain(addr).then((c) => { if (live) setLud16Chain(c ?? 'unknown'); });
+    return () => { live = false; };
+  }, [profile?.lud16]);
 
   useEffect(() => {
     Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')]).then(([x, b]) => {
@@ -84,10 +96,14 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     );
   }
 
-  // XBT zaps go to the XBT Lightning address; without one, the regular address
-  // is tried over XBT, which only routes if that node is on the XBT network.
+  // XBT zaps go to the XBT Lightning address. Without one, the regular address
+  // is used only if its invoices carry the BLAKE2b flag, i.e. it is an XBT node.
   const xbtFallback = chain === 'xbt' && !profile?.lud16Xbt;
   const lud16 = chain === 'xbt' ? (profile?.lud16Xbt || profile?.lud16) : profile?.lud16;
+  const wrongNetwork =
+    (xbtFallback && lud16Chain === 'btc') ||
+    (chain === 'btc' && !!profile?.lud16 && lud16Chain === 'xbt');
+  const otherChain: LightningChain = chain === 'xbt' ? 'btc' : 'xbt';
 
   async function handleZap() {
     if (!lud16) {
@@ -148,6 +164,16 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     if (invoiceResult.error || !invoiceResult.invoice) {
       setStatus('error');
       setStatusMessage(invoiceResult.error || 'Failed to get invoice');
+      return;
+    }
+
+    // Last check before money moves: the invoice says which network minted it.
+    const invChain = invoiceChain(invoiceResult.invoice);
+    if (invChain !== chain) {
+      setStatus('error');
+      setStatusMessage(
+        `${lud16} is a ${invChain.toUpperCase()} Lightning address, so it can't be paid from your ${chain.toUpperCase()} wallet. Nothing was sent.`,
+      );
       return;
     }
 
@@ -217,8 +243,20 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
               ))}
             </div>
             <p className="text-[11px] text-gray-500 mb-3 truncate" title={lud16}>
-              {lud16 ? <>To {lud16}{xbtFallback && <span className="text-amber-500"> (no XBT address listed)</span>}</> : `No ${chain.toUpperCase()} Lightning address`}
+              {lud16 ? <>To {lud16}
+                {xbtFallback && lud16Chain === 'checking' && <span className="text-gray-400"> · checking network…</span>}
+                {xbtFallback && lud16Chain === 'xbt' && <span className="text-green-400"> · on XBT Lightning ✓</span>}
+                {xbtFallback && lud16Chain === 'unknown' && <span className="text-amber-500"> · couldn't check network</span>}
+              </> : `No ${chain.toUpperCase()} Lightning address`}
             </p>
+            {wrongNetwork && (
+              <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-3">
+                {profile?.lud16} is on <b>{(lud16Chain as string).toUpperCase()} Lightning</b>, not {chain.toUpperCase()}.
+                {wallets[otherChain]
+                  ? <> <button onClick={() => setChain(otherChain)} className="underline font-medium">Zap with {otherChain.toUpperCase()} instead</button></>
+                  : <> Connect a {otherChain.toUpperCase()} wallet in Settings to zap them.</>}
+              </div>
+            )}
 
             <div className="grid grid-cols-3 gap-2 mb-4">
               {ZAP_AMOUNTS.map((a) => (
@@ -246,7 +284,8 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
 
             <button
               onClick={handleZap}
-              className="w-full py-2.5 bg-bitcoin text-white rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2"
+              disabled={wrongNetwork || (xbtFallback && lud16Chain === 'checking')}
+              className="w-full py-2.5 bg-bitcoin text-white rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
             >
               <Zap className="w-4 h-4" />
               Zap {amount.toLocaleString()} sats
