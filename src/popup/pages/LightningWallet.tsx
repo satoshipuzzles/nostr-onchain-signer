@@ -17,6 +17,7 @@ import { subscribeEvents, type FeedNote } from '@/lib/nostr/feed';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NwcWalletCard } from '../components/NwcWalletCard';
+import { ChannelsCard } from '../components/ChannelsCard';
 import { QrScanner } from '../components/QrScanner';
 import { QRCode } from '../components/QRCode';
 import { ZapDialog } from '../components/ZapDialog';
@@ -96,6 +97,7 @@ export function LightningWallet() {
   });
   const [txs, setTxs] = useState<NwcTransaction[] | null>(null);
   const [txError, setTxError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [sheet, setSheet] = useState<'pay' | 'receive' | null>(null);
   const [zapTarget, setZapTarget] = useState<{ pubkey: string; profile: ProfileMetadata | null; note?: FeedNote } | null>(null);
@@ -407,7 +409,7 @@ export function LightningWallet() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold flex items-center gap-2"><Zap className="w-5 h-5" /> Lightning</h1>
         <button
-          onClick={() => { refreshWallet(chain); refreshTxs(chain); }}
+          onClick={() => { refreshWallet(chain); refreshTxs(chain); setRefreshKey((k) => k + 1); }}
           className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5"
           aria-label="Refresh"
         >
@@ -522,6 +524,10 @@ export function LightningWallet() {
             </ul>
           )}
         </div>
+      )}
+
+      {active.conn && active.info?.methods?.includes('list_channels') && (
+        <ChannelsCard conn={active.conn} refreshKey={refreshKey} />
       )}
 
       <p className="text-[11px] text-gray-600 px-1">

@@ -279,3 +279,50 @@ export async function saveNwcConnection(
     await chrome.storage.local.remove(key);
   }
 }
+
+/* Read-only node views. Our XBT node's NWC service answers these for a
+ * connection created with "Channels" ticked; other wallets return
+ * NOT_IMPLEMENTED or RESTRICTED. */
+
+export interface NwcChannel {
+  state: 'active' | 'inactive' | 'opening' | 'closing' | 'force_closing';
+  chan_id?: string;
+  channel_point?: string;
+  remote_pubkey?: string;
+  alias?: string;
+  capacity_sats: number;
+  local_sats: number;
+  remote_sats: number;
+  private?: boolean;
+  initiator?: boolean;
+  policy?: { base_fee_msat: number; fee_rate_ppm: number; time_lock_delta: number; disabled: boolean } | null;
+  closing_txid?: string | null;
+  blocks_til_maturity?: number;
+}
+
+export interface NwcNodeSummary {
+  alias?: string;
+  pubkey?: string;
+  block_height: number;
+  synced_to_chain: boolean;
+  synced_to_graph: boolean;
+  num_active_channels: number;
+  num_inactive_channels: number;
+  num_pending_channels: number;
+  num_peers: number;
+  onchain_confirmed_sats: number;
+  onchain_unconfirmed_sats: number;
+  channel_local_msat: number;
+  channel_remote_msat: number;
+  pending_open_local_msat: number;
+  limbo_sats: number;
+}
+
+export async function listNwcChannels(c: NwcConnection) {
+  const r = await nwcRequest<{ channels: NwcChannel[] }>(c, 'list_channels', {}, 30000);
+  return r.error ? { error: r.error } : { channels: r.result?.channels ?? [] };
+}
+
+export function getNwcNodeSummary(c: NwcConnection) {
+  return nwcRequest<NwcNodeSummary>(c, 'get_node_summary', {}, 20000);
+}
