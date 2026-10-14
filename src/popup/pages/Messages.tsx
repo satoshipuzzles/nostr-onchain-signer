@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Send, MessageCircle, Bitcoin, Loader2, Search, X } from 'lucide-react';
 import { getCachedProfile, resolveProfiles, searchProfilesNip50 } from '@/lib/nostr/cache';
 import type { ProfileMetadata } from '@/lib/nostr/social';
-import { safeImageUrl } from '@/lib/utils';
+import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { sendDM, decryptDM, unwrapGiftWrapEvent } from '@/lib/nostr/dm';
 import { ensureOwnDmRelayList, fetchDmInboxRelays, DEFAULT_DM_RELAYS } from '@/lib/nostr/dm-relays';
@@ -75,7 +75,7 @@ function LinkifiedText({ text }: { text: string }) {
           return (
             <a
               key={i}
-              href={part}
+              href={safeHttpUrl(part)}
               target={isInternal ? '_self' : '_blank'}
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}

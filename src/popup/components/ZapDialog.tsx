@@ -10,7 +10,7 @@ import {
   createZapRequestEvent,
 } from '@/lib/nostr/zap';
 import { type FeedNote } from '@/lib/nostr/feed';
-import { detectAddressChain, invoiceChain, type LnChain } from '@/lib/nostr/lightning-chain';
+import { detectAddressChain, invoiceChain, decodeInvoice, type LnChain } from '@/lib/nostr/lightning-chain';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { useNavigate } from 'react-router-dom';
 
@@ -164,6 +164,19 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     if (invoiceResult.error || !invoiceResult.invoice) {
       setStatus('error');
       setStatusMessage(invoiceResult.error || 'Failed to get invoice');
+      return;
+    }
+
+    // The recipient's server writes the invoice. It must be for exactly what
+    // was asked, or a dishonest server could bill far more than the zap.
+    const decoded = decodeInvoice(invoiceResult.invoice);
+    if (!decoded || decoded.amountMsats !== amountMsats) {
+      setStatus('error');
+      setStatusMessage(
+        decoded?.amountMsats
+          ? `${lud16} sent an invoice for ${Math.floor(decoded.amountMsats / 1000).toLocaleString()} sats instead of ${amount.toLocaleString()}. Nothing was sent.`
+          : `${lud16} sent an invoice without the right amount. Nothing was sent.`,
+      );
       return;
     }
 

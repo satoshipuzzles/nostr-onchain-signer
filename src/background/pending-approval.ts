@@ -1,3 +1,4 @@
+import { summarizePsbt } from '@/lib/bitcoin/psbt-describe';
 /**
  * Queue external signing requests until the user approves in the extension popup.
  */
@@ -31,7 +32,8 @@ const SIGNING_TYPES = new Set([
 
 // Only local dev bypasses approval — deployed web apps go through the normal
 // per-origin permission flow (see app-permissions.ts).
-const TRUSTED_LOCAL_HOSTS = ['localhost', '127.0.0.1'];
+// No host bypasses approval: any local process can serve a page on localhost.
+const TRUSTED_LOCAL_HOSTS: string[] = [];
 
 function isOwnAppUrl(url: string): boolean {
   try {
@@ -84,13 +86,12 @@ function buildPreview(type: string, payload: unknown): string {
   }
   if (type === 'nip07:signSchnorr') {
     const hash = (payload as { hash?: string })?.hash || '';
-    return `Sign Bitcoin sighash\n${hash.slice(0, 64)}${hash.length > 64 ? '…' : ''}`;
+    return `⚠ Sign a raw Bitcoin hash. This page could be spending your coins and the hash cannot show what it pays. Only approve if you started this payment on this site.\n${hash.slice(0, 64)}${hash.length > 64 ? '…' : ''}`;
   }
   if (type === 'btc:signPsbt' || type === 'btc:signPsbtPartial') {
     const psbt = (payload as { psbtHex?: string })?.psbtHex || '';
-    return type === 'btc:signPsbtPartial'
-      ? `Partial-sign PSBT (${psbt.length} hex chars)`
-      : `Sign & finalize PSBT (${psbt.length} hex chars)`;
+    const head = type === 'btc:signPsbtPartial' ? 'Co-sign Bitcoin transaction' : 'Sign & send Bitcoin transaction';
+    return `${head}\n${summarizePsbt(psbt)}`;
   }
   return 'Approve signing request';
 }

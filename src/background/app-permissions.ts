@@ -43,6 +43,18 @@ export const SENSITIVE_TYPES = new Set<string>([
   'btc:signPsbtPartial',
 ]);
 
+/**
+ * Requests that can move money. An "always allow" grant never covers these:
+ * each one is shown and approved on its own. signSchnorr is here because a
+ * Schnorr signature over an arbitrary hash is a valid co-signer signature on
+ * whatever spend the page computed it from.
+ */
+export const ALWAYS_ASK_TYPES = new Set<string>([
+  'nip07:signSchnorr',
+  'btc:signPsbt',
+  'btc:signPsbtPartial',
+]);
+
 export type PermissionDecision = 'skip' | 'allow' | 'ask' | 'deny';
 
 /**
@@ -52,7 +64,8 @@ export type PermissionDecision = 'skip' | 'allow' | 'ask' | 'deny';
  * site, so no website can silently sign. Users can still grant "always allow"
  * to our web app from the prompt if they want seamless signing.
  */
-const TRUSTED_LOCAL_HOSTS = ['localhost', '127.0.0.1'];
+// No host bypasses approval: any local process can serve a page on localhost.
+const TRUSTED_LOCAL_HOSTS: string[] = [];
 
 export function isOwnAppUrl(url: string): boolean {
   try {
@@ -184,6 +197,6 @@ export async function evaluateRequest(
   const app = await getApp(origin);
   if (!app) return 'ask';
   if (app.permission === 'deny') return 'deny';
-  if (app.permission === 'always') return 'allow';
+  if (app.permission === 'always' && !ALWAYS_ASK_TYPES.has(type)) return 'allow';
   return 'ask';
 }

@@ -285,7 +285,7 @@ export function syncConfigToWallet(
   };
 }
 
-async function syncWalletsToRelay(): Promise<void> {
+export async function syncWalletsToRelay(): Promise<void> {
   const { publishWalletConfigs } = await import('@/lib/nostr/wallet-sync');
   const all = await loadMultisigWallets();
   const configs = all.map(walletToSyncConfig);

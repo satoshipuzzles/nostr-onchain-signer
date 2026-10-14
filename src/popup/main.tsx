@@ -62,9 +62,12 @@ class ErrorBoundary extends React.Component<
   }
 
   handleReset = () => {
+    // Clear caches only. The encrypted vault is the only copy of the user's
+    // keys and a render crash (say, from a malformed relay event) must never
+    // be one click away from deleting it.
     const keys = Object.keys(localStorage);
     for (const key of keys) {
-      if (key.startsWith('nostr_onchain_')) localStorage.removeItem(key);
+      if (key.startsWith('nostr_onchain_') && key.includes('cache')) localStorage.removeItem(key);
     }
     sessionStorage.clear();
     window.location.reload();
@@ -78,7 +81,7 @@ class ErrorBoundary extends React.Component<
           <h2 style={{ marginBottom: 8 }}>Something went wrong</h2>
           <p style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>{this.state.error}</p>
           <p style={{ color: '#666', fontSize: 12, marginBottom: 24 }}>
-            If this keeps happening, reset and restore from your backup file.
+            Clearing caches keeps your accounts and keys. If it keeps happening, reload or report it.
           </p>
           <button
             onClick={() => { this.setState({ hasError: false }); window.location.reload(); }}
@@ -90,7 +93,7 @@ class ErrorBoundary extends React.Component<
             onClick={this.handleReset}
             style={{ background: '#333', color: '#fff', border: '1px solid #555', borderRadius: 12, padding: '12px 24px', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}
           >
-            Reset & Start Over
+            Clear caches &amp; reload
           </button>
         </div>
       );

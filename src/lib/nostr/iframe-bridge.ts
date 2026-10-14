@@ -71,10 +71,12 @@ async function handleMethod(
     case 'nip04.encrypt':
       return forward('nip07:nip04:encrypt', { pubkey: params.pubkey, plaintext: params.plaintext });
     case 'nip04.decrypt':
+      askDecrypt(origin);
       return forward('nip07:nip04:decrypt', { pubkey: params.pubkey, ciphertext: params.ciphertext });
     case 'nip44.encrypt':
       return forward('nip07:nip44:encrypt', { pubkey: params.pubkey, plaintext: params.plaintext });
     case 'nip44.decrypt':
+      askDecrypt(origin);
       return forward('nip07:nip44:decrypt', { pubkey: params.pubkey, ciphertext: params.ciphertext });
 
     default:
@@ -118,4 +120,19 @@ export function useIframeNostrBridge(iframeRefs: RefObject<Map<string, HTMLIFram
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [iframeRefs]);
+}
+
+/**
+ * Decrypting reads private messages. Ask once per embedded app per page
+ * session instead of letting any embed read every DM silently.
+ */
+const decryptAllowed = new Set<string>();
+function askDecrypt(origin: string): void {
+  if (decryptAllowed.has(origin)) return;
+  const ok = window.confirm(
+    `"${origin}" wants to decrypt private messages with your keys.\n\n` +
+    'It will be able to read encrypted messages sent to you until you reload. Allow?',
+  );
+  if (!ok) throw new Error('User rejected decryption request');
+  decryptAllowed.add(origin);
 }

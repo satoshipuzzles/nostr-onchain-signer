@@ -1,3 +1,4 @@
+import { safeHttpUrl } from '@/lib/utils';
 import { useState, useRef } from 'react';
 import { createMessageId } from '@/shared/messages';
 import { encryptVault, saveVault, clearVault, type VaultData } from '@/lib/crypto/vault';
@@ -113,7 +114,7 @@ export function Setup({ onCreated }: Props) {
     setLoading(true);
     try {
       const conn = await connectRemoteSigner(uri, (url) => {
-        window.open(url, '_blank', 'noopener');
+        { const safe = safeHttpUrl(url); if (safe && safe.startsWith('https:')) window.open(safe, '_blank', 'noopener'); }
       });
       setPublicKey(conn.userPubkey);
       setKeysToImport([{

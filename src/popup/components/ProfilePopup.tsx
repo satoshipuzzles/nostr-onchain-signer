@@ -9,7 +9,7 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { subscribeEvents, type FeedNote, type NostrEvent } from '@/lib/nostr/feed';
 import { isMuted, mutePubkey, unmutePubkey } from '@/lib/nostr/mute';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
-import { safeImageUrl } from '@/lib/utils';
+import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { useContext } from 'react';
 import { NoteCard } from './NoteCard';
@@ -287,7 +287,7 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
                 )}
                 {profile.website && (
                   <a
-                    href={profile.website}
+                    href={safeHttpUrl(profile.website)}
                     target="_blank"
                     rel="noopener"
                     className="flex items-center gap-1 text-[10px] bg-surface-700 text-gray-400 px-2 py-0.5 rounded-full hover:text-white"

@@ -8,7 +8,7 @@
 import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
 import { generateKeyPair, keyPairFromPrivateKey } from '@/lib/nostr/keys';
 import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
-import { persistSession, restoreSession, clearPersistedSession } from './session-persist';
+import { persistSession, restoreSession, clearPersistedSession, touchActivity, idleExpired, startIdleLock } from './session-persist';
 
 const STORAGE_PREFIX = 'nostr_onchain_';
 
@@ -153,6 +153,11 @@ function getActiveIndex(): number {
  * see the keys too.
  */
 async function getSessionKeys(): Promise<any[] | null> {
+  if (idleExpired() && (sessionGet('session_keys') || localStorage.getItem('nostr_onchain_session_enc'))) {
+    // Left idle too long: lock instead of handing out keys
+    await lockSession();
+    return null;
+  }
   const inTab = sessionGet('session_keys') as any[] | undefined;
   if (inTab) return inTab;
   const restored = (await restoreSession()) as any[] | null;
@@ -228,6 +233,11 @@ const mockChrome = {
             const { decryptVault } = await import('@/lib/crypto/vault');
             const keys = await decryptVault(vault, password!);
             sessionSet('session_keys', keys);
+            try {
+              const { vaultNeedsUpgrade, encryptVault } = await import('@/lib/crypto/vault');
+              if (vaultNeedsUpgrade(vault)) storageSet('vault', await encryptVault(keys, password!));
+            } catch { /* keep the old vault; it still opens */ }
+            touchActivity();
             // Durable copy (device-key encrypted) so mobile PWA restarts and
             // new tabs don't come back "locked"
             persistSession(keys).catch(() => {});
@@ -239,8 +249,7 @@ const mockChrome = {
         }
 
         case 'vault:lock': {
-          sessionRemove('session_keys');
-          await clearPersistedSession();
+          await lockSession();
           return { id, result: { locked: true } };
         }
 
@@ -610,8 +619,21 @@ const mockChrome = {
   },
 };
 
+/** Forget every decrypted copy of the keys this page holds. */
+async function lockSession(): Promise<void> {
+  sessionRemove('session_keys');
+  sessionRemove('wallet_sync_key');
+  await clearPersistedSession();
+}
+
 if (typeof globalThis.chrome === 'undefined' || !globalThis.chrome?.runtime?.id) {
   (globalThis as unknown as { chrome: typeof mockChrome }).chrome = mockChrome as any;
+  if (typeof window !== 'undefined') {
+    startIdleLock(
+      () => !!sessionGet('session_keys') || !!localStorage.getItem('nostr_onchain_session_enc'),
+      lockSession,
+    );
+  }
 }
 
 export {};

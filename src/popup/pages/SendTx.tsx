@@ -138,6 +138,22 @@ export function SendTx({ publicKey, onBack }: Props) {
       .reduce((sum, u) => sum + u.value, 0);
   }, [selectedUtxos, utxos]);
 
+  /**
+   * Last look before a key signs: refuse silly fees. Fee rates come from a
+   * block explorer (or a typo) and nothing upstream bounds them.
+   */
+  function checkFeeSanity(result: PsbtResult, movedSats: number) {
+    const rate = result.vsize ? result.fee / result.vsize : 0;
+    const share = movedSats > 0 ? result.fee / movedSats : 1;
+    if (rate > 500 || (result.fee > 20_000 && share > 0.1)) {
+      const ok = window.confirm(
+        `The network fee is ${result.fee.toLocaleString()} sats (${rate.toFixed(0)} sat/vB, ${(share * 100).toFixed(1)}% of what you're moving). ` +
+        'That is unusually high. Send anyway?',
+      );
+      if (!ok) throw new Error('Cancelled: fee too high. Lower the fee rate and try again.');
+    }
+  }
+
   async function signAndBroadcast(psbtHex: string): Promise<{ txid: string; via: 'node' | 'esplora' }> {
     const nodeMatches = (cfg: Awaited<ReturnType<typeof loadBitcoinNodeConfig>>) =>
       !!(cfg?.enabled && cfg.rpcUrl && (cfg.chain ?? 'btc') === chain);
@@ -272,7 +288,8 @@ export function SendTx({ publicKey, onBack }: Props) {
   useEffect(() => {
     fetchFeeEstimates(chain).then((fees) => {
       setFeeEstimates(fees);
-      setFeeRate(String(fees.halfHour));
+      // An explorer answer is not trusted blindly: cap the prefill
+      setFeeRate(String(Math.min(fees.halfHour, 200)));
     }).catch(() => {});
   }, [chain]);
 
@@ -404,6 +421,7 @@ export function SendTx({ publicKey, onBack }: Props) {
           utxos: split.unsplit,
           feeRate: rate,
         });
+        checkFeeSanity(result, result.totalInputSats);
         setPsbtResult(result);
         const { txid, via } = await signAndBroadcast(result.psbtHex);
         setBroadcastTxid(txid);
@@ -447,6 +465,7 @@ export function SendTx({ publicKey, onBack }: Props) {
         subtractFeeFromAmount: subtractFee,
       });
 
+      checkFeeSanity(result, result.recipientSats);
       setPsbtResult(result);
 
       const { txid, via } = await signAndBroadcast(result.psbtHex);

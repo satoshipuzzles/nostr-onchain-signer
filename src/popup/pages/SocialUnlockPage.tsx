@@ -12,7 +12,7 @@ import {
 import { CUSTOM_KIND } from '@/lib/nostr/kinds';
 import { createMessageId } from '@/shared/messages';
 import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
-import { safeImageUrl } from '@/lib/utils';
+import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import type { ProfileMetadata } from '@/lib/nostr/social';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
@@ -451,7 +451,7 @@ export function SocialUnlockPage() {
               <img src={revealedContent} alt="Revealed" className="w-full rounded-lg max-h-80 object-contain bg-surface-900" />
             ) : content.content_type === 'link' ? (
               <a
-                href={revealedContent}
+                href={safeHttpUrl(revealedContent)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 break-all"

@@ -9,7 +9,10 @@ import { sha256 } from '@noble/hashes/sha256';
 import { pbkdf2 } from '@noble/hashes/pbkdf2';
 import { concatBytes, bytesToHex, hexToBytes } from '@noble/hashes/utils';
 
-const PBKDF2_ITERATIONS = 100_000;
+// OWASP 2023 guidance for PBKDF2-SHA256. Vaults written before this used
+// 100,000 (no `iterations` field) and are re-encrypted on the next unlock.
+const PBKDF2_ITERATIONS = 600_000;
+const LEGACY_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 
@@ -28,6 +31,13 @@ export interface EncryptedVault {
   iv: string;
   ciphertext: string;
   version: 1 | 2;
+  /** PBKDF2 rounds; absent on vaults made before it was raised (100,000). */
+  iterations?: number;
+}
+
+/** True when the vault should be re-encrypted with the current KDF strength. */
+export function vaultNeedsUpgrade(vault: EncryptedVault): boolean {
+  return (vault.iterations ?? LEGACY_ITERATIONS) < PBKDF2_ITERATIONS;
 }
 
 function isSubtleAvailable(): boolean {
@@ -48,7 +58,7 @@ function fromHex(hex: string): Uint8Array {
 
 // ─── Web Crypto path (HTTPS / Extension) ─────────────────────────
 
-async function deriveKeySubtle(password: string, salt: Uint8Array): Promise<CryptoKey> {
+async function deriveKeySubtle(password: string, salt: Uint8Array, iterations: number): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -59,7 +69,7 @@ async function deriveKeySubtle(password: string, salt: Uint8Array): Promise<Cryp
   );
 
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -70,7 +80,7 @@ async function deriveKeySubtle(password: string, salt: Uint8Array): Promise<Cryp
 async function encryptSubtle(data: string, password: string): Promise<EncryptedVault> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-  const key = await deriveKeySubtle(password, salt);
+  const key = await deriveKeySubtle(password, salt, PBKDF2_ITERATIONS);
 
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
@@ -78,14 +88,14 @@ async function encryptSubtle(data: string, password: string): Promise<EncryptedV
     new TextEncoder().encode(data)
   );
 
-  return { salt: toHex(salt), iv: toHex(iv), ciphertext: toHex(new Uint8Array(ciphertext)), version: 1 };
+  return { salt: toHex(salt), iv: toHex(iv), ciphertext: toHex(new Uint8Array(ciphertext)), version: 1, iterations: PBKDF2_ITERATIONS };
 }
 
 async function decryptSubtle(vault: EncryptedVault, password: string): Promise<string> {
   const salt = fromHex(vault.salt);
   const iv = fromHex(vault.iv);
   const ciphertext = fromHex(vault.ciphertext);
-  const key = await deriveKeySubtle(password, salt);
+  const key = await deriveKeySubtle(password, salt, vault.iterations ?? LEGACY_ITERATIONS);
 
   const plaintext = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv },
@@ -98,9 +108,9 @@ async function decryptSubtle(vault: EncryptedVault, password: string): Promise<s
 
 // ─── Noble fallback (HTTP / non-secure contexts) ──────────────────
 
-function deriveKeyNoble(password: string, salt: Uint8Array): Uint8Array {
+function deriveKeyNoble(password: string, salt: Uint8Array, iterations: number): Uint8Array {
   return pbkdf2(sha256, new TextEncoder().encode(password), salt, {
-    c: PBKDF2_ITERATIONS,
+    c: iterations,
     dkLen: 32,
   });
 }
@@ -121,7 +131,7 @@ function encryptNoble(data: string, password: string): EncryptedVault {
   const iv = new Uint8Array(IV_BYTES);
   crypto.getRandomValues(iv);
 
-  const key = deriveKeyNoble(password, salt);
+  const key = deriveKeyNoble(password, salt, PBKDF2_ITERATIONS);
   const plaintext = new TextEncoder().encode(data);
 
   // Generate keystream using SHA-256 in counter mode
@@ -140,7 +150,7 @@ function encryptNoble(data: string, password: string): EncryptedVault {
   const hmac = sha256(concatBytes(key, encrypted));
   const withHmac = concatBytes(encrypted, hmac);
 
-  return { salt: toHex(salt), iv: toHex(iv), ciphertext: toHex(withHmac), version: 2 };
+  return { salt: toHex(salt), iv: toHex(iv), ciphertext: toHex(withHmac), version: 2, iterations: PBKDF2_ITERATIONS };
 }
 
 function decryptNoble(vault: EncryptedVault, password: string): string {
@@ -148,7 +158,7 @@ function decryptNoble(vault: EncryptedVault, password: string): string {
   const iv = fromHex(vault.iv);
   const withHmac = fromHex(vault.ciphertext);
 
-  const key = deriveKeyNoble(password, salt);
+  const key = deriveKeyNoble(password, salt, vault.iterations ?? LEGACY_ITERATIONS);
 
   // Verify HMAC
   const encrypted = withHmac.slice(0, -32);

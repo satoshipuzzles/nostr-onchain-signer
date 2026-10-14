@@ -25,14 +25,7 @@
         Loading Nostr Onchain...
       </div>
     </div>
-    <script>
-      // Unregister any stale service workers to prevent cache issues
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(registrations) {
-          for (var r of registrations) { r.unregister(); }
-        });
-      }
-    </script>
+    <script src="/sw-cleanup.js"></script>
     <script type="module" src="/src/popup/main.tsx"></script>
   </body>
 </html>

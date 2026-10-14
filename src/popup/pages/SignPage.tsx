@@ -13,6 +13,7 @@ import { isSigningExpired } from '@/lib/nostr/signing-inbox';
 import { queryPublicEvents, publishPublicEvent, appOrigin } from '@/lib/nostr/public-relay';
 import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
 import { formatSats } from '@/lib/bitcoin/mempool';
+import { describePsbt, psbtSpendsOnlyFrom, type PsbtView } from '@/lib/bitcoin/psbt-describe';
 import { QRCode } from '@/popup/components/QRCode';
 import { fireConfetti } from '@/lib/ui/publish-feedback';
 
@@ -324,6 +325,17 @@ export function SignPage() {
       // Partial-sign the PSBT: app vault first, then the user's existing
       // NIP-07 signer via signSchnorr (works like signing a Nostr event —
       // no nsec needed), then any injected window.bitcoin provider.
+      // The request text is written by whoever published it; the PSBT is what
+      // gets signed. Refuse unless the PSBT only spends this multisig and
+      // actually pays the recipient it claims to.
+      const view = safeDescribe(request.psbt_hex);
+      if (!view) throw new Error('This request has no readable transaction. Not signing.');
+      if (!psbtSpendsOnlyFrom(request.psbt_hex, request.multisig_address)) {
+        throw new Error('This transaction spends coins that are not in the multisig wallet it names. Not signing.');
+      }
+      if (request.recipient && !view.outputs.some((o) => o.address === request.recipient)) {
+        throw new Error("The transaction doesn't pay the recipient shown in the request. Not signing.");
+      }
       const { partialSignPsbt } = await import('@/lib/bitcoin/psbt-partial-sign');
       const signResult = await partialSignPsbt(request.psbt_hex, pubkey);
       const signedPsbt = signResult.psbtHex;
@@ -689,12 +701,35 @@ export function SignPage() {
         {/* Transaction details (compact) */}
         <div className="bg-surface-800 rounded-2xl p-4 border border-surface-200/10 mb-4 space-y-3">
           <span className="text-[10px] text-gray-500 uppercase tracking-wider">Details</span>
-          {request.recipient && (
-            <div>
-              <p className="text-[10px] text-gray-500 mb-0.5">Sending to</p>
-              <code className="text-[11px] text-gray-300 font-mono break-all">{request.recipient}</code>
-            </div>
-          )}
+          {(() => {
+            const view = safeDescribe(request.psbt_hex);
+            if (!view) return <p className="text-[11px] text-red-400">The transaction in this request can't be read. Don't sign it.</p>;
+            return (
+              <div>
+                <p className="text-[10px] text-gray-500 mb-1">What this transaction pays (read from the transaction itself)</p>
+                <ul className="space-y-1">
+                  {view.outputs.map((o, i) => (
+                    <li key={i} className="flex items-start justify-between gap-2">
+                      <code className="text-[11px] text-gray-300 font-mono break-all flex-1">
+                        {o.opReturn ? 'data (OP_RETURN)' : o.address ?? 'unknown script'}
+                        {o.address === request.multisig_address && <span className="text-gray-500"> (change, back to the wallet)</span>}
+                      </code>
+                      <span className="text-[11px] text-white tabular-nums whitespace-nowrap">{formatSats(o.sats)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Network fee: {view.feeSats === null ? 'unknown' : `${formatSats(view.feeSats)} sats`} · {view.chain.toUpperCase()}
+                </p>
+                {request.recipient && !view.outputs.some((o) => o.address === request.recipient) && (
+                  <p className="text-[11px] text-red-400 mt-1">The request says it pays {request.recipient}, but the transaction doesn't. Don't sign.</p>
+                )}
+                {!psbtSpendsOnlyFrom(request.psbt_hex, request.multisig_address) && (
+                  <p className="text-[11px] text-red-400 mt-1">This transaction spends coins outside this multisig wallet. Don't sign.</p>
+                )}
+              </div>
+            );
+          })()}
           <div>
             <p className="text-[10px] text-gray-500 mb-0.5">From multi-sig ({request.threshold} of {request.total_signers})</p>
             <div className="flex items-center gap-1">
@@ -748,4 +783,12 @@ export function SignPage() {
       </div>
     </div>
   );
+}
+
+function safeDescribe(psbtHex: string): PsbtView | null {
+  try {
+    return describePsbt(psbtHex);
+  } catch {
+    return null;
+  }
 }

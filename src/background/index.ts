@@ -6,7 +6,7 @@
  * which survives worker restarts but clears on browser close.
  */
 
-import { decryptVault, loadVault, VaultData } from '@/lib/crypto/vault';
+import { decryptVault, loadVault, vaultNeedsUpgrade, VaultData, type EncryptedVault } from '@/lib/crypto/vault';
 import { signEvent, type UnsignedEvent } from '@/lib/nostr/events';
 import { encryptNip04, decryptNip04, encryptNip44, decryptNip44 } from '@/lib/nostr/dm-crypto';
 import { schnorrSign } from '@/lib/bitcoin/psbt';
@@ -65,6 +65,15 @@ async function getActiveKey(): Promise<VaultData | null> {
   if (!session || session.length === 0) return null;
   const idx = await getActiveIndex();
   return session[Math.min(idx, session.length - 1)];
+}
+
+/** Re-encrypt a vault made with the older, weaker KDF setting. Best effort. */
+async function upgradeVaultKdf(vault: EncryptedVault, keys: VaultData[], password: string) {
+  try {
+    if (!vaultNeedsUpgrade(vault)) return;
+    const { encryptVault, saveVault } = await import('@/lib/crypto/vault');
+    await saveVault(await encryptVault(keys, password));
+  } catch { /* keep the old vault; it still opens */ }
 }
 
 function hasVaultPrivateKey(key: VaultData): boolean {
@@ -186,6 +195,7 @@ async function handleMessage(
       try {
         const keys = await decryptVault(vault, password);
         await setSession(keys);
+        await upgradeVaultKdf(vault, keys, password);
         const localStored = await chrome.storage.local.get('activeAccountIndex');
         const idx = typeof localStored.activeAccountIndex === 'number'
           ? Math.min(localStored.activeAccountIndex, keys.length - 1)

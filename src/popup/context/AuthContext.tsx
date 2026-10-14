@@ -1,3 +1,4 @@
+import { safeHttpUrl } from '@/lib/utils';
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { fetchMyProfile, createFollowListEvent, publishEvent, type DiscoveredUser } from '@/lib/nostr/discovery';
 import { fetchFollowingList, type ProfileMetadata } from '@/lib/nostr/social';
@@ -14,7 +15,8 @@ import { createMessageId } from '@/shared/messages';
 import { type UnsignedEvent, type SignedEvent } from '@/lib/nostr/events';
 import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { hkdf } from '@noble/hashes/hkdf';
 import { toast } from 'sonner';
 
 export type AddAccountMode = 'generated' | 'nip07' | 'nsec' | 'bunker';
@@ -150,10 +152,18 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     }, 8000);
   }
 
-  async function restoreWalletsFromRelay(pubkey: string, syncKey: string) {
+  async function restoreWalletsFromRelay(pubkey: string, syncKey: string, legacyKey?: string) {
     try {
       const { fetchWalletConfigs } = await import('@/lib/nostr/wallet-sync');
-      const configs = await fetchWalletConfigs(pubkey, syncKey);
+      let configs = await fetchWalletConfigs(pubkey, syncKey);
+      // Older copies were encrypted with a key derived from the vault password.
+      // Read one once, then re-publish under the key-derived key so the copy on
+      // relays can no longer be used to guess the password.
+      let migrate = false;
+      if (configs.length === 0 && legacyKey) {
+        configs = await fetchWalletConfigs(pubkey, legacyKey);
+        migrate = configs.length > 0;
+      }
       if (configs.length === 0) return;
 
       const { syncConfigToWallet, loadMultisigWallets, saveMultisigWallet } =
@@ -166,6 +176,10 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
           const wallet = syncConfigToWallet(config, pubkey);
           await saveMultisigWallet(wallet);
         }
+      }
+      if (migrate) {
+        const { syncWalletsToRelay } = await import('@/lib/bitcoin/wallet-store');
+        await syncWalletsToRelay();
       }
     } catch (err) {
       console.warn('Failed to restore wallets from relay:', err);
@@ -303,11 +317,26 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
     await applyCachedProfileForAccount(acct);
 
     if (password) {
-      const syncKey = bytesToHex(
+      // Sync key comes from the account's secret key, never the vault password:
+      // the encrypted copy is public on relays, and a password-derived key would
+      // let anyone guess the password offline.
+      const legacyKey = bytesToHex(
         sha256(new TextEncoder().encode(`wallet-sync-${password}-${acct.publicKeyHex}`)),
       );
-      sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
-      restoreWalletsFromRelay(acct.publicKeyHex, syncKey).catch(() => {});
+      let syncKey = '';
+      try {
+        const r = await chrome.runtime.sendMessage({ type: 'vault:getPrivateKey', id: createMessageId() });
+        if (!r?.error && /^[0-9a-f]{64}$/i.test(r?.result || '')) {
+          syncKey = bytesToHex(hkdf(sha256, hexToBytes(r.result), undefined, 'nostr-onchain/wallet-sync/v2', 32));
+        }
+      } catch {}
+      if (syncKey) {
+        sessionStorage.setItem('nostr_onchain_wallet_sync_key', syncKey);
+        restoreWalletsFromRelay(acct.publicKeyHex, syncKey, legacyKey).catch(() => {});
+      } else {
+        // No secret key in the app (linked signer): no sync rather than a weak one
+        sessionStorage.removeItem('nostr_onchain_wallet_sync_key');
+      }
     }
 
     migrateUnownedWallets(acct.publicKeyHex).catch(() => {});
@@ -449,7 +478,7 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
         const { connectRemoteSigner } = await import('@/lib/nostr/nip46');
         const conn = await connectRemoteSigner(uri.trim(), (url) => {
           // Some bunkers require approving the connection at a URL first
-          window.open(url, '_blank', 'noopener');
+          { const safe = safeHttpUrl(url); if (safe && safe.startsWith('https:')) window.open(safe, '_blank', 'noopener'); }
         });
         ({ accounts: newAccounts, newIndex } = await addBunkerAccountToVault(pw, conn.userPubkey));
       } else {

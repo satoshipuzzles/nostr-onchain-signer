@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, memo, type ReactNode } from 'reac
 import { toast } from 'sonner';
 import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { safeImageUrl } from '@/lib/utils';
+import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import {
   Clock, MessageCircle, Repeat2, Heart, Zap, Link2, Check, Loader2,
   MoreHorizontal, Copy, ExternalLink, Flag,
@@ -87,7 +87,7 @@ function renderRichContent(
       rendered.push(
         <a
           key={i}
-          href={part}
+          href={safeHttpUrl(part)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-blue-400 hover:underline break-all"

@@ -25,7 +25,7 @@ import { resolveNip05 } from '@/lib/nostr/nip05';
 import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 import { getCachedProfile, resolveProfiles } from '@/lib/nostr/cache';
 import { PUBLIC_READ_RELAYS } from '@/lib/nostr/public-relay';
-import { safeImageUrl } from '@/lib/utils';
+import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import type { SignedEvent } from '@/lib/nostr/events';
 import type { ProfileMetadata } from '@/lib/nostr/social';
@@ -1114,7 +1114,7 @@ function DetailView({ item, publicKey, confirmAndSign, storedKey, onBack, onKeyS
           </>
         ) : item.content.content_type === 'link' ? (
           <a
-            href={revealedContent}
+            href={safeHttpUrl(revealedContent)}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"

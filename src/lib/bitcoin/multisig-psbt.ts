@@ -6,6 +6,8 @@ import { Transaction, p2tr, p2tr_ms, Script, SigHash } from '@scure/btc-signer';
 import { tapLeafHash } from '@scure/btc-signer/payment';
 import { hex } from '@scure/base';
 import { concatBytes } from '@noble/hashes/utils';
+import { schnorr } from '@noble/curves/secp256k1';
+const schnorrPub = (priv: Uint8Array) => schnorr.getPublicKey(priv);
 import { fetchUTXOs, fetchFeeEstimates } from './mempool';
 import { buildOpReturnScript } from './opreturn';
 import type { MultisigWallet } from './multisig';
@@ -137,10 +139,50 @@ export async function buildMultisigPsbt(params: {
   };
 }
 
+const ALLOWED_COSIGN_SIGHASH = new Set<number>([SigHash.DEFAULT, SigHash.ALL, SIGHASH_ALL_UNIFIED]);
+
+/**
+ * Co-signing must only ever add tapscript (multisig leaf) signatures.
+ *
+ * A signing request is published by someone else, so its PSBT is untrusted.
+ * scure's tx.sign() also signs a key-path spend when an input's
+ * tapInternalKey matches the key — which would let a forged "multisig round"
+ * spend the signer's own personal taproot address. And a SIGHASH_NONE /
+ * SINGLE / ANYONECANPAY signature lets whoever holds it change the outputs.
+ * Refuse all of that before any key touches the PSBT.
+ */
+export function assertCosignSafe(tx: Transaction, signerXonlyHexes: string[]): void {
+  const mine = new Set(signerXonlyHexes.map((h) => h.toLowerCase()));
+  const personalScripts = new Set(
+    [...mine].map((x) => hex.encode(p2tr(hex.decode(x)).script)),
+  );
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const inp = tx.getInput(i);
+    if (!inp.tapLeafScript || inp.tapLeafScript.length === 0) {
+      throw new Error(`Refusing to sign: input ${i + 1} is not a multisig script input.`);
+    }
+    if (inp.tapInternalKey && mine.has(hex.encode(inp.tapInternalKey))) {
+      throw new Error(`Refusing to sign: input ${i + 1} would spend from your personal address, not the multisig.`);
+    }
+    if (inp.witnessUtxo && personalScripts.has(hex.encode(inp.witnessUtxo.script as Uint8Array))) {
+      throw new Error(`Refusing to sign: input ${i + 1} spends your personal address, not the multisig.`);
+    }
+    const sh = inp.sighashType ?? SigHash.DEFAULT;
+    if (!ALLOWED_COSIGN_SIGHASH.has(sh)) {
+      throw new Error(`Refusing to sign: input ${i + 1} asks for an unusual signature type (0x${sh.toString(16)}) that would let others change the payment.`);
+    }
+  }
+}
+
+function xonlyOf(privateKeyHex: string): string {
+  return hex.encode(schnorrPub(hex.decode(privateKeyHex)));
+}
+
 /** Add this signer's Tapscript Schnorr sig to the PSBT (does not finalize). */
 export function signMultisigPsbtPartial(psbtHex: string, privateKeyHex: string): string {
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
   const priv = hex.decode(privateKeyHex);
+  assertCosignSafe(tx, [xonlyOf(privateKeyHex)]);
   if (psbtHasUnifiedInputs(tx)) {
     if (signUnifiedTapscriptInputs(tx, priv) === 0) throw new Error('No inputs signed');
   } else {
@@ -162,6 +204,7 @@ export function signMultisigPsbtWithKeys(
   let signedCount = 0;
   let lastError: unknown = null;
   const unified = psbtHasUnifiedInputs(tx);
+  assertCosignSafe(tx, privateKeysHex.map(xonlyOf));
 
   for (const keyHex of privateKeysHex) {
     try {
@@ -205,6 +248,7 @@ export async function signMultisigPsbtViaSchnorr(
 ): Promise<{ psbtHex: string; signedCount: number }> {
   const tx = Transaction.fromPSBT(hex.decode(psbtHex));
   const signerPub = hex.decode(signerPubkeyHex);
+  assertCosignSafe(tx, [signerPubkeyHex]);
   let signedCount = 0;
 
   // Preimage needs every input's prevout script + amount

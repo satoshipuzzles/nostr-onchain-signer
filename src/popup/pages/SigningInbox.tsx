@@ -1472,6 +1472,12 @@ function RequestDetail({
     try {
       // Vault first, then the user's NIP-07 signer (signSchnorr), then any
       // injected bitcoin provider — same UX as signing a Nostr event
+      // Requests are published by others: check the transaction, not its label
+      const { describePsbt, psbtSpendsOnlyFrom } = await import('@/lib/bitcoin/psbt-describe');
+      describePsbt(request.psbt_hex); // throws on an unreadable PSBT
+      if (!psbtSpendsOnlyFrom(request.psbt_hex, request.multisig_address)) {
+        throw new Error('This transaction spends coins that are not in the multisig wallet it names. Not signing.');
+      }
       const { partialSignPsbt } = await import('@/lib/bitcoin/psbt-partial-sign');
       const { psbtHex: signedPsbt } = await partialSignPsbt(request.psbt_hex, publicKey);
 

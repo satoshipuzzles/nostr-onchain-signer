@@ -9,6 +9,7 @@
  * unchanged.
  */
 
+import { SIGHASH_ALL_UNIFIED } from './unified-sighash';
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1';
 import { Transaction, Script } from '@scure/btc-signer';
 import { hex } from '@scure/base';
@@ -51,6 +52,16 @@ function taprootOutputKey(script: Uint8Array | undefined): Uint8Array | null {
 }
 
 /**
+ * Only ALL|UNIFIED (0x21). NONE/SINGLE/ANYONECANPAY variants leave outputs or
+ * other inputs unsigned, so whoever holds the signature could redirect funds.
+ */
+function assertAllUnified(hashType: number, index: number): void {
+  if (hashType !== SIGHASH_ALL_UNIFIED) {
+    throw new Error(`Refusing to sign input ${index + 1}: signature type 0x${hashType.toString(16)} would let others change the payment.`);
+  }
+}
+
+/**
  * Sign every opted-in (unified) KEY-PATH input that `priv` controls.
  * Returns how many inputs were signed. Inputs without the opt-in bit are
  * left for `tx.sign()`.
@@ -62,6 +73,7 @@ export function signUnifiedKeyPathInputs(tx: Transaction, priv: Uint8Array): num
     const input = tx.getInput(i);
     const hashType = input.sighashType;
     if (!isUnifiedSighash(hashType)) continue;
+    assertAllUnified(hashType!, i);
     if (input.tapLeafScript && input.tapLeafScript.length > 0 && !input.tapInternalKey) continue;
     const outputKey = taprootOutputKey(input.witnessUtxo?.script as Uint8Array | undefined);
     if (!outputKey) continue;
@@ -95,6 +107,7 @@ export function signUnifiedTapscriptInputs(tx: Transaction, priv: Uint8Array): n
     const input = tx.getInput(i);
     const hashType = input.sighashType;
     if (!isUnifiedSighash(hashType) || !input.tapLeafScript) continue;
+    assertAllUnified(hashType!, i);
     for (const [, scriptWithVer] of input.tapLeafScript) {
       const script = scriptWithVer.subarray(0, -1);
       const ver = scriptWithVer[scriptWithVer.length - 1];

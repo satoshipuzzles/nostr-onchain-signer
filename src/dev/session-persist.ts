@@ -116,3 +116,47 @@ export async function clearPersistedSession(): Promise<void> {
     }
   } catch { /* ignore */ }
 }
+
+/* ── Idle auto-lock (web app) ───────────────────────────────────────────
+ * An unlocked session used to last until the user pressed Lock, across
+ * restarts. Now it ends after IDLE_MS without any interaction, in this tab
+ * and for the durable copy, so a phone or laptop left alone locks itself. */
+
+const LAST_ACTIVE_KEY = 'nostr_onchain_last_active';
+export const IDLE_MS = 30 * 60 * 1000;
+
+export function touchActivity(): void {
+  try { localStorage.setItem(LAST_ACTIVE_KEY, String(Date.now())); } catch { /* storage blocked */ }
+}
+
+export function idleExpired(): boolean {
+  try {
+    const last = Number(localStorage.getItem(LAST_ACTIVE_KEY) || 0);
+    return !last || Date.now() - last > IDLE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Track interaction and run `lock` once the session has been idle too long. */
+export function startIdleLock(isUnlocked: () => boolean, lock: () => Promise<void>): void {
+  let lastWrite = 0;
+  const onActivity = () => {
+    const now = Date.now();
+    if (now - lastWrite < 15_000) return; // throttle storage writes
+    lastWrite = now;
+    if (isUnlocked() && idleExpired()) return; // already expired: let the check lock it
+    touchActivity();
+  };
+  for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
+    window.addEventListener(ev, onActivity, { passive: true, capture: true });
+  }
+  const check = async () => {
+    if (isUnlocked() && idleExpired()) {
+      await lock();
+      window.location.reload();
+    }
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  setInterval(check, 60_000);
+}
