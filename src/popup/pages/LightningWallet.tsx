@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import {
   loadNwcConnection, saveNwcConnection, parseNwcUri, getNwcInfo, getNwcBalance,
-  makeNwcInvoice, lookupNwcInvoice, listNwcTransactions, sendNwcPayment,
+  makeNwcInvoice, lookupNwcInvoice, listNwcTransactions, sendNwcPayment, nwcRelays,
   type NwcConnection, type NwcInfo, type NwcTransaction, type LightningChain,
 } from '@/lib/nostr/nwc';
 import { decodeInvoice, type DecodedInvoice } from '@/lib/nostr/lightning-chain';
@@ -81,6 +81,7 @@ export function LightningWallet() {
     btc: { conn: null, loading: true },
   });
   const [txs, setTxs] = useState<NwcTransaction[] | null>(null);
+  const [txError, setTxError] = useState('');
   const [scanning, setScanning] = useState(false);
   const [sheet, setSheet] = useState<'pay' | 'receive' | null>(null);
   const [zapTarget, setZapTarget] = useState<{ pubkey: string; profile: ProfileMetadata | null; note?: FeedNote } | null>(null);
@@ -102,6 +103,8 @@ export function LightningWallet() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const active = wallets[chain];
+  // What this connection may do. Unknown (wallet not answering) counts as allowed.
+  const can = (m: string) => !active.info?.methods || active.info.methods.includes(m);
 
   const refreshWallet = useCallback(async (c: LightningChain) => {
     const conn = await loadNwcConnection(c);
@@ -127,7 +130,9 @@ export function LightningWallet() {
     const conn = await loadNwcConnection(c);
     if (!conn) { setTxs(null); return; }
     setTxs(null);
+    setTxError('');
     const r = await listNwcTransactions(conn, 15);
+    if (r.error) setTxError(r.error);
     setTxs(r.transactions ?? []);
   }, []);
 
@@ -139,7 +144,12 @@ export function LightningWallet() {
     CHAINS.forEach((c) => refreshWallet(c));
   }, [refreshWallet]);
 
-  useEffect(() => { refreshTxs(chain); }, [chain, refreshTxs]);
+  useEffect(() => {
+    if (active.loading) return;
+    if (active.info?.methods && !active.info.methods.includes('list_transactions')) { setTxs([]); return; }
+    refreshTxs(chain);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chain, active.loading, refreshTxs]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
@@ -429,7 +439,7 @@ export function LightningWallet() {
               {active.info?.pubkey && <span className="font-mono ml-1.5">{active.info.pubkey.slice(0, 10)}…</span>}
             </p>
             <p className="truncate">
-              Via Nostr Wallet Connect on <span className="font-mono">{active.conn?.relay.replace(/^wss:\/\//, '')}</span>
+              Via Nostr Wallet Connect on <span className="font-mono">{active.conn && nwcRelays(active.conn).map((r) => r.replace(/^wss:\/\//, '')).join(', ')}</span>
             </p>
             {active.info?.methods && (
               <p className="truncate">Allowed: {active.info.methods.join(', ')}</p>
@@ -454,7 +464,8 @@ export function LightningWallet() {
         </button>
         <button
           onClick={() => setSheet('receive')}
-          disabled={!active.conn}
+          disabled={!active.conn || !can('make_invoice')}
+          title={can('make_invoice') ? undefined : 'This wallet connection is not allowed to create invoices'}
           className="py-3 rounded-xl bg-white/10 text-white text-sm font-medium flex flex-col items-center gap-1 disabled:opacity-40"
         >
           <ArrowDownLeft className="w-5 h-5" /> Receive
@@ -466,8 +477,12 @@ export function LightningWallet() {
           <p className="text-sm font-medium mb-2">Recent activity</p>
           {txs === null ? (
             <div className="py-4 flex justify-center"><Loader2 className="w-4 h-4 animate-spin text-gray-500" /></div>
+          ) : !can('list_transactions') ? (
+            <p className="text-xs text-gray-500 py-2">This connection isn't allowed to read history. Make a new connection on your node with history and receiving turned on.</p>
+          ) : txError ? (
+            <p className="text-xs text-amber-400 py-2">{txError}</p>
           ) : txs.length === 0 ? (
-            <p className="text-xs text-gray-500 py-2">Nothing yet, or this wallet doesn't share its history.</p>
+            <p className="text-xs text-gray-500 py-2">Nothing yet.</p>
           ) : (
             <ul className="divide-y divide-white/5">
               {txs.map((t, i) => {
@@ -726,7 +741,8 @@ export function LightningWallet() {
 /** Bottom sheet on phones, centred dialog on wider screens. */
 function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    // Above the bottom tab bar (z-50), or it covers the action button on phones
+    <div className="fixed inset-0 bg-black/60 z-[60] flex items-end sm:items-center justify-center" onClick={onClose}>
       <div
         className="bg-surface-800 border border-surface-200/10 w-full sm:max-w-sm rounded-t-2xl sm:rounded-2xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}

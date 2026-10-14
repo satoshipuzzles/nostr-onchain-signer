@@ -9,8 +9,23 @@ import { computeEventId } from './events';
 
 export interface NwcConnection {
   pubkey: string;
+  /** First relay in the URI; kept for connections saved before `relays` existed */
   relay: string;
+  /** Every relay the URI names. Requests go to all of them, first reply wins. */
+  relays?: string[];
   secret: string;
+}
+
+/**
+ * Connections saved before we kept every relay only remember the first one.
+ * Our node's URIs always listed nos.lol next, so try it too: a request sent to a
+ * relay the wallet doesn't listen on is simply never answered there.
+ */
+const LEGACY_FALLBACK_RELAYS = ['wss://nos.lol'];
+
+export function nwcRelays(c: NwcConnection): string[] {
+  const list = c.relays?.length ? c.relays : [c.relay, ...LEGACY_FALLBACK_RELAYS];
+  return [...new Set(list.map((r) => r.trim()).filter(Boolean))];
 }
 
 export function parseNwcUri(uri: string): NwcConnection | null {
@@ -21,11 +36,11 @@ export function parseNwcUri(uri: string): NwcConnection | null {
 
     const pubkey = match[1].toLowerCase();
     const params = new URLSearchParams(match[2]);
-    const relay = params.get('relay');
+    const relays = [...new Set(params.getAll('relay').map((r) => r.trim()).filter(Boolean))];
     const secret = params.get('secret');
 
-    if (!relay || !secret) return null;
-    return { pubkey, relay, secret: secret.toLowerCase() };
+    if (!relays.length || !secret || !/^[0-9a-f]{64}$/i.test(secret)) return null;
+    return { pubkey, relay: relays[0], relays, secret: secret.toLowerCase() };
   } catch {
     return null;
   }
@@ -104,56 +119,80 @@ export async function nwcRequest<T = any>(
   );
   const signedEvent = { ...unsigned, id, sig };
 
+  const relays = nwcRelays(connection);
   return new Promise((resolve) => {
-    let ws: WebSocket;
+    const sockets: WebSocket[] = [];
+    const failures: string[] = [];
+    let done = false;
+    const finish = (r: { result?: T; error?: string }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      sockets.forEach((s) => { try { s.close(); } catch { /* already closed */ } });
+      resolve(r);
+    };
+    const fail = (relay: string, why: string) => {
+      failures.push(`${relay.replace(/^wss:\/\//, '')}: ${why}`);
+      if (failures.length >= relays.length) {
+        finish({ error: `Could not reach the wallet. ${failures.join('; ')}` });
+      }
+    };
     const timeout = setTimeout(() => {
-      ws?.close();
-      resolve({ error: 'Timeout waiting for wallet response' });
+      finish({
+        error: failures.length
+          ? `Wallet did not answer. ${failures.join('; ')}`
+          : 'Wallet did not answer in time. Is the node online?',
+      });
     }, timeoutMs);
 
-    try {
-      ws = new WebSocket(connection.relay);
-    } catch {
-      clearTimeout(timeout);
-      resolve({ error: 'Failed to connect to NWC relay' });
-      return;
-    }
-
-    const subId = `nwc_${Math.random().toString(36).slice(2, 8)}`;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify(['REQ', subId, {
-        kinds: [23195],
-        authors: [connection.pubkey],
-        '#p': [sessionPubkey],
-        '#e': [id],
-      }]));
-      ws.send(JSON.stringify(['EVENT', signedEvent]));
-    };
-
-    ws.onmessage = async (msg) => {
+    for (const relay of relays) {
+      let ws: WebSocket;
       try {
-        const data = JSON.parse(msg.data);
-        if (data[0] === 'EVENT' && data[1] === subId && data[2].kind === 23195) {
-          const decrypted = await nip04Decrypt(
-            data[2].content, connection.secret, connection.pubkey,
-          );
-          const reply = JSON.parse(decrypted);
-          clearTimeout(timeout);
-          ws.close();
-          if (reply.error) {
-            resolve({ error: reply.error.message || `${method} failed` });
-          } else {
-            resolve({ result: reply.result });
-          }
-        }
-      } catch { /* ignore parse errors */ }
-    };
+        ws = new WebSocket(relay);
+      } catch {
+        fail(relay, 'bad relay URL');
+        continue;
+      }
+      sockets.push(ws);
+      const subId = `nwc_${Math.random().toString(36).slice(2, 8)}`;
+      let failed = false;
+      const relayFail = (why: string) => { if (!failed) { failed = true; fail(relay, why); } };
 
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      resolve({ error: 'WebSocket error' });
-    };
+      ws.onopen = () => {
+        ws.send(JSON.stringify(['REQ', subId, {
+          kinds: [23195],
+          authors: [connection.pubkey],
+          '#p': [sessionPubkey],
+          '#e': [id],
+        }]));
+        ws.send(JSON.stringify(['EVENT', signedEvent]));
+      };
+
+      ws.onmessage = async (msg) => {
+        try {
+          const data = JSON.parse(msg.data);
+          // A relay that refuses the request (rate limits, bans, paid relays) says so here
+          if (data[0] === 'OK' && data[1] === id && data[2] === false) {
+            relayFail(String(data[3] || 'refused the request'));
+            return;
+          }
+          if (data[0] === 'EVENT' && data[1] === subId && data[2].kind === 23195) {
+            const decrypted = await nip04Decrypt(
+              data[2].content, connection.secret, connection.pubkey,
+            );
+            const reply = JSON.parse(decrypted);
+            if (reply.error) {
+              finish({ error: reply.error.message || `${method} failed` });
+            } else {
+              finish({ result: reply.result });
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      };
+
+      ws.onerror = () => relayFail('connection failed');
+      ws.onclose = () => relayFail('connection closed');
+    }
   });
 }
 

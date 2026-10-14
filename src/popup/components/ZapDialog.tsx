@@ -60,7 +60,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   if (!wallets.xbt && !wallets.btc) {
     return (
       <div
-        className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+        className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
         onClick={onClose}
       >
         <div
@@ -208,7 +208,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
       onClick={onClose}
     >
       <div
