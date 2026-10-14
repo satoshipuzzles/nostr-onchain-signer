@@ -117,3 +117,83 @@ export async function detectAddressChain(lud16: string): Promise<LnChain | null>
     return null;
   }
 }
+
+export interface DecodedInvoice {
+  /** Amount in msats; null for an invoice that leaves the amount to the payer. */
+  amountMsats: number | null;
+  description: string;
+  paymentHash: string;
+  /** Unix seconds */
+  createdAt: number;
+  expiresAt: number;
+  chain: LnChain;
+}
+
+const MULTIPLIER_PMSAT: Record<string, bigint> = {
+  // msats per unit, times 10 so pico (0.1 msat) stays an integer
+  m: 1_000_000_000n, u: 1_000_000n, n: 1_000n, p: 1n,
+};
+
+/** Read what a BOLT-11 invoice asks for. Returns null if it isn't one. */
+export function decodeInvoice(bolt11: string): DecodedInvoice | null {
+  const pr = bolt11.trim().toLowerCase().replace(/^lightning:/, '');
+  const sep = pr.lastIndexOf('1');
+  const hrp = pr.slice(0, sep);
+  const m = /^ln(?:bc|tb|bcrt|tbs|sb)(\d*)([munp]?)$/.exec(hrp);
+  if (!m || sep < 1) return null;
+
+  let amountMsats: number | null = null;
+  if (m[1]) {
+    const n = BigInt(m[1]);
+    // no multiplier means whole coins: 10^11 msats each
+    const tenthMsats = m[2] ? n * MULTIPLIER_PMSAT[m[2]] : n * 1_000_000_000_000n;
+    amountMsats = Number(tenthMsats / 10n);
+  }
+
+  const words: number[] = [];
+  for (const c of pr.slice(sep + 1)) {
+    const v = CHARSET.indexOf(c);
+    if (v < 0) return null;
+    words.push(v);
+  }
+  if (words.length < 7 + 104 + 6) return null;
+  const createdAt = words.slice(0, 7).reduce((a, w) => a * 32 + w, 0);
+  const data = words.slice(7, words.length - 6 - 104);
+
+  let description = '';
+  let paymentHash = '';
+  let expiry = 3600;
+  let i = 0;
+  while (i + 3 <= data.length) {
+    const type = data[i];
+    const len = data[i + 1] * 32 + data[i + 2];
+    const val = data.slice(i + 3, i + 3 + len);
+    i += 3 + len;
+    if (type === 13) description = new TextDecoder().decode(wordsToBytes(val));       // 'd'
+    else if (type === 1) paymentHash = bytesHex(wordsToBytes(val));                    // 'p'
+    else if (type === 6) expiry = val.reduce((a, w) => a * 32 + w, 0);                 // 'x'
+  }
+  return {
+    amountMsats, description, paymentHash, createdAt,
+    expiresAt: createdAt + expiry, chain: invoiceChain(pr),
+  };
+}
+
+function wordsToBytes(words: number[]): Uint8Array {
+  const out: number[] = [];
+  let acc = 0;
+  let bits = 0;
+  for (const w of words) {
+    acc = (acc << 5) | w;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return new Uint8Array(out);
+}
+
+function bytesHex(b: Uint8Array): string {
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}

@@ -80,16 +80,16 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
           </div>
           <p className="text-xs text-gray-400 mb-4">
             To send zaps, connect an XBT or BTC Lightning wallet via Nostr Wallet
-            Connect in Settings.
+            Connect on the Lightning page.
           </p>
           <button
             onClick={() => {
               onClose();
-              navigate('/settings');
+              navigate('/lightning');
             }}
             className="w-full py-2 bg-bitcoin text-black rounded-lg text-sm font-medium hover:bg-bitcoin/90 transition-colors"
           >
-            Go to Settings
+            Set up Lightning wallet
           </button>
         </div>
       </div>

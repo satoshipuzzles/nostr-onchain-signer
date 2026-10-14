@@ -16,7 +16,12 @@ const COPY: Record<LightningChain, { title: string; idle: string; hint: string }
 };
 
 /** One Nostr Wallet Connect slot. XBT and BTC Lightning each get their own. */
-export function NwcWalletCard({ chain, className = '' }: { chain: LightningChain; className?: string }) {
+export function NwcWalletCard({ chain, className = '', onChange }: {
+  chain: LightningChain;
+  className?: string;
+  /** Called after the connection is saved or removed */
+  onChange?: (connected: boolean) => void;
+}) {
   const [uri, setUri] = useState('');
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
@@ -41,6 +46,7 @@ export function NwcWalletCard({ chain, className = '' }: { chain: LightningChain
       await saveNwcConnection(parsed, chain);
       setConnected(true);
       setUri('');
+      onChange?.(true);
     } catch {
       setError('Failed to save connection');
     } finally {
@@ -52,6 +58,7 @@ export function NwcWalletCard({ chain, className = '' }: { chain: LightningChain
     await saveNwcConnection(null, chain);
     setConnected(false);
     setUri('');
+    onChange?.(false);
   }
 
   return (

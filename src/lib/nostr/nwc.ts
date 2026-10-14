@@ -76,19 +76,18 @@ async function nip04Decrypt(
 }
 
 /**
- * Send a pay_invoice request via NWC and wait for the wallet response.
+ * Send one NIP-47 request to the wallet and wait for its reply.
+ * Resolves with the method's result, or with { error } on failure or timeout.
  */
-export async function sendNwcPayment(
+export async function nwcRequest<T = any>(
   connection: NwcConnection,
-  invoice: string,
-): Promise<{ preimage?: string; error?: string }> {
+  method: string,
+  params: Record<string, unknown> = {},
+  timeoutMs = 30000,
+): Promise<{ result?: T; error?: string }> {
   const sessionPubkey = getNwcSessionPubkey(connection.secret);
-  const requestContent = JSON.stringify({
-    method: 'pay_invoice',
-    params: { invoice },
-  });
   const encrypted = await nip04Encrypt(
-    requestContent, connection.secret, connection.pubkey,
+    JSON.stringify({ method, params }), connection.secret, connection.pubkey,
   );
 
   const unsigned = {
@@ -106,12 +105,12 @@ export async function sendNwcPayment(
   const signedEvent = { ...unsigned, id, sig };
 
   return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      ws.close();
-      resolve({ error: 'Timeout waiting for wallet response' });
-    }, 30000);
-
     let ws: WebSocket;
+    const timeout = setTimeout(() => {
+      ws?.close();
+      resolve({ error: 'Timeout waiting for wallet response' });
+    }, timeoutMs);
+
     try {
       ws = new WebSocket(connection.relay);
     } catch {
@@ -127,7 +126,7 @@ export async function sendNwcPayment(
         kinds: [23195],
         authors: [connection.pubkey],
         '#p': [sessionPubkey],
-        since: Math.floor(Date.now() / 1000) - 10,
+        '#e': [id],
       }]));
       ws.send(JSON.stringify(['EVENT', signedEvent]));
     };
@@ -139,13 +138,13 @@ export async function sendNwcPayment(
           const decrypted = await nip04Decrypt(
             data[2].content, connection.secret, connection.pubkey,
           );
-          const result = JSON.parse(decrypted);
+          const reply = JSON.parse(decrypted);
           clearTimeout(timeout);
           ws.close();
-          if (result.error) {
-            resolve({ error: result.error.message || 'Payment failed' });
+          if (reply.error) {
+            resolve({ error: reply.error.message || `${method} failed` });
           } else {
-            resolve({ preimage: result.result?.preimage });
+            resolve({ result: reply.result });
           }
         }
       } catch { /* ignore parse errors */ }
@@ -156,6 +155,65 @@ export async function sendNwcPayment(
       resolve({ error: 'WebSocket error' });
     };
   });
+}
+
+/**
+ * Send a pay_invoice request via NWC and wait for the wallet response.
+ * `amountMsats` is only for invoices that carry no amount of their own.
+ */
+export async function sendNwcPayment(
+  connection: NwcConnection,
+  invoice: string,
+  amountMsats?: number,
+): Promise<{ preimage?: string; error?: string }> {
+  const params: Record<string, unknown> = { invoice };
+  if (amountMsats) params.amount = amountMsats;
+  const r = await nwcRequest<{ preimage?: string }>(connection, 'pay_invoice', params, 60000);
+  return r.error ? { error: r.error } : { preimage: r.result?.preimage };
+}
+
+export interface NwcInfo {
+  alias?: string;
+  pubkey?: string;
+  network?: string;
+  block_height?: number;
+  methods?: string[];
+}
+
+export interface NwcTransaction {
+  type: 'incoming' | 'outgoing';
+  invoice?: string;
+  description?: string;
+  payment_hash?: string;
+  /** msats */
+  amount: number;
+  fees_paid?: number;
+  created_at?: number;
+  settled_at?: number | null;
+  expires_at?: number;
+}
+
+export function getNwcInfo(c: NwcConnection) {
+  return nwcRequest<NwcInfo>(c, 'get_info', {}, 15000);
+}
+
+/** Spendable balance in msats. */
+export async function getNwcBalance(c: NwcConnection): Promise<{ msats?: number; error?: string }> {
+  const r = await nwcRequest<{ balance: number }>(c, 'get_balance', {}, 15000);
+  return r.error ? { error: r.error } : { msats: Number(r.result?.balance ?? 0) };
+}
+
+export function makeNwcInvoice(c: NwcConnection, amountMsats: number, description = '', expiry = 3600) {
+  return nwcRequest<NwcTransaction>(c, 'make_invoice', { amount: amountMsats, description, expiry }, 20000);
+}
+
+export function lookupNwcInvoice(c: NwcConnection, paymentHash: string) {
+  return nwcRequest<NwcTransaction>(c, 'lookup_invoice', { payment_hash: paymentHash }, 15000);
+}
+
+export async function listNwcTransactions(c: NwcConnection, limit = 20) {
+  const r = await nwcRequest<{ transactions: NwcTransaction[] }>(c, 'list_transactions', { limit }, 20000);
+  return r.error ? { error: r.error } : { transactions: r.result?.transactions ?? [] };
 }
 
 /** Lightning network a wallet pays on. XBT and BTC Lightning share the

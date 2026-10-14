@@ -37,6 +37,7 @@ const LightOps = lazy(() => import('./pages/LightOps').then((m) => ({ default: m
 const OnchainExplorer = lazy(() => import('./pages/OnchainExplorer').then((m) => ({ default: m.OnchainExplorer })));
 const MoreMenu = lazy(() => import('./pages/MoreMenu'));
 const OtherStuff = lazy(() => import('./pages/OtherStuff'));
+const LightningWallet = lazy(() => import('./pages/LightningWallet').then((m) => ({ default: m.LightningWallet })));
 
 function PageFallback() {
   return (
@@ -216,6 +217,7 @@ export function App() {
           <Route path="messages" element={<Messages />} />
           <Route path="leaderboard" element={<Leaderboard />} />
           <Route path="wallets" element={<Wallets />} />
+          <Route path="lightning" element={<LightningWallet />} />
           <Route path="wallets/create" element={<MultiSigWrapper />} />
           <Route path="wallets/personal" element={<WalletViewWrapper />} />
           <Route path="wallets/sign" element={<RequestSignatureWrapper />} />

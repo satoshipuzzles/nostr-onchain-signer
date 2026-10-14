@@ -12,6 +12,8 @@ import { X, ImageUp, Loader2 } from 'lucide-react';
 interface Props {
   onResult: (text: string) => void;
   onClose: () => void;
+  title?: string;
+  hint?: string;
 }
 
 type Decoder = (source: HTMLVideoElement | HTMLCanvasElement | ImageBitmap, w: number, h: number) => Promise<string | null>;
@@ -46,7 +48,9 @@ async function makeDecoder(canvas: HTMLCanvasElement): Promise<Decoder> {
   };
 }
 
-export function QrScanner({ onResult, onClose }: Props) {
+export function QrScanner({
+  onResult, onClose, title = 'Scan address', hint = 'Point the camera at a Bitcoin address or payment QR code.',
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -133,7 +137,7 @@ export function QrScanner({ onResult, onClose }: Props) {
   return (
     <div className="fixed inset-0 z-[100] bg-black flex flex-col" role="dialog" aria-label="Scan QR code">
       <div className="flex items-center justify-between px-4 py-3 text-white">
-        <span className="text-sm font-medium">Scan address</span>
+        <span className="text-sm font-medium">{title}</span>
         <button type="button" onClick={onClose} className="p-2 -mr-2 rounded-full hover:bg-white/10" aria-label="Close">
           <X className="w-5 h-5" />
         </button>
@@ -156,7 +160,7 @@ export function QrScanner({ onResult, onClose }: Props) {
       <div className="px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] space-y-2">
         {error && <p className="text-xs text-red-400 text-center">{error}</p>}
         {status === 'scanning' && (
-          <p className="text-xs text-gray-400 text-center">Point the camera at a Bitcoin address or payment QR code.</p>
+          <p className="text-xs text-gray-400 text-center">{hint}</p>
         )}
         <button
           type="button"

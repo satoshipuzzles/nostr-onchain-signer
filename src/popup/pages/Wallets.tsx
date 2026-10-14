@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Wallet, Shield, Loader2, ExternalLink,
-  Copy, Check, RefreshCw, Send, ArrowDownLeft,
+  Copy, Check, RefreshCw, Send, ArrowDownLeft, Zap, ChevronRight,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
@@ -15,6 +15,7 @@ import {
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonWalletList } from '@/popup/components/Skeleton';
 import { log } from '@/lib/utils/logger';
+import { loadNwcConnection, getNwcBalance } from '@/lib/nostr/nwc';
 
 export function Wallets() {
   const navigate = useNavigate();
@@ -27,12 +28,22 @@ export function Wallets() {
   const [copied, setCopied] = useState(false);
   const [personalLabel, setPersonalLabel] = useState('Personal Wallet');
   const fetchGenRef = useRef(0);
+  // XBT Lightning balance via NWC: undefined while loading, null when no wallet is connected
+  const [lnSats, setLnSats] = useState<number | null | undefined>(undefined);
 
   const address = pubkeyToTaprootAddress(publicKey);
 
   useEffect(() => {
     loadData();
   }, [publicKey]);
+
+  useEffect(() => {
+    loadNwcConnection('xbt').then(async (conn) => {
+      if (!conn) { setLnSats(null); return; }
+      const b = await getNwcBalance(conn);
+      setLnSats(b.msats !== undefined ? Math.floor(b.msats / 1000) : null);
+    });
+  }, []);
 
   async function loadData() {
     const gen = ++fetchGenRef.current;
@@ -141,6 +152,21 @@ export function Wallets() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3">
+          <button
+            onClick={() => navigate('/lightning')}
+            className="card w-full text-left hover:opacity-90 transition-opacity flex items-center gap-3"
+          >
+            <div className="w-10 h-10 rounded-xl bg-bitcoin/15 flex items-center justify-center flex-shrink-0">
+              <Zap className="w-5 h-5 text-bitcoin" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">XBT Lightning</p>
+              <p className="text-xs text-gray-500">
+                {lnSats === undefined ? 'Checking…' : lnSats === null ? 'Connect a wallet to scan, pay and zap' : `${lnSats.toLocaleString()} sats · scan, pay, receive`}
+              </p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-gray-500" />
+          </button>
           <div className="card">
             <button
               onClick={() => navigate('/wallets/personal')}
