@@ -25,6 +25,20 @@ const CHAINS: LightningChain[] = ['xbt', 'btc'];
 const label = (c: LightningChain) => `${c.toUpperCase()} Lightning`;
 const fmtSats = (msats: number) => Math.floor(msats / 1000).toLocaleString();
 
+/** lnd's payment failure codes, in words. Nothing is spent in any of these cases. */
+const LND_FAILURES: Record<string, string> = {
+  FAILURE_REASON_INCORRECT_PAYMENT_DETAILS:
+    "The receiver's node rejected this payment: it doesn't recognise the invoice (already paid, cancelled, or never registered). Ask them for a new invoice. Nothing was sent.",
+  FAILURE_REASON_NO_ROUTE: 'No route to the receiver with enough capacity. Nothing was sent.',
+  FAILURE_REASON_TIMEOUT: 'The payment timed out looking for a route. Nothing was sent.',
+  FAILURE_REASON_INSUFFICIENT_BALANCE: 'Not enough outbound balance in your channels. Nothing was sent.',
+  FAILURE_REASON_ERROR: 'The payment failed along the route. Nothing was sent.',
+};
+const explainPayError = (e: string) => {
+  const code = Object.keys(LND_FAILURES).find((k) => e.includes(k));
+  return code ? LND_FAILURES[code] : e;
+};
+
 interface WalletState {
   conn: NwcConnection | null;
   info?: NwcInfo;
@@ -289,7 +303,7 @@ export function LightningWallet() {
     setStep({ kind: 'busy', message: `Paying on ${label(payChain)}…` });
     const r = await sendNwcPayment(conn, invoice, amountMsats);
     if (r.error) {
-      setStep({ kind: 'error', message: r.error });
+      setStep({ kind: 'error', message: explainPayError(r.error) });
       return;
     }
     const sats = fmtSats(decoded.amountMsats ?? amountMsats ?? 0);
