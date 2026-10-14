@@ -501,10 +501,12 @@ export function AuthProvider({ children, initialPublicKey, initialPassword }: Au
       for (let i = 0; i < vaultData.length; i++) {
         const data = vaultData[i];
         const npub = pubkeyToNpub(data.publicKeyHex);
-        const nsec = privkeyToNsec(data.privateKeyHex);
+        const hasKey = /^[0-9a-f]{64}$/i.test(data.privateKeyHex || '');
         backupContent += `--- Account ${i + 1}: ${data.label || 'Unnamed'} ---\n`;
         backupContent += `npub: ${npub}\n`;
-        backupContent += `nsec: ${nsec}\n`;
+        backupContent += hasKey
+          ? `nsec: ${privkeyToNsec(data.privateKeyHex)}\n`
+          : `nsec: (not stored in this app; held by your ${data.signerType === 'nip46' ? 'remote signer' : 'browser signer extension'})\n`;
         backupContent += `hex pubkey: ${data.publicKeyHex}\n\n`;
       }
 

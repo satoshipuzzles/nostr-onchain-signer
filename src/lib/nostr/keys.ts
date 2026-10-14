@@ -52,6 +52,11 @@ export function npubToPubkey(npub: string): string {
 }
 
 export function privkeyToNsec(privkeyHex: string): string {
+  // An empty key still bech32-encodes to a valid-looking "nsec1…". Never hand
+  // that out as if it were a secret key.
+  if (!/^[0-9a-f]{64}$/i.test(privkeyHex || '')) {
+    throw new Error('No secret key stored for this account');
+  }
   const words = bech32.toWords(hexToBytes(privkeyHex));
   return bech32.encode('nsec', words);
 }

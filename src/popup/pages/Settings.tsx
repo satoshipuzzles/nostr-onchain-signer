@@ -112,6 +112,16 @@ export function Settings() {
       const vaultData = await decryptVault(vault, pw);
       const activeKey = vaultData[activeAccountIndex];
       if (!activeKey) { setRevealError('No key found for active account'); return; }
+      if (!/^[0-9a-f]{64}$/i.test(activeKey.privateKeyHex || '')) {
+        // Linked account: signing happens in the browser extension or bunker,
+        // which is why Nostr posts work while Bitcoin signing does not.
+        setRevealError(
+          activeKey.signerType === 'nip46'
+            ? 'This account has no secret key in the app: your remote signer (bunker) holds it and signs for you. Bitcoin signing needs the key here: use "Edit Secret Key (nsec)" below to add it.'
+            : 'This account has no secret key in the app: your browser signer extension holds it, and signs your Nostr posts. That is why profile changes work but Bitcoin signing and splitting do not. Use "Edit Secret Key (nsec)" below to add the nsec to this account.',
+        );
+        return;
+      }
       const nsec = privkeyToNsec(activeKey.privateKeyHex);
       setRevealedNsec(nsec);
       setRevealState('revealed');

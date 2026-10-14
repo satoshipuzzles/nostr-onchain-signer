@@ -390,6 +390,12 @@ export function SendTx({ publicKey, onBack }: Props) {
     try {
       if (mode === 'split') {
         if (!split) throw new Error('Split status is still loading — both chains must answer first.');
+        if (!canSignOnchain) {
+          // Browser signers (nos2x, Alby, our extension over NIP-07) cannot make the
+          // SIGHASH_UNIFIED signature a split needs; only a key held in the app can.
+          setShowNsecUpgrade(true);
+          throw new Error("Splitting needs this account's secret key in the app. Your browser signer signs your Nostr posts, but it can't make the XBT split signature. Import the nsec below.");
+        }
         const rate = parseFloat(feeRate);
         if (!rate || rate <= 0) throw new Error('Enter a fee rate');
         const result = buildSplitPsbt({
@@ -449,7 +455,7 @@ export function SendTx({ publicKey, onBack }: Props) {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to send transaction';
       setError(msg);
-      if (msg.includes('nos2x') || msg.includes('Alby') || msg.includes('No Bitcoin signer') || msg.includes('untweaked')) {
+      if (msg.includes('nos2x') || msg.includes('Alby') || msg.includes('No Bitcoin signer') || msg.includes('untweaked') || msg.includes('NIP-07')) {
         setShowNsecUpgrade(true);
       }
     } finally {
