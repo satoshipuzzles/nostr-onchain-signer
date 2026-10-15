@@ -75,3 +75,11 @@ export function classifyScan(raw: string): ScanTarget | null {
   }
   return null;
 }
+
+/** The LNURL-pay code for a Lightning Address (LUD-16 address → LUD-06 bech32). */
+export function addressToLnurl(address: string): string | null {
+  const [name, domain] = address.trim().toLowerCase().split('@');
+  if (!name || !domain || !/^[a-z0-9-_.+]+$/.test(name) || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) return null;
+  const url = `https://${domain}/.well-known/lnurlp/${name}`;
+  return bech32.encode('lnurl', bech32.toWords(new TextEncoder().encode(url)), 2000).toUpperCase();
+}

@@ -18,6 +18,7 @@ import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NwcWalletCard } from '../components/NwcWalletCard';
 import { ChannelsCard } from '../components/ChannelsCard';
+import { LightningAddressCard } from '../components/LightningAddressCard';
 import { QrScanner } from '../components/QrScanner';
 import { QRCode } from '../components/QRCode';
 import { ZapDialog } from '../components/ZapDialog';
@@ -487,6 +488,8 @@ export function LightningWallet() {
           <ArrowDownLeft className="w-5 h-5" /> Receive
         </button>
       </div>
+
+      {active.conn && <LightningAddressCard chain={chain} nodePubkey={active.info?.pubkey} />}
 
       {active.conn && (
         <div className="card">
