@@ -1,10 +1,20 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
-import { copyFileSync, mkdirSync, existsSync, writeFileSync } from 'fs';
+import { copyFileSync, mkdirSync, existsSync, writeFileSync, cpSync } from 'fs';
 
 // Unique per build — lets long-lived PWA sessions detect new deployments
 const BUILD_VERSION = Date.now().toString(36);
+
+// Web-only static files (the landing page video), kept out of the extension build.
+function copyWebMedia() {
+  return {
+    name: 'copy-web-media',
+    closeBundle() {
+      if (existsSync('public-web')) cpSync('public-web', 'dist-web', { recursive: true });
+    },
+  };
+}
 
 function writeVersionFile() {
   return {
@@ -61,7 +71,7 @@ export default defineConfig(({ command, mode }) => {
   // Web build (for Vercel/PWA) — just build index.html as a regular SPA
   if (isWebBuild) {
     return {
-      plugins: [react(), writeVersionFile()],
+      plugins: [react(), writeVersionFile(), copyWebMedia()],
       resolve: {
         alias: { '@': resolve(__dirname, './src') },
       },

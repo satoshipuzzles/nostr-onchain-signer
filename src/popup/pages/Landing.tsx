@@ -111,6 +111,22 @@ export function Landing({ onGetStarted }: Props) {
         </div>
       </section>
 
+      {/* Explainer video */}
+      <section className="border-t border-white/5">
+        <div className="max-w-4xl mx-auto px-4 py-14 md:py-20">
+          <h2 className="text-2xl md:text-3xl font-bold text-center mb-3">See it in 45 seconds</h2>
+          <p className="text-gray-400 text-center mb-8 max-w-xl mx-auto">Your npub is a Bitcoin wallet: pay anyone on Nostr, build a multisig with friends, zap on Lightning.</p>
+          <video
+            className="w-full aspect-video rounded-2xl border border-white/10 bg-black"
+            src="/media/nostr-onchain-45s.mp4"
+            poster="/media/nostr-onchain-45s-poster.jpg"
+            controls
+            playsInline
+            preload="none"
+          />
+        </div>
+      </section>
+
       {/* Three ways in */}
       <section className="border-t border-white/5 bg-white/[0.015]">
         <div className="max-w-5xl mx-auto px-5 py-16 md:py-20">
