@@ -20,7 +20,7 @@ export default function VidstrPage() {
   const dockRef = useCallback((el: HTMLDivElement | null) => {
     registerDock(el);
   }, [registerDock]);
-  useEffect(() => () => registerDock(null), [registerDock]);
+  // React calls the ref with null on unmount, which unregisters the dock
 
   const running = embeds.some((e) => e.id === VIDSTR.id);
 

@@ -31,7 +31,7 @@ export default function OtherStuff() {
     registerDock(el);
   }, [registerDock]);
 
-  useEffect(() => () => registerDock(null), [registerDock]);
+  // React calls the ref with null on unmount, which unregisters the dock
 
   function switchTab(next: Tab) {
     setTab(next);
