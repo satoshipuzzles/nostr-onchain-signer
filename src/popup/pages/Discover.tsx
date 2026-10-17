@@ -9,9 +9,10 @@ import { type ProfileMetadata } from '@/lib/nostr/social';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { safeImageUrl } from '@/lib/utils';
 import {
-  fullDiscoverySync, searchProfilesNip50, getAllCachedProfiles,
-  getCacheStats, searchLocalCache, resolveProfiles, type ActivityWindow, type CachedProfile,
+  fullDiscoverySync, getAllCachedProfiles,
+  getCacheStats, resolveProfiles, type ActivityWindow, type CachedProfile,
 } from '@/lib/nostr/cache';
+import { searchPeople, loadFollowProfiles, type PeopleHit } from '@/lib/nostr/people-search';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
@@ -36,6 +37,8 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
   const [showFilters, setShowFilters] = useState(false);
   const [syncError, setSyncError] = useState(false);
   const globalSearchTimer = useRef<ReturnType<typeof setTimeout>>();
+  const peopleCancel = useRef<(() => void) | null>(null);
+  const [followHits, setFollowHits] = useState<Set<string>>(new Set());
   // Notes / events search
   const [tab, setTab] = useState<'people' | 'notes'>('people');
   const [notes, setNotes] = useState<FeedNote[]>([]);
@@ -91,8 +94,33 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
     init();
     return () => {
       if (globalSearchTimer.current) clearTimeout(globalSearchTimer.current);
+      peopleCancel.current?.();
     };
   }, []);
+
+  // Follows' profiles, batched, so searching finds the people you follow first
+  useEffect(() => {
+    if (following.size) loadFollowProfiles(following);
+  }, [following.size]);
+
+  /** Run a people search; results stream into the list, follows first. */
+  function runPeopleSearch(query: string, localOnly = false) {
+    peopleCancel.current?.();
+    if (!localOnly) setSearching(true);
+    peopleCancel.current = searchPeople(query, {
+      following,
+      localOnly,
+      onUpdate: (hits: PeopleHit[], done: boolean) => {
+        const now = Math.floor(Date.now() / 1000);
+        setFollowHits(new Set(hits.filter((h) => h.following).map((h) => h.profile.pubkey)));
+        setProfiles(hits
+          .filter((h) => h.profile.pubkey !== publicKey)
+          .map((h) => ({ profile: h.profile, lastSeen: now, fetchedAt: Date.now() })));
+        if (done && !localOnly) setSearching(false);
+      },
+    });
+    if (!localOnly) setTimeout(() => setSearching(false), 9000);
+  }
 
   useEffect(() => {
     if (!loading && !syncing && !searchQuery) {
@@ -160,19 +188,8 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
       return;
     }
 
-    setSearching(true);
-    try {
-      const results = await searchProfilesNip50(searchQuery.trim());
-      setProfiles(results.map((p) => ({
-        profile: p,
-        lastSeen: Math.floor(Date.now() / 1000),
-        fetchedAt: Date.now(),
-      })).filter((p) => p.profile.pubkey !== publicKey));
-    } catch (err) {
-      console.error('Search failed:', err);
-    } finally {
-      setSearching(false);
-    }
+    if (globalSearchTimer.current) clearTimeout(globalSearchTimer.current);
+    runPeopleSearch(searchQuery.trim());
   }
 
   const handleLocalSearch = useCallback(async (query: string) => {
@@ -201,51 +218,24 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
     }
 
     if (!query.trim()) {
+      peopleCancel.current?.();
+      setSearching(false);
+      setFollowHits(new Set());
       await loadFromCache(activityWindow);
       return;
     }
 
-    // Auto-trigger global search for npub/hex pastes immediately
-    if (query.startsWith('npub1') && query.length > 60) {
-      setSearching(true);
-      try {
-        const results = await searchProfilesNip50(query.trim());
-        setProfiles(results.map((p) => ({
-          profile: p,
-          lastSeen: Math.floor(Date.now() / 1000),
-          fetchedAt: Date.now(),
-        })).filter((p) => p.profile.pubkey !== publicKey));
-      } catch {} finally {
-        setSearching(false);
-      }
+    // Pasted npub / nprofile / hex, or a full NIP-05: look it up right away
+    const q = query.trim();
+    if (/^(npub|nprofile)1/i.test(q) || /^[0-9a-f]{64}$/i.test(q) || /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(q)) {
+      runPeopleSearch(q);
       return;
     }
 
-    // Instant local search
-    const results = await searchLocalCache(query);
-    setProfiles(results.map((p) => ({
-      profile: p,
-      lastSeen: Math.floor(Date.now() / 1000),
-      fetchedAt: Date.now(),
-    })).filter((p) => p.profile.pubkey !== publicKey));
-
-    // Debounced global NIP-50 search (fires 800ms after stop typing)
-    if (query.length >= 3) {
-      globalSearchTimer.current = setTimeout(async () => {
-        setSearching(true);
-        try {
-          const globalResults = await searchProfilesNip50(query.trim());
-          if (globalResults.length > 0) {
-            setProfiles(globalResults.map((p) => ({
-              profile: p,
-              lastSeen: Math.floor(Date.now() / 1000),
-              fetchedAt: Date.now(),
-            })).filter((p) => p.profile.pubkey !== publicKey));
-          }
-        } catch {} finally {
-          setSearching(false);
-        }
-      }, 800);
+    // Instant: follows + local cache; then the network after a pause in typing
+    runPeopleSearch(q, true);
+    if (q.length >= 2) {
+      globalSearchTimer.current = setTimeout(() => runPeopleSearch(q), 600);
     }
   }, [activityWindow, publicKey, tab]);
 
@@ -370,7 +360,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
         <p className="text-[10px] text-gray-500 mb-2 px-1">
           {searchQuery.startsWith('npub1')
             ? 'Direct npub lookup — will search multiple relays'
-            : 'Typing = local filter • Enter = global search • Paste npub for direct lookup'}
+            : 'Follows first • names, NIP-05 (name@domain), npub / nprofile / hex • searches relays as you type'}
         </p>
       )}
 
@@ -429,7 +419,7 @@ export function Discover({ publicKey, following, onFollow, onUnfollow, onViewPro
               key={entry.profile.pubkey}
               profile={entry.profile}
               lastSeen={formatLastSeen(entry.lastSeen)}
-              isFollowing={following.has(entry.profile.pubkey)}
+              isFollowing={following.has(entry.profile.pubkey) || followHits.has(entry.profile.pubkey)}
               onFollow={() => onFollow(entry.profile.pubkey)}
               onUnfollow={() => onUnfollow(entry.profile.pubkey)}
               onViewProfile={() => onViewProfile({

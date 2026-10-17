@@ -3,10 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { X, Copy, Check, BadgeCheck, Zap, Globe, Loader2, ExternalLink, MessageCircle, Bitcoin, VolumeX, Volume2, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
-import { fetchProfiles, type ProfileMetadata } from '@/lib/nostr/social';
-import { getCachedProfile, cacheProfiles } from '@/lib/nostr/cache';
-import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
-import { subscribeEvents, type FeedNote, type NostrEvent } from '@/lib/nostr/feed';
+import { type ProfileMetadata } from '@/lib/nostr/social';
+import { getCachedProfile } from '@/lib/nostr/cache';
+import { type FeedNote } from '@/lib/nostr/feed';
+import { streamQuery, relaysForAuthor } from '@/lib/nostr/query';
+import { parentOf } from '@/lib/nostr/thread';
+import { primeEvent, requestProfiles, getProfileSync, onProfile } from '@/lib/nostr/nostr-store';
+import { parseZapReceipt } from '@/lib/nostr/zap';
+import { ZapDialog } from './ZapDialog';
+import { NoteContent, SelectNoteContext } from './NoteContent';
 import { isMuted, mutePubkey, unmutePubkey } from '@/lib/nostr/mute';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
@@ -44,6 +49,8 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   const [muted, setMuted] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
   const [threadNote, setThreadNote] = useState<FeedNote | null>(null);
+  const [showZap, setShowZap] = useState(false);
+  const [zapTotal, setZapTotal] = useState(0);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const npub = pubkeyToNpub(pubkey);
@@ -83,11 +90,7 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   }
 
   function openZap() {
-    if (profile?.lud16) {
-      window.open(`lightning:${profile.lud16}`, '_blank');
-    } else {
-      toast.info('This user has no Lightning address in their profile');
-    }
+    setShowZap(true);
   }
 
   async function toggleMute() {
@@ -124,34 +127,48 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     setLoadingProfile(true);
-    setProfile(null);
+    setProfile(getProfileSync(pubkey) ?? null);
 
-    async function loadProfile() {
-      const cached = await getCachedProfile(pubkey);
-      if (cached && !cancelled) {
+    getCachedProfile(pubkey).then((cached) => {
+      if (cached && !cancelled && !getProfileSync(pubkey)) {
         setProfile(cached);
         setLoadingProfile(false);
       }
+    }).catch(() => {});
 
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays.slice(0, 3)
-        : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostr.band'];
+    // Shared batched store: kind 0 from indexers, defaults and the cloud fallback
+    const off = onProfile(pubkey, () => {
+      const p = getProfileSync(pubkey);
+      if (p && !cancelled) { setProfile(p); setLoadingProfile(false); }
+    });
+    requestProfiles([pubkey]);
+    const t = setTimeout(() => { if (!cancelled) setLoadingProfile(false); }, 7000);
+    return () => { cancelled = true; off(); clearTimeout(t); };
+  }, [pubkey]);
 
-      const fetched = await fetchProfiles([pubkey], relayUrls, 8000);
-      const p = fetched.get(pubkey);
-      if (p && !cancelled) {
-        setProfile(p);
-        const map = new Map<string, ProfileMetadata>();
-        map.set(pubkey, p);
-        await cacheProfiles(map);
-      }
-      if (!cancelled) setLoadingProfile(false);
-    }
-
-    loadProfile();
-    return () => { cancelled = true; };
+  // Zap total from receipts
+  useEffect(() => {
+    setZapTotal(0);
+    let cancel: (() => void) | null = null;
+    let live = true;
+    relaysForAuthor(pubkey, { inbox: true }).then((relays) => {
+      if (!live) return;
+      const seen = new Set<string>();
+      let total = 0;
+      cancel = streamQuery({
+        relays,
+        filters: [{ kinds: [9735], '#p': [pubkey], limit: 300 }],
+        timeoutMs: 9000,
+        onEvent: (e) => {
+          const z = parseZapReceipt(e);
+          if (!z || z.recipient !== pubkey || seen.has(z.id)) return;
+          seen.add(z.id);
+          total += z.amountSats;
+          if (live) setZapTotal(total);
+        },
+      });
+    });
+    return () => { live = false; cancel?.(); };
   }, [pubkey]);
 
   useEffect(() => {
@@ -164,12 +181,8 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
     setLoadingNotes(!cached);
 
     async function loadNotes() {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays.slice(0, 3)
-        : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
-
+      // Outbox model: the author's write relays, then the viewer's and defaults
+      const relayUrls = await relaysForAuthor(pubkey);
       const collected = new Map<string, FeedNote>();
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -178,31 +191,32 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
         const sorted = Array.from(collected.values()).sort((a, b) => b.created_at - a.created_at);
         notesCache.set(pubkey, sorted);
         setNotes(sorted);
-        setLoadingNotes(false);
+        if (sorted.length) setLoadingNotes(false);
       }
 
-      const cleanup = subscribeEvents(
-        relayUrls,
-        { kinds: [1], authors: [pubkey], limit: 30 },
-        (event: NostrEvent) => {
-          const hasETag = event.tags.some((t) => t[0] === 'e');
-          if (!hasETag && !collected.has(event.id)) {
-            collected.set(event.id, {
-              id: event.id,
-              pubkey: event.pubkey,
-              content: event.content,
-              created_at: event.created_at,
-              tags: event.tags,
-              kind: event.kind,
-            });
-            if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 250);
-          }
+      const cleanup = streamQuery({
+        relays: relayUrls,
+        filters: [{ kinds: [1], authors: [pubkey], limit: 40 }],
+        timeoutMs: 9000,
+        onEvent: (event) => {
+          if (event.pubkey !== pubkey || parentOf(event) || collected.has(event.id)) return;
+          primeEvent(event);
+          collected.set(event.id, {
+            id: event.id,
+            pubkey: event.pubkey,
+            content: event.content,
+            created_at: event.created_at,
+            tags: event.tags,
+            kind: event.kind,
+          });
+          if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 250);
         },
-        () => {
+        onDone: () => {
           if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
           flush();
+          setLoadingNotes(false);
         },
-      );
+      });
       cleanupRef.current = () => {
         if (flushTimer) clearTimeout(flushTimer);
         cleanup();
@@ -271,15 +285,27 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
                     <p className="text-xs text-nostr/80 truncate">{profile.nip05}</p>
                   )}
                   {profile?.about && (
-                    <p className="text-xs text-gray-400 mt-1 leading-relaxed line-clamp-3">{profile.about}</p>
+                    <p className="text-xs text-gray-400 mt-1 leading-relaxed line-clamp-3 break-words">
+                      <NoteContent content={profile.about} depth={1} stripImages={false} />
+                    </p>
+                  )}
+                  {zapTotal > 0 && (
+                    <p className="text-[11px] text-yellow-500 mt-1 flex items-center gap-1">
+                      <Zap className="w-3 h-3" /> {zapTotal.toLocaleString()} sats zapped to them
+                    </p>
                   )}
                 </div>
               </div>
             )}
 
             {/* Metadata pills */}
-            {profile && (profile.lud16 || profile.website) && (
+            {profile && (profile.lud16 || profile.lud16Xbt || profile.website) && (
               <div className="flex flex-wrap gap-1.5 mb-3">
+                {profile.lud16Xbt && (
+                  <span className="flex items-center gap-1 text-[10px] bg-purple-500/10 text-purple-300 px-2 py-0.5 rounded-full">
+                    <Zap className="w-2.5 h-2.5" /> XBT {profile.lud16Xbt}
+                  </span>
+                )}
                 {profile.lud16 && (
                   <span className="flex items-center gap-1 text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded-full">
                     <Zap className="w-2.5 h-2.5" /> {profile.lud16}
@@ -515,6 +541,10 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
           </div>
         </div>
       </div>
+
+      {showZap && (
+        <ZapDialog recipientPubkey={pubkey} profile={profile} onClose={() => setShowZap(false)} />
+      )}
 
       {/* Thread modal — full note with replies, react/zap/comment */}
       {threadNote && (

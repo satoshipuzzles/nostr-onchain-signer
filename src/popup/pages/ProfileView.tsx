@@ -1,18 +1,22 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, Copy, Check, ExternalLink, BadgeCheck, Zap, Globe, Loader2, MessageCircle } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { ArrowLeft, Copy, Check, BadgeCheck, Zap, Globe, Loader2, MessageCircle } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
-import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
+import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
-import { getCachedProfile } from '@/lib/nostr/cache';
+import { streamQuery, relaysForAuthor, type NEvent } from '@/lib/nostr/query';
+import { parseZapReceipt, type ZapReceiptInfo } from '@/lib/nostr/zap';
+import { parentOf } from '@/lib/nostr/thread';
+import { primeEvent, primeProfiles, profileName } from '@/lib/nostr/nostr-store';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { ZapDialog } from '@/popup/components/ZapDialog';
+import { NoteContent, QuotedNote, SelectNoteContext } from '@/popup/components/NoteContent';
 import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
 import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
+import { useProfile, useEngagement } from '@/popup/hooks/useNostr';
 
 interface Props {
   user: DiscoveredUser;
@@ -21,22 +25,19 @@ interface Props {
   onUnfollow: () => void;
   onBack: () => void;
   onViewProfile?: (pubkey: string) => void;
+  /** Read-only view (public page, nobody signed in). */
+  guest?: boolean;
 }
 
 type ProfileTab = 'notes' | 'replies' | 'reactions' | 'zaps';
-
-interface ZapReceipt {
-  zapperPubkey: string;
-  amount: number;
-  timestamp: number;
-  zapperProfile?: ProfileMetadata | null;
-}
 
 interface ReactionEntry {
   eventId: string;
   emoji: string;
   timestamp: number;
   targetNoteId: string;
+  targetAuthor?: string;
+  relayHint?: string;
 }
 
 function formatSats(amount: number): string {
@@ -55,7 +56,50 @@ function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, onViewProfile }: Props) {
+function toNote(e: NEvent): FeedNote {
+  return { id: e.id, pubkey: e.pubkey, content: e.content, created_at: e.created_at, tags: e.tags, kind: e.kind };
+}
+
+function ZapRow({ z, onOpen }: { z: ZapReceiptInfo; onOpen: (pk: string) => void }) {
+  const sender = z.anonymous ? '' : z.sender;
+  const p = useProfile(sender || null);
+  return (
+    <div className="card w-full text-left">
+      <div
+        onClick={() => { if (sender) onOpen(sender); }}
+        className={`flex items-center gap-3 ${sender ? 'cursor-pointer' : ''}`}
+      >
+        {sender ? (
+          <ClickableAvatar pubkey={sender} picture={p?.picture} name={p?.displayName || p?.name} size="md" />
+        ) : (
+          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-yellow-500/30 to-bitcoin/30 flex items-center justify-center">
+            <Zap className="w-3.5 h-3.5 text-yellow-500" />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-gray-200 truncate">{sender ? profileName(p, sender) : 'Anonymous'}</p>
+          <p className="text-[10px] text-gray-500">
+            {formatTimeAgo(z.createdAt)}
+            {z.eventId ? ' · on a note' : ' · on the profile'}
+          </p>
+        </div>
+        <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${z.chain === 'xbt' ? 'text-purple-300 bg-purple-500/15' : 'text-bitcoin bg-bitcoin/15'}`}>
+          {z.chain.toUpperCase()}
+        </span>
+        <span className="text-sm font-semibold text-yellow-500 flex items-center gap-1">
+          <Zap className="w-3 h-3" /> {formatSats(z.amountSats)}
+        </span>
+      </div>
+      {z.comment && (
+        <p className="text-xs text-gray-300 mt-2 whitespace-pre-wrap break-words">
+          <NoteContent content={z.comment} depth={1} />
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, onViewProfile, guest }: Props) {
   const { openProfile } = useProfilePopup();
   const viewProfile = (pubkey: string) => {
     openProfile(pubkey);
@@ -63,19 +107,21 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   };
   const [copied, setCopied] = useState('');
   const [activeTab, setActiveTab] = useState<ProfileTab>('notes');
+  const [relays, setRelays] = useState<string[] | null>(null);
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [replies, setReplies] = useState<FeedNote[]>([]);
   const [reactions, setReactions] = useState<ReactionEntry[]>([]);
-  const [zaps, setZaps] = useState<ZapReceipt[]>([]);
-  const [zapTotal, setZapTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
+  const [zaps, setZaps] = useState<ZapReceiptInfo[]>([]);
+  const [zapsLoading, setZapsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
   const [showZapDialog, setShowZapDialog] = useState(false);
-  const cleanupRef = useRef<(() => void)[]>([]);
 
   const npub = pubkeyToNpub(user.pubkey);
-  const profile = user.profile;
+  const storeProfile = useProfile(user.pubkey);
+  const profile: ProfileMetadata | undefined = (storeProfile?.name || storeProfile?.displayName) ? storeProfile : (user.profile ?? storeProfile);
+
+  useEffect(() => { if (user.profile) primeProfiles([user.profile]); }, [user.profile]);
 
   async function copy(text: string, label: string) {
     await navigator.clipboard.writeText(text);
@@ -83,197 +129,113 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
     setTimeout(() => setCopied(''), 2000);
   }
 
-  const resolveProfile = useCallback(async (pubkey: string) => {
-    if (profiles.has(pubkey)) return;
-    const cached = await getCachedProfile(pubkey);
-    if (cached) {
-      setProfiles((prev) => {
-        const next = new Map(prev);
-        next.set(pubkey, cached);
-        return next;
-      });
-    }
-  }, [profiles]);
-
+  // Outbox model: their write relays (posts) + read relays (replies, zaps to them)
   useEffect(() => {
-    return () => {
-      cleanupRef.current.forEach((fn) => fn());
-      cleanupRef.current = [];
-    };
-  }, []);
+    let live = true;
+    setRelays(null);
+    relaysForAuthor(user.pubkey, { inbox: true }).then((r) => { if (live) setRelays(r); });
+    return () => { live = false; };
+  }, [user.pubkey]);
 
+  // Zap receipts load with the profile so the total shows in the header
   useEffect(() => {
-    cleanupRef.current.forEach((fn) => fn());
-    cleanupRef.current = [];
+    if (!relays) return;
+    setZaps([]);
+    setZapsLoading(true);
+    const byId = new Map<string, ZapReceiptInfo>();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => { timer = null; setZaps([...byId.values()].sort((a, b) => b.createdAt - a.createdAt)); };
+    return streamQuery({
+      relays,
+      filters: [{ kinds: [9735], '#p': [user.pubkey], limit: 300 }],
+      timeoutMs: 9000,
+      onEvent: (e) => {
+        const z = parseZapReceipt(e);
+        if (!z || z.recipient !== user.pubkey) return;
+        byId.set(z.id, z);
+        if (!timer) timer = setTimeout(flush, 250);
+      },
+      onDone: () => { if (timer) clearTimeout(timer); flush(); setZapsLoading(false); },
+    });
+  }, [relays, user.pubkey]);
+
+  // Notes / replies / reactions: stream per tab
+  useEffect(() => {
+    if (!relays) return;
+    if (activeTab === 'zaps') { setLoading(false); return; }
     setLoading(true);
+    const found = new Map<string, NEvent>();
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    async function load() {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays.slice(0, 3)
-        : ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social'];
-
-      if (activeTab === 'notes') {
-        const collected: FeedNote[] = [];
-        const cleanup = subscribeEvents(
-          relayUrls,
-          { kinds: [1], authors: [user.pubkey], limit: 50 },
-          (event: NostrEvent) => {
-            const hasETag = event.tags.some((t) => t[0] === 'e');
-            if (!hasETag) {
-              collected.push({
-                id: event.id,
-                pubkey: event.pubkey,
-                content: event.content,
-                created_at: event.created_at,
-                tags: event.tags,
-                kind: event.kind,
-              });
-              setNotes([...collected].sort((a, b) => b.created_at - a.created_at));
-            }
-          },
-          () => setLoading(false),
-        );
-        cleanupRef.current.push(cleanup);
-        setTimeout(() => setLoading(false), 12000);
-      } else if (activeTab === 'replies') {
-        const collected: FeedNote[] = [];
-        const cleanup = subscribeEvents(
-          relayUrls,
-          { kinds: [1], authors: [user.pubkey], limit: 50 },
-          (event: NostrEvent) => {
-            const hasETag = event.tags.some((t) => t[0] === 'e');
-            if (hasETag) {
-              collected.push({
-                id: event.id,
-                pubkey: event.pubkey,
-                content: event.content,
-                created_at: event.created_at,
-                tags: event.tags,
-                kind: event.kind,
-              });
-              setReplies([...collected].sort((a, b) => b.created_at - a.created_at));
-            }
-          },
-          () => setLoading(false),
-        );
-        cleanupRef.current.push(cleanup);
-        setTimeout(() => setLoading(false), 12000);
-      } else if (activeTab === 'reactions') {
-        const collected: ReactionEntry[] = [];
-        const cleanup = subscribeEvents(
-          relayUrls,
-          { kinds: [7], authors: [user.pubkey], limit: 100 },
-          (event: NostrEvent) => {
-            const eTag = event.tags.find((t) => t[0] === 'e');
-            collected.push({
-              eventId: event.id,
-              emoji: event.content || '❤️',
-              timestamp: event.created_at,
-              targetNoteId: eTag?.[1] || '',
-            });
-            setReactions([...collected].sort((a, b) => b.timestamp - a.timestamp));
-          },
-          () => setLoading(false),
-        );
-        cleanupRef.current.push(cleanup);
-        setTimeout(() => setLoading(false), 12000);
-      } else if (activeTab === 'zaps') {
-        const collected: ZapReceipt[] = [];
-        const cleanup = subscribeEvents(
-          relayUrls,
-          { kinds: [9735], '#p': [user.pubkey], limit: 100 },
-          (event: NostrEvent) => {
-            let amount = 0;
-            let zapperPubkey = '';
-
-            const descTag = event.tags.find((t) => t[0] === 'description');
-            if (descTag && descTag[1]) {
-              try {
-                const zapReq = JSON.parse(descTag[1]);
-                zapperPubkey = zapReq.pubkey || '';
-                const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
-                if (amountTag) {
-                  amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
-                }
-              } catch { /* ignore */ }
-            }
-
-            if (!zapperPubkey) {
-              const pTag = event.tags.find((t) => t[0] === 'P');
-              if (pTag) zapperPubkey = pTag[1];
-            }
-
-            if (amount === 0) {
-              const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
-              if (bolt11Tag && bolt11Tag[1]) {
-                const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
-                if (match) {
-                  const value = parseInt(match[1], 10);
-                  const unit = match[2];
-                  if (unit === 'm') amount = value * 100_000;
-                  else if (unit === 'u') amount = value * 100;
-                  else if (unit === 'n') amount = Math.floor(value / 10);
-                  else if (unit === 'p') amount = Math.floor(value / 10_000);
-                  else amount = value * 100_000_000;
-                }
-              }
-            }
-
-            collected.push({
-              zapperPubkey,
-              amount,
-              timestamp: event.created_at,
-            });
-            const sorted = [...collected].sort((a, b) => b.amount - a.amount);
-            setZaps(sorted);
-            setZapTotal(sorted.reduce((sum, z) => sum + z.amount, 0));
-
-            if (zapperPubkey) resolveProfile(zapperPubkey);
-          },
-          () => setLoading(false),
-        );
-        cleanupRef.current.push(cleanup);
-        setTimeout(() => setLoading(false), 12000);
+    const flush = () => {
+      timer = null;
+      const list = [...found.values()].sort((a, b) => b.created_at - a.created_at);
+      if (activeTab === 'notes') setNotes(list.map(toNote));
+      else if (activeTab === 'replies') setReplies(list.map(toNote));
+      else if (activeTab === 'reactions') {
+        setReactions(list.map((e) => {
+          const eTags = e.tags.filter((t) => t[0] === 'e');
+          const target = eTags[eTags.length - 1];
+          return {
+            eventId: e.id,
+            emoji: e.content || '❤️',
+            timestamp: e.created_at,
+            targetNoteId: target?.[1] || '',
+            relayHint: target?.[2],
+            targetAuthor: e.tags.filter((t) => t[0] === 'p').pop()?.[1],
+          };
+        }));
       }
-    }
+    };
 
-    load();
-  }, [activeTab, user.pubkey]);
+    const filter = activeTab === 'reactions'
+      ? { kinds: [7], authors: [user.pubkey], limit: 100 }
+      : { kinds: activeTab === 'replies' ? [1, 1111] : [1], authors: [user.pubkey], limit: 80 };
 
-  // Resolve zapper profiles once loaded
-  useEffect(() => {
-    async function resolve() {
-      const lookups = await Promise.all(
-        zaps
-          .filter((z) => z.zapperPubkey && !z.zapperProfile)
-          .map(async (z) => ({ pubkey: z.zapperPubkey!, profile: await getCachedProfile(z.zapperPubkey!) })),
-      );
-      const found = new Map(lookups.filter((l) => l.profile).map((l) => [l.pubkey, l.profile!]));
-      if (found.size === 0) return;
-      setZaps((prev) => prev.map((z) =>
-        z.zapperPubkey && !z.zapperProfile && found.has(z.zapperPubkey)
-          ? { ...z, zapperProfile: found.get(z.zapperPubkey) }
-          : z,
-      ));
-    }
-    if (zaps.length > 0) resolve();
-  }, [zaps.length]);
+    return streamQuery({
+      relays,
+      filters: [filter],
+      timeoutMs: 9000,
+      onEvent: (e) => {
+        if (e.pubkey !== user.pubkey) return;
+        if (activeTab === 'notes' && parentOf(e)) return;
+        if (activeTab === 'replies' && !parentOf(e)) return;
+        if (activeTab !== 'reactions') primeEvent(e);
+        found.set(e.id, e);
+        if (!timer) timer = setTimeout(flush, 200);
+        setLoading(false);
+      },
+      onDone: () => { if (timer) clearTimeout(timer); flush(); setLoading(false); },
+    });
+  }, [activeTab, relays, user.pubkey]);
+
+  const listed = activeTab === 'notes' ? notes : activeTab === 'replies' ? replies : [];
+  const listedIds = useMemo(() => listed.map((n) => n.id).slice(0, 100), [listed]);
+  const engagement = useEngagement(loading ? [] : listedIds, relays);
+
+  const zapTotal = useMemo(() => zaps.reduce((s, z) => s + z.amountSats, 0), [zaps]);
+  const zapByChain = useMemo(() => {
+    const t = { xbt: 0, btc: 0 };
+    for (const z of zaps) t[z.chain] += z.amountSats;
+    return t;
+  }, [zaps]);
 
   const TABS: { id: ProfileTab; label: string }[] = [
     { id: 'notes', label: 'Notes' },
     { id: 'replies', label: 'Replies' },
     { id: 'reactions', label: 'Reactions' },
-    { id: 'zaps', label: 'Zaps' },
+    { id: 'zaps', label: zaps.length ? `Zaps (${zaps.length})` : 'Zaps' },
   ];
 
+  const showSpinner = (activeTab === 'zaps' ? zapsLoading && zaps.length === 0 : loading && listed.length === 0 && (activeTab !== 'reactions' || reactions.length === 0));
+
   return (
+    <SelectNoteContext.Provider value={setSelectedNote}>
     <div className="h-full flex flex-col overflow-y-auto pb-24">
       {/* Banner / Header */}
       <div className="relative">
         {profile?.banner ? (
-          <img src={profile.banner} alt="" className="w-full h-24 object-cover" />
+          <img src={safeImageUrl(profile.banner)} alt="" className="w-full h-24 object-cover" />
         ) : (
           <div className="w-full h-24 bg-gradient-to-br from-bitcoin/20 to-nostr/20" />
         )}
@@ -289,7 +251,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
       <div className="px-4 -mt-8 relative z-10">
         {profile?.picture ? (
           <img
-            src={profile.picture}
+            src={safeImageUrl(profile.picture)}
             alt=""
             className="w-16 h-16 rounded-full object-cover border-4 border-surface-900 bg-surface-700"
           />
@@ -316,11 +278,32 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
         )}
 
         {profile?.about && (
-          <p className="text-sm text-gray-400 mb-3 leading-relaxed">{profile.about}</p>
+          <p className="text-sm text-gray-400 mb-3 leading-relaxed whitespace-pre-wrap break-words">
+            <NoteContent content={profile.about} depth={1} stripImages={false} />
+          </p>
+        )}
+
+        {/* Zap total from receipts */}
+        {zapTotal > 0 && (
+          <button
+            onClick={() => setActiveTab('zaps')}
+            className="flex items-center gap-1.5 mb-3 text-xs text-yellow-500 hover:text-yellow-400"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span className="font-semibold">{formatSats(zapTotal)} sats</span>
+            <span className="text-gray-500">received in {zaps.length} zaps</span>
+            {zapByChain.xbt > 0 && <span className="text-purple-300">· XBT {formatSats(zapByChain.xbt)}</span>}
+            {zapByChain.btc > 0 && <span className="text-bitcoin">· BTC {formatSats(zapByChain.btc)}</span>}
+          </button>
         )}
 
         {/* Metadata pills */}
         <div className="flex flex-wrap gap-2 mb-4">
+          {profile?.lud16Xbt && (
+            <span className="flex items-center gap-1 text-xs bg-purple-500/10 text-purple-300 px-2 py-1 rounded-full">
+              <Zap className="w-3 h-3" /> XBT {profile.lud16Xbt}
+            </span>
+          )}
           {profile?.lud16 && (
             <span className="flex items-center gap-1 text-xs bg-yellow-500/10 text-yellow-400 px-2 py-1 rounded-full">
               <Zap className="w-3 h-3" /> {profile.lud16}
@@ -366,37 +349,39 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
 
         {/* Follow + Zap */}
         <div className="flex gap-2 mb-4">
-          <button
-            onClick={isFollowing ? onUnfollow : onFollow}
-            className={`flex-1 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-              isFollowing
-                ? 'bg-surface-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
-                : 'btn-nostr'
-            }`}
-          >
-            {isFollowing ? 'Unfollow' : 'Follow'}
-          </button>
-          {profile?.lud16 && (
+          {!guest && (
             <button
-              onClick={() => setShowZapDialog(true)}
-              className="px-4 py-2.5 rounded-lg font-medium text-sm bg-bitcoin/15 text-bitcoin hover:bg-bitcoin/25 transition-colors flex items-center gap-1.5"
+              onClick={isFollowing ? onUnfollow : onFollow}
+              className={`flex-1 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                isFollowing
+                  ? 'bg-surface-700 text-gray-300 hover:bg-red-500/20 hover:text-red-400'
+                  : 'btn-nostr'
+              }`}
             >
-              <Zap className="w-4 h-4" /> Zap
+              {isFollowing ? 'Unfollow' : 'Follow'}
             </button>
           )}
+          <button
+            onClick={() => setShowZapDialog(true)}
+            className={`${guest ? 'flex-1 justify-center' : ''} px-4 py-2.5 rounded-lg font-medium text-sm bg-bitcoin/15 text-bitcoin hover:bg-bitcoin/25 transition-colors flex items-center gap-1.5`}
+          >
+            <Zap className="w-4 h-4" /> Zap / Tip
+          </button>
         </div>
 
         {/* Comment on profile */}
-        <div className="mb-4">
-          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-            <MessageCircle className="w-3 h-3" /> Comment
-          </p>
-          <ComposeNote
-            mentionPubkey={user.pubkey}
-            placeholder={`Comment on ${profile?.displayName || profile?.name || 'this profile'}...`}
-            onPublished={() => setActiveTab('notes')}
-          />
-        </div>
+        {!guest && (
+          <div className="mb-4">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-1">
+              <MessageCircle className="w-3 h-3" /> Comment
+            </p>
+            <ComposeNote
+              mentionPubkey={user.pubkey}
+              placeholder={`Comment on ${profile?.displayName || profile?.name || 'this profile'}...`}
+              onPublished={() => setActiveTab('notes')}
+            />
+          </div>
+        )}
       </div>
 
       {/* Profile Tabs */}
@@ -423,70 +408,55 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
 
       {/* Tab Content */}
       <div className="px-4 pt-3 flex-1">
-        {loading && (
+        {showSpinner && (
           <div className="flex flex-col items-center justify-center py-8">
             <Loader2 className="w-6 h-6 text-nostr animate-spin mb-2" />
-            <p className="text-xs text-gray-400">Loading...</p>
+            <p className="text-xs text-gray-400">Loading from their relays...</p>
           </div>
         )}
 
-        {/* Notes Tab */}
-        {!loading && activeTab === 'notes' && (
+        {/* Notes / Replies Tabs */}
+        {!showSpinner && (activeTab === 'notes' || activeTab === 'replies') && (
           <div>
-            {notes.length === 0 ? (
-              <p className="text-xs text-gray-500 text-center py-8">No notes found</p>
+            {listed.length === 0 ? (
+              <p className="text-xs text-gray-500 text-center py-8">
+                {activeTab === 'notes' ? 'No notes found' : 'No replies found'}
+              </p>
             ) : (
-              notes.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  profile={profiles.get(note.pubkey) || user.profile}
-                  onViewProfile={viewProfile}
-                  onSelectNote={setSelectedNote}
-                />
-              ))
-            )}
-          </div>
-        )}
-
-        {/* Replies Tab */}
-        {!loading && activeTab === 'replies' && (
-          <div>
-            {replies.length === 0 ? (
-              <p className="text-xs text-gray-500 text-center py-8">No replies found</p>
-            ) : (
-              replies.map((note) => (
-                <NoteCard
-                  key={note.id}
-                  note={note}
-                  profile={profiles.get(note.pubkey) || user.profile}
-                  onViewProfile={viewProfile}
-                  onSelectNote={setSelectedNote}
-                />
+              listed.map((note) => (
+                <div key={note.id} className="py-2 border-b border-white/5">
+                  <NoteCard
+                    note={note}
+                    profile={profile}
+                    engagement={engagement.get(note.id)}
+                    onViewProfile={viewProfile}
+                    onSelectNote={setSelectedNote}
+                  />
+                </div>
               ))
             )}
           </div>
         )}
 
         {/* Reactions Tab */}
-        {!loading && activeTab === 'reactions' && (
+        {!showSpinner && activeTab === 'reactions' && (
           <div>
             {reactions.length === 0 ? (
               <p className="text-xs text-gray-500 text-center py-8">No reactions found</p>
             ) : (
               <div className="space-y-2">
-                {reactions.map((r) => (
-                  <div
-                    key={r.eventId}
-                    className="card flex items-center gap-3"
-                  >
-                    <span className="text-lg">{r.emoji === '+' || r.emoji === '' ? '❤️' : r.emoji}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-gray-400 truncate">
-                        Reacted to {r.targetNoteId ? r.targetNoteId.slice(0, 12) + '...' : 'a note'}
-                      </p>
+                {reactions.slice(0, 60).map((r) => (
+                  <div key={r.eventId} className="card">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-lg">{r.emoji === '+' || r.emoji === '' ? '❤️' : r.emoji === '-' ? '👎' : r.emoji.startsWith(':') ? '✨' : r.emoji}</span>
+                      <p className="text-xs text-gray-400 flex-1">Reacted</p>
+                      <span className="text-[10px] text-gray-500">{formatTimeAgo(r.timestamp)}</span>
                     </div>
-                    <span className="text-[10px] text-gray-500">{formatTimeAgo(r.timestamp)}</span>
+                    {r.targetNoteId && /^[0-9a-f]{64}$/.test(r.targetNoteId) && (
+                      <QuotedNote
+                        pointer={{ type: 'id', id: r.targetNoteId, author: r.targetAuthor, relays: r.relayHint ? [r.relayHint] : [] }}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -495,14 +465,20 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
         )}
 
         {/* Zaps Tab */}
-        {!loading && activeTab === 'zaps' && (
+        {!showSpinner && activeTab === 'zaps' && (
           <div>
-            {/* Total zaps received */}
             {zapTotal > 0 && (
-              <div className="card mb-3 flex items-center justify-center gap-2 py-4">
-                <Zap className="w-5 h-5 text-yellow-500" />
-                <span className="text-lg font-bold text-yellow-500">{formatSats(zapTotal)}</span>
-                <span className="text-sm text-gray-400">sats received</span>
+              <div className="card mb-3 flex flex-col items-center justify-center gap-1 py-4">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-yellow-500" />
+                  <span className="text-lg font-bold text-yellow-500">{formatSats(zapTotal)}</span>
+                  <span className="text-sm text-gray-400">sats received</span>
+                </div>
+                <p className="text-[11px] text-gray-500">
+                  {zaps.length} zaps
+                  {zapByChain.xbt > 0 && <> · XBT Lightning {formatSats(zapByChain.xbt)}</>}
+                  {zapByChain.btc > 0 && <> · BTC Lightning {formatSats(zapByChain.btc)}</>}
+                </p>
               </div>
             )}
 
@@ -510,39 +486,15 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
               <p className="text-xs text-gray-500 text-center py-8">No zaps found</p>
             ) : (
               <div className="space-y-2">
-                {zaps.map((z, i) => (
-                  <div
-                    key={`${z.zapperPubkey}-${i}`}
-                    onClick={() => {
-                      if (z.zapperPubkey) viewProfile(z.zapperPubkey);
-                    }}
-                    className="card flex items-center gap-3 w-full text-left hover:bg-surface-700/80 transition-colors cursor-pointer"
-                  >
-                    {z.zapperPubkey ? (
-                      <ClickableAvatar
-                        pubkey={z.zapperPubkey}
-                        picture={z.zapperProfile?.picture}
-                        name={z.zapperProfile?.displayName || z.zapperProfile?.name}
-                        size="md"
-                      />
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-500/30 to-bitcoin/30 flex items-center justify-center">
-                        <Zap className="w-3.5 h-3.5 text-yellow-500" />
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gray-200 truncate">
-                        {z.zapperProfile?.displayName || z.zapperProfile?.name || z.zapperPubkey?.slice(0, 12) || 'Anonymous'}
-                      </p>
-                      <p className="text-[10px] text-gray-500">{formatTimeAgo(z.timestamp)}</p>
-                    </div>
-                    <span className="text-sm font-semibold text-yellow-500 flex items-center gap-1">
-                      <Zap className="w-3 h-3" /> {formatSats(z.amount)}
-                    </span>
-                  </div>
-                ))}
+                {zaps.map((z) => <ZapRow key={z.id} z={z} onOpen={viewProfile} />)}
               </div>
             )}
+          </div>
+        )}
+
+        {!showSpinner && (activeTab === 'zaps' ? zapsLoading : loading) && (
+          <div className="flex items-center justify-center py-3 text-[11px] text-gray-500 gap-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Still loading…
           </div>
         )}
       </div>
@@ -550,7 +502,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
       {selectedNote && (
         <NoteThread
           note={selectedNote}
-          profiles={profiles}
+          profiles={new Map(profile ? [[user.pubkey, profile]] : [])}
           onClose={() => setSelectedNote(null)}
           onViewProfile={viewProfile}
         />
@@ -564,5 +516,6 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
         />
       )}
     </div>
+    </SelectNoteContext.Provider>
   );
 }

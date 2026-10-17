@@ -37,6 +37,10 @@ const LightOps = lazy(() => import('./pages/LightOps').then((m) => ({ default: m
 const OnchainExplorer = lazy(() => import('./pages/OnchainExplorer').then((m) => ({ default: m.OnchainExplorer })));
 const MoreMenu = lazy(() => import('./pages/MoreMenu'));
 const OtherStuff = lazy(() => import('./pages/OtherStuff'));
+const VidstrPage = lazy(() => import('./pages/VidstrPage'));
+const PublicProfile = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicProfile })));
+const PublicNote = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicNote })));
+const PublicSearch = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicSearch })));
 const LightningWallet = lazy(() => import('./pages/LightningWallet').then((m) => ({ default: m.LightningWallet })));
 
 function PageFallback() {
@@ -209,6 +213,19 @@ export function App() {
         }
       />
 
+      {/* Read-only profile / note / people search pages: no account needed */}
+      {([['/p/:id', PublicProfile], ['/e/:id', PublicNote], ['/search', PublicSearch]] as const).map(([path, Page]) => (
+        <Route
+          key={path}
+          path={path}
+          element={
+            <ProfilePopupProvider>
+              <Suspense fallback={<PageFallback />}><Page /></Suspense>
+            </ProfilePopupProvider>
+          }
+        />
+      ))}
+
       {/* App routes — gated by vault status */}
       <Route element={<AuthGate {...gateProps} />}>
         <Route element={<Layout />}>
@@ -236,6 +253,7 @@ export function App() {
           <Route path="settings/events/:eventId" element={<SignedEventDetail />} />
           <Route path="unlocks" element={<SocialUnlocks />} />
           <Route path="other" element={<OtherStuff />} />
+          <Route path="vidstr" element={<VidstrPage />} />
           <Route path="more" element={<MoreMenu />} />
         </Route>
       </Route>

@@ -27,6 +27,7 @@ export function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
     banner: typeof raw.banner === 'string' ? raw.banner : '',
     nip05: typeof raw.nip05 === 'string' ? raw.nip05 : '',
     lud16: typeof raw.lud16 === 'string' ? raw.lud16 : '',
+    lud16Xbt: typeof raw.lud16_xbt === 'string' ? raw.lud16_xbt : (typeof raw.lud16Xbt === 'string' ? raw.lud16Xbt : undefined),
     website: typeof raw.website === 'string' ? raw.website : '',
     bitcoinAddress: typeof (raw.bitcoin_address || raw.btc_address || raw.bitcoin || raw.bitcoinAddress) === 'string'
       ? (raw.bitcoin_address || raw.btc_address || raw.bitcoin || raw.bitcoinAddress)
@@ -519,103 +520,17 @@ async function runDiscoverySync(
 }
 
 /**
- * Search profiles using NIP-50 (relay.nostr.band).
- * For npub/hex queries, does a direct author lookup on multiple relays.
- * Ranks profiles with pictures higher.
+ * Search profiles: npub / nprofile / hex paste, NIP-05, follows, the local
+ * cache and NIP-50 kind-0 search (browser relays + cloud fallback).
+ * See people-search.ts.
  */
 export async function searchProfilesNip50(
   query: string,
   limit = 30
 ): Promise<ProfileMetadata[]> {
-  const allResults = new Map<string, ProfileMetadata>();
-
-  // Direct npub/hex lookup — highest priority, always works
-  if (query.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(query)) {
-    let hex = query;
-    if (query.startsWith('npub1')) {
-      try {
-        hex = npubToPubkey(query);
-      } catch { return []; }
-    }
-    hex = hex.toLowerCase();
-
-    // Query multiple relays in parallel for this specific pubkey
-    const LOOKUP_RELAYS = [
-      'wss://relay.damus.io',
-      'wss://purplepag.es',
-      'wss://relay.nostr.band',
-      'wss://nos.lol',
-      'wss://relay.snort.social',
-    ];
-
-    const lookupPromises = LOOKUP_RELAYS.map((relay) =>
-      fetchProfileBatchByAuthors(relay, [hex])
-    );
-
-    const results = await Promise.allSettled(lookupPromises);
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        for (const [pk, profile] of result.value) {
-          if (!allResults.has(pk) || (profile.picture && !allResults.get(pk)?.picture)) {
-            allResults.set(pk, profile);
-          }
-        }
-      }
-    }
-
-    // If we still didn't find a profile, return a minimal entry
-    if (!allResults.has(hex)) {
-      allResults.set(hex, { pubkey: hex });
-    }
-
-    const resultArray = Array.from(allResults.values());
-    if (resultArray.length > 0) await cacheProfiles(allResults);
-    return resultArray;
-  }
-
-  // NIP-50 text search on search-capable relays
-  const SEARCH_RELAYS = [
-    'wss://relay.nostr.band',
-    'wss://nostr.wine',
-    'wss://purplepag.es',
-  ];
-
-  const promises = SEARCH_RELAYS.map((relay) =>
-    searchOnRelay(relay, query, limit)
-  );
-
-  const results = await Promise.allSettled(promises);
-
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      for (const profile of result.value) {
-        if (!allResults.has(profile.pubkey)) {
-          allResults.set(profile.pubkey, profile);
-        }
-      }
-    }
-  }
-
-  const resultArray = Array.from(allResults.values());
-
-  // Cache results
-  if (resultArray.length > 0) {
-    await cacheProfiles(allResults);
-  }
-
-  // If remote returned nothing, fall back to local cache search
-  if (resultArray.length === 0) {
-    return searchLocalCache(query);
-  }
-
-  // Rank: profiles with pictures first, then by name existence
-  resultArray.sort((a, b) => {
-    const aScore = (a.picture ? 10 : 0) + (a.displayName || a.name ? 5 : 0) + (a.nip05 ? 3 : 0);
-    const bScore = (b.picture ? 10 : 0) + (b.displayName || b.name ? 5 : 0) + (b.nip05 ? 3 : 0);
-    return bScore - aScore;
-  });
-
-  return resultArray;
+  const { searchPeopleOnce } = await import('./people-search');
+  const hits = await searchPeopleOnce(query.trim());
+  return hits.slice(0, limit).map((h) => h.profile);
 }
 
 function searchOnRelay(relayUrl: string, query: string, limit: number): Promise<ProfileMetadata[]> {

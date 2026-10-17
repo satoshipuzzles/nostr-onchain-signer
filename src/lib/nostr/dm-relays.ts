@@ -16,7 +16,7 @@ import { signEventWithFallback } from './sign-event';
 export const DEFAULT_DM_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.primal.net',
+  'wss://relay.nostronchain.com',
   'wss://relay.0xchat.com',
 ];
 
@@ -25,7 +25,7 @@ const DISCOVERY_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.nostr.band',
-  'wss://relay.primal.net',
+  'wss://relay.nostronchain.com',
 ];
 
 let pool: SimplePool | null = null;

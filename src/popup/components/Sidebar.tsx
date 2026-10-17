@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, Edit3, Download, Lock,
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
-  Gamepad2, Hammer, Zap,
+  Gamepad2, Hammer, Zap, Clapperboard,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
@@ -25,6 +25,7 @@ const mainNav = [
   { to: '/discover', icon: Compass, label: 'Discover' },
   { to: '/explorer', icon: Blocks, label: 'Explorer' },
   { to: '/other', icon: Gamepad2, label: 'Audio & Games' },
+  { to: '/vidstr', icon: Clapperboard, label: 'Vidstr' },
 ];
 
 const settingsNav = [

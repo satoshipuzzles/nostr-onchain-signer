@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import {
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
   Inbox, Compass, Settings, Radio, Edit3, Download, Lock,
-  Shield, Gamepad2, Hammer, Zap,
+  Shield, Gamepad2, Hammer, Zap, Clapperboard,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { createMessageId } from '@/shared/messages';
@@ -16,6 +16,7 @@ const sections = [
       { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
       { to: '/discover', icon: Compass, label: 'Discover' },
       { to: '/other', icon: Gamepad2, label: 'Audio & Games' },
+      { to: '/vidstr', icon: Clapperboard, label: 'Vidstr' },
     ],
   },
   {

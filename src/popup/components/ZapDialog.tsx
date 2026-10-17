@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { X, Zap, Loader2, Check, AlertCircle } from 'lucide-react';
-import { useAuth } from '@/popup/context/AuthContext';
+import { useState, useEffect, useContext, useRef } from 'react';
+import { X, Zap, Loader2, Check, AlertCircle, Copy, ExternalLink, Bitcoin, Wallet } from 'lucide-react';
+import { generateSecretKey, finalizeEvent } from 'nostr-tools/pure';
+import { AuthContext } from '@/popup/context/AuthContext';
 import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
 import { loadNwcConnection, sendNwcPayment, type LightningChain } from '@/lib/nostr/nwc';
@@ -8,11 +9,17 @@ import {
   fetchLnurlPayInfo,
   requestZapInvoice,
   createZapRequestEvent,
+  encodeLnurl,
+  lud16ToUrl,
 } from '@/lib/nostr/zap';
 import { type FeedNote } from '@/lib/nostr/feed';
 import { detectAddressChain, invoiceChain, decodeInvoice, type LnChain } from '@/lib/nostr/lightning-chain';
 import { type ProfileMetadata } from '@/lib/nostr/social';
+import { relaysForAuthor, streamQuery, cleanRelays, DEFAULT_RELAYS } from '@/lib/nostr/query';
+import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
+import { explorerAddressUrl, type Chain } from '@/lib/bitcoin/chain';
 import { useNavigate } from 'react-router-dom';
+import { QRCode } from './QRCode';
 
 interface Props {
   note?: FeedNote;
@@ -22,21 +29,34 @@ interface Props {
 }
 
 const ZAP_AMOUNTS = [21, 100, 420, 1000, 5000, 10000];
+const ONCHAIN_AMOUNTS = [1000, 5000, 10000, 21000, 50000, 100000];
 
-type ZapStatus = 'idle' | 'fetching' | 'paying' | 'success' | 'error';
+type Rail = 'xbt' | 'btc' | 'onchain';
+type ZapStatus = 'idle' | 'fetching' | 'paying' | 'invoice' | 'success' | 'error';
+
+function isOnchainAddress(a?: string): a is string {
+  return !!a && /^(bc1[02-9ac-hj-np-z]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/i.test(a.trim());
+}
 
 export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
-  const { publicKey } = useAuth();
+  const auth = useContext(AuthContext);
+  const publicKey = auth?.publicKey ?? '';
   const navigate = useNavigate();
   const [amount, setAmount] = useState(1000);
+  const [onchainAmount, setOnchainAmount] = useState(10000);
   const [comment, setComment] = useState('');
   const [status, setStatus] = useState<ZapStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
+  const [invoice, setInvoice] = useState('');
+  const [copied, setCopied] = useState('');
   // Which Lightning wallets are connected; null while loading
   const [wallets, setWallets] = useState<Record<LightningChain, boolean> | null>(null);
-  const [chain, setChain] = useState<LightningChain>('xbt');
+  const [rail, setRail] = useState<Rail>('xbt');
+  const [onchainChain, setOnchainChain] = useState<Chain>('xbt');
   // Which network the recipient's plain lud16 is actually on (see lightning-chain.ts)
   const [lud16Chain, setLud16Chain] = useState<LnChain | 'checking' | 'unknown' | null>(null);
+  const railPicked = useRef(false);
+  const watchRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const addr = profile?.lud16;
@@ -48,67 +68,84 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   }, [profile?.lud16]);
 
   useEffect(() => {
-    Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')]).then(([x, b]) => {
-      setWallets({ xbt: !!x, btc: !!b });
-      // XBT first, like everywhere else in the suite
-      setChain(x || !b ? 'xbt' : 'btc');
-    });
+    Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')])
+      .then(([x, b]) => setWallets({ xbt: !!x, btc: !!b }))
+      .catch(() => setWallets({ xbt: false, btc: false }));
   }, []);
+
+  useEffect(() => () => watchRef.current?.(), []);
+
+  // Default rail, XBT first like everywhere else in the suite
+  useEffect(() => {
+    if (railPicked.current || lud16Chain === 'checking') return;
+    if (profile?.lud16Xbt || (profile?.lud16 && lud16Chain === 'xbt')) setRail('xbt');
+    else if (profile?.lud16) setRail('btc');
+    else setRail('onchain');
+  }, [profile?.lud16, profile?.lud16Xbt, lud16Chain]);
+
+  function pickRail(r: Rail) {
+    railPicked.current = true;
+    setRail(r);
+    setStatus('idle');
+  }
 
   if (wallets === null) return null;
 
-  if (!wallets.xbt && !wallets.btc) {
-    return (
-      <div
-        className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
-        onClick={onClose}
-      >
-        <div
-          className="bg-surface-800 rounded-2xl border border-surface-200/10 p-5 w-full max-w-sm"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold flex items-center gap-2">
-              <Zap className="w-4 h-4 text-bitcoin" /> Connect Wallet
-            </h3>
-            <button
-              onClick={onClose}
-              className="text-gray-500 hover:text-white transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <p className="text-xs text-gray-400 mb-4">
-            To send zaps, connect an XBT or BTC Lightning wallet via Nostr Wallet
-            Connect on the Lightning page.
-          </p>
-          <button
-            onClick={() => {
-              onClose();
-              navigate('/lightning');
-            }}
-            className="w-full py-2 bg-bitcoin text-black rounded-lg text-sm font-medium hover:bg-bitcoin/90 transition-colors"
-          >
-            Set up Lightning wallet
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+  const lnChain: LightningChain = rail === 'btc' ? 'btc' : 'xbt';
   // XBT zaps go to the XBT Lightning address. Without one, the regular address
   // is used only if its invoices carry the BLAKE2b flag, i.e. it is an XBT node.
-  const xbtFallback = chain === 'xbt' && !profile?.lud16Xbt;
-  const lud16 = chain === 'xbt' ? (profile?.lud16Xbt || profile?.lud16) : profile?.lud16;
+  const xbtFallback = rail === 'xbt' && !profile?.lud16Xbt;
+  const lud16 = rail === 'xbt' ? (profile?.lud16Xbt || profile?.lud16) : rail === 'btc' ? profile?.lud16 : undefined;
   const wrongNetwork =
     (xbtFallback && lud16Chain === 'btc') ||
-    (chain === 'btc' && !!profile?.lud16 && lud16Chain === 'xbt');
-  const otherChain: LightningChain = chain === 'xbt' ? 'btc' : 'xbt';
+    (rail === 'btc' && !!profile?.lud16 && lud16Chain === 'xbt');
+  const otherRail: Rail = rail === 'xbt' ? 'btc' : 'xbt';
 
-  async function handleZap() {
+  let derivedAddress = '';
+  try { derivedAddress = pubkeyToTaprootAddress(recipientPubkey); } catch { /* bad key */ }
+  const declaredAddress = isOnchainAddress(profile?.bitcoinAddress) ? profile!.bitcoinAddress!.trim() : '';
+
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(label);
+      setTimeout(() => setCopied(''), 1800);
+    } catch { /* clipboard blocked */ }
+  }
+
+  /** Watch for the receipt the recipient's server publishes once the invoice is paid. */
+  function watchForReceipt(bolt11: string, relays: string[]) {
+    watchRef.current?.();
+    const since = Math.floor(Date.now() / 1000) - 120;
+    let stopped = false;
+    let tries = 0;
+    let cancel: (() => void) | null = null;
+    const tick = () => {
+      if (stopped || tries++ > 40) return;
+      cancel = streamQuery({
+        relays,
+        filters: [{ kinds: [9735], '#p': [recipientPubkey], since, limit: 50 }],
+        timeoutMs: 5000,
+        cloud: tries % 2 === 1,
+        onEvent: (e) => {
+          const b = e.tags.find((t) => t[0] === 'bolt11')?.[1];
+          if (b && b.toLowerCase() === bolt11.toLowerCase() && !stopped) {
+            stopped = true;
+            setStatus('success');
+            setStatusMessage('Paid. The zap receipt is on Nostr.');
+          }
+        },
+        onDone: () => { if (!stopped) timer = setTimeout(tick, 4000); },
+      });
+    };
+    let timer: ReturnType<typeof setTimeout> = setTimeout(tick, 3000);
+    watchRef.current = () => { stopped = true; clearTimeout(timer); cancel?.(); };
+  }
+
+  async function handleZap(payWithWallet: boolean) {
     if (!lud16) {
       setStatus('error');
-      setStatusMessage(`This user has no ${chain.toUpperCase()} Lightning address set`);
+      setStatusMessage(`This user has no ${lnChain.toUpperCase()} Lightning address set`);
       return;
     }
 
@@ -121,6 +158,11 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       setStatusMessage('Could not resolve lightning address');
       return;
     }
+    if (payInfo.chain && (payInfo.chain === 'xbt' || payInfo.chain === 'btc') && payInfo.chain !== lnChain) {
+      setStatus('error');
+      setStatusMessage(`${lud16} says it is on ${payInfo.chain.toUpperCase()} Lightning, not ${lnChain.toUpperCase()}. Nothing was sent.`);
+      return;
+    }
 
     const amountMsats = amount * 1000;
     if (amountMsats < payInfo.minSendable || amountMsats > payInfo.maxSendable) {
@@ -131,25 +173,40 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       return;
     }
 
+    const lnurlHttp = lud16ToUrl(lud16);
+    const lnurl = lnurlHttp ? encodeLnurl(lnurlHttp) : undefined;
     let zapRequestJson: string | undefined;
+    // Receipts are published to these relays: where the recipient reads, plus ours
+    let receiptRelays: string[] = DEFAULT_RELAYS;
 
     if (payInfo.allowsNostr && payInfo.nostrPubkey) {
       setStatusMessage('Creating zap request...');
-      const relayList = await loadRelayList();
-      const relays = [
-        ...new Set([...getReadRelays(relayList), ...getWriteRelays(relayList)]),
-      ].slice(0, 5);
+      let mine: string[] = [];
+      try {
+        const relayList = await loadRelayList();
+        mine = [...getReadRelays(relayList), ...getWriteRelays(relayList)];
+      } catch { /* no relay settings (guest) */ }
+      const theirs = await relaysForAuthor(recipientPubkey, { inbox: true }).catch(() => DEFAULT_RELAYS);
+      receiptRelays = cleanRelays([...theirs.slice(0, 5), ...mine, ...DEFAULT_RELAYS], 8);
 
       const zapReq = createZapRequestEvent(
-        recipientPubkey, note?.id, publicKey, amountMsats, relays, comment,
+        recipientPubkey, note?.id, publicKey, amountMsats, receiptRelays, comment,
+        { lnurl, eventKind: note?.kind },
       );
       // Rides inside the receipt, so clients can tell XBT zaps from BTC ones
-      zapReq.tags.push(['chain', chain]);
+      zapReq.tags.push(['chain', lnChain]);
 
       try {
-        // Vault, extension or bunker: whichever signs for this account
-        const signed = await signEventWithFallback(zapReq, publicKey);
-        zapRequestJson = JSON.stringify(signed);
+        if (publicKey) {
+          // Vault, extension or bunker: whichever signs for this account
+          const signed = await signEventWithFallback(zapReq, publicKey);
+          zapRequestJson = JSON.stringify(signed);
+        } else {
+          // Nobody signed in: an anonymous zap (NIP-57 "anon"), signed by a throwaway key
+          zapReq.tags.push(['anon']);
+          const { pubkey: _ignored, ...template } = zapReq;
+          zapRequestJson = JSON.stringify(finalizeEvent(template, generateSecretKey()));
+        }
       } catch (err) {
         setStatus('error');
         setStatusMessage(`Failed to sign zap request: ${err instanceof Error ? err.message : err}`);
@@ -160,6 +217,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     setStatusMessage('Requesting invoice...');
     const invoiceResult = await requestZapInvoice(
       payInfo.callback, amountMsats, zapRequestJson,
+      { lnurl, comment: !zapRequestJson && (payInfo.commentAllowed ?? 0) > 0 ? comment.slice(0, payInfo.commentAllowed) : undefined },
     );
     if (invoiceResult.error || !invoiceResult.invoice) {
       setStatus('error');
@@ -182,23 +240,26 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
 
     // Last check before money moves: the invoice says which network minted it.
     const invChain = invoiceChain(invoiceResult.invoice);
-    if (invChain !== chain) {
+    if (invChain !== lnChain) {
       setStatus('error');
       setStatusMessage(
-        `${lud16} is a ${invChain.toUpperCase()} Lightning address, so it can't be paid from your ${chain.toUpperCase()} wallet. Nothing was sent.`,
+        `${lud16} is a ${invChain.toUpperCase()} Lightning address, so it can't be paid as a ${lnChain.toUpperCase()} zap. Nothing was sent.`,
       );
       return;
     }
 
-    setStatus('paying');
-    setStatusMessage(`Paying on ${chain.toUpperCase()} Lightning...`);
-
-    const nwc = await loadNwcConnection(chain);
+    const nwc = payWithWallet ? await loadNwcConnection(lnChain) : null;
     if (!nwc) {
-      setStatus('error');
-      setStatusMessage(`No ${chain.toUpperCase()} Lightning wallet connected`);
+      // No connected wallet: hand over the invoice to pay from any wallet
+      setInvoice(invoiceResult.invoice);
+      setStatus('invoice');
+      setStatusMessage(zapRequestJson ? 'Waiting for payment…' : `${lud16} does not support Nostr zaps, so no receipt will appear.`);
+      if (zapRequestJson) watchForReceipt(invoiceResult.invoice, receiptRelays);
       return;
     }
+
+    setStatus('paying');
+    setStatusMessage(`Paying on ${lnChain.toUpperCase()} Lightning...`);
 
     const payResult = await sendNwcPayment(nwc, invoiceResult.invoice);
     if (payResult.error) {
@@ -212,25 +273,37 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     }
 
     setStatus('success');
-    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${chain.toUpperCase()}!`);
+    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!`);
     setTimeout(onClose, 2000);
   }
 
   const displayName =
     profile?.displayName || profile?.name || recipientPubkey.slice(0, 12);
+  const hasWallet = wallets[lnChain];
+  const onchainBtc = (onchainAmount / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+
+  const railBtn = (r: Rail, label: string) => (
+    <button
+      key={r}
+      onClick={() => pickRail(r)}
+      className={`flex-1 py-1.5 rounded-md transition-colors ${rail === r ? (r === 'onchain' ? 'bg-white text-black' : 'bg-bitcoin text-black') : 'text-gray-400 hover:text-white'}`}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
       onClick={onClose}
     >
       <div
-        className="bg-surface-800 rounded-2xl border border-surface-200/10 p-5 w-full max-w-sm"
+        className="bg-surface-800 rounded-2xl border border-surface-200/10 p-5 w-full max-w-sm max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold flex items-center gap-2">
-            <Zap className="w-4 h-4 text-bitcoin" /> Zap {displayName}
+            <Zap className="w-4 h-4 text-bitcoin" /> {note ? 'Zap this note' : `Zap ${displayName}`}
           </h3>
           <button
             onClick={onClose}
@@ -243,66 +316,169 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
         {status === 'idle' && (
           <>
             <div className="flex rounded-lg bg-surface-700 p-0.5 text-xs font-medium mb-3">
-              {(['xbt', 'btc'] as const).map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setChain(c)}
-                  disabled={!wallets[c]}
-                  title={wallets[c] ? undefined : `Connect a ${c.toUpperCase()} Lightning wallet in Settings`}
-                  className={`flex-1 py-1.5 rounded-md transition-colors disabled:opacity-40 ${chain === c ? 'bg-bitcoin text-black' : 'text-gray-400 hover:text-white'}`}
-                >
-                  {c.toUpperCase()} Lightning
-                </button>
-              ))}
+              {railBtn('xbt', 'XBT ⚡')}
+              {railBtn('btc', 'BTC ⚡')}
+              {railBtn('onchain', 'Onchain')}
             </div>
-            <p className="text-[11px] text-gray-500 mb-3 truncate" title={lud16}>
-              {lud16 ? <>To {lud16}
-                {xbtFallback && lud16Chain === 'checking' && <span className="text-gray-400"> · checking network…</span>}
-                {xbtFallback && lud16Chain === 'xbt' && <span className="text-green-400"> · on XBT Lightning ✓</span>}
-                {xbtFallback && lud16Chain === 'unknown' && <span className="text-amber-500"> · couldn't check network</span>}
-              </> : `No ${chain.toUpperCase()} Lightning address`}
-            </p>
-            {wrongNetwork && (
-              <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-3">
-                {profile?.lud16} is on <b>{(lud16Chain as string).toUpperCase()} Lightning</b>, not {chain.toUpperCase()}.
-                {wallets[otherChain]
-                  ? <> <button onClick={() => setChain(otherChain)} className="underline font-medium">Zap with {otherChain.toUpperCase()} instead</button></>
-                  : <> Connect a {otherChain.toUpperCase()} wallet in Settings to zap them.</>}
-              </div>
-            )}
 
-            <div className="grid grid-cols-3 gap-2 mb-4">
-              {ZAP_AMOUNTS.map((a) => (
+            {rail !== 'onchain' && (
+              <>
+                <p className="text-[11px] text-gray-500 mb-3 truncate" title={lud16}>
+                  {lud16 ? <>To {lud16}
+                    {xbtFallback && lud16Chain === 'checking' && <span className="text-gray-400"> · checking network…</span>}
+                    {xbtFallback && lud16Chain === 'xbt' && <span className="text-green-400"> · on XBT Lightning ✓</span>}
+                    {xbtFallback && lud16Chain === 'unknown' && <span className="text-amber-500"> · couldn't check network</span>}
+                  </> : `No ${lnChain.toUpperCase()} Lightning address in their profile. Try Onchain.`}
+                </p>
+                {wrongNetwork && (
+                  <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mb-3">
+                    {profile?.lud16} is on <b>{(lud16Chain as string).toUpperCase()} Lightning</b>, not {lnChain.toUpperCase()}.{' '}
+                    <button onClick={() => pickRail(otherRail)} className="underline font-medium">Zap with {otherRail.toUpperCase()} instead</button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  {ZAP_AMOUNTS.map((a) => (
+                    <button
+                      key={a}
+                      onClick={() => setAmount(a)}
+                      className={`py-2 rounded-lg text-sm font-medium transition-colors ${
+                        amount === a
+                          ? 'bg-bitcoin/20 text-bitcoin border border-bitcoin/30'
+                          : 'bg-surface-700 text-gray-400 border border-surface-200/10 hover:text-white'
+                      }`}
+                    >
+                      ⚡ {a.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="text"
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Add a comment (optional)"
+                  className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 outline-none border border-surface-200/10 focus:border-bitcoin/30 mb-4"
+                />
+
+                {hasWallet && (
+                  <button
+                    onClick={() => handleZap(true)}
+                    disabled={!lud16 || wrongNetwork || (xbtFallback && lud16Chain === 'checking')}
+                    className="w-full py-2.5 bg-bitcoin text-black rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40 mb-2"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    Zap {amount.toLocaleString()} sats from my {lnChain.toUpperCase()} wallet
+                  </button>
+                )}
                 <button
-                  key={a}
-                  onClick={() => setAmount(a)}
-                  className={`py-2 rounded-lg text-sm font-medium transition-colors ${
-                    amount === a
-                      ? 'bg-bitcoin/20 text-bitcoin border border-bitcoin/30'
-                      : 'bg-surface-700 text-gray-400 border border-surface-200/10 hover:text-white'
+                  onClick={() => handleZap(false)}
+                  disabled={!lud16 || wrongNetwork || (xbtFallback && lud16Chain === 'checking')}
+                  className={`w-full py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2 disabled:opacity-40 ${
+                    hasWallet ? 'bg-surface-700 text-gray-200 hover:bg-surface-600' : 'bg-bitcoin text-black hover:bg-bitcoin/90'
                   }`}
                 >
-                  ⚡ {a.toLocaleString()}
+                  <Zap className="w-4 h-4" />
+                  {hasWallet ? 'Show invoice instead' : `Get ${amount.toLocaleString()} sat invoice`}
                 </button>
-              ))}
-            </div>
+                {!hasWallet && auth && (
+                  <button
+                    onClick={() => { onClose(); navigate('/lightning'); }}
+                    className="w-full mt-2 text-[11px] text-gray-500 hover:text-white"
+                  >
+                    Connect an {lnChain.toUpperCase()} Lightning wallet to zap in one tap
+                  </button>
+                )}
+                {!publicKey && (
+                  <p className="text-[10px] text-gray-600 mt-2 text-center">Not signed in: this will be an anonymous zap.</p>
+                )}
+              </>
+            )}
 
-            <input
-              type="text"
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Add a comment (optional)"
-              className="w-full bg-surface-700/50 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 outline-none border border-surface-200/10 focus:border-bitcoin/30 mb-4"
-            />
-
-            <button
-              onClick={handleZap}
-              disabled={wrongNetwork || (xbtFallback && lud16Chain === 'checking')}
-              className="w-full py-2.5 bg-bitcoin text-black rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
-            >
-              <Zap className="w-4 h-4" />
-              Zap {amount.toLocaleString()} sats
-            </button>
+            {rail === 'onchain' && (
+              <>
+                <div className="flex gap-1 mb-3">
+                  {(['xbt', 'btc'] as const).map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setOnchainChain(c)}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                        onchainChain === c
+                          ? c === 'xbt' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-bitcoin/20 text-bitcoin border border-bitcoin/30'
+                          : 'bg-surface-700 text-gray-400 border border-transparent'
+                      }`}
+                    >
+                      {c === 'xbt' ? 'XBT (BLAKE2b)' : 'BTC (SHA-256d)'}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {ONCHAIN_AMOUNTS.map((a) => (
+                    <button
+                      key={a}
+                      onClick={() => setOnchainAmount(a)}
+                      className={`py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        onchainAmount === a
+                          ? 'bg-white/15 text-white border border-white/20'
+                          : 'bg-surface-700 text-gray-400 border border-surface-200/10 hover:text-white'
+                      }`}
+                    >
+                      {a.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+                {derivedAddress ? (
+                  <div className="flex flex-col items-center">
+                    <QRCode data={`bitcoin:${derivedAddress}?amount=${onchainBtc}`} size={170} />
+                    <p className="text-[10px] text-gray-500 mt-2 mb-1 uppercase tracking-wide flex items-center gap-1">
+                      <Bitcoin className="w-3 h-3" /> Their Nostr key's taproot address
+                    </p>
+                    <div className="flex items-center gap-2 w-full bg-surface-900 rounded-lg px-2 py-1.5">
+                      <code className="text-[10px] text-gray-300 flex-1 font-mono break-all">{derivedAddress}</code>
+                      <button onClick={() => copy(derivedAddress, 'addr')} className="p-1 hover:bg-surface-700 rounded">
+                        {copied === 'addr' ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+                      {onchainAmount.toLocaleString()} sats on <b className={onchainChain === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}>{onchainChain.toUpperCase()}</b>.
+                      {' '}The address is the same on both chains; pay from a wallet on the {onchainChain === 'xbt' ? 'XBT (Knots / BLAKE2b)' : 'BTC (SHA-256d)'} chain.
+                      {' '}They spend it with their nsec.
+                    </p>
+                    <div className="flex gap-2 w-full mt-3">
+                      {auth && (
+                        <button
+                          onClick={() => { onClose(); navigate(`/send?to=${derivedAddress}&amount=${onchainAmount}&chain=${onchainChain}`); }}
+                          className="flex-1 py-2 rounded-lg text-xs font-semibold bg-bitcoin text-black hover:bg-bitcoin/90"
+                        >
+                          Send from my wallet
+                        </button>
+                      )}
+                      <a
+                        href={explorerAddressUrl(onchainChain, derivedAddress)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 py-2 rounded-lg text-xs font-medium bg-surface-700 text-gray-300 hover:text-white flex items-center justify-center gap-1"
+                      >
+                        <ExternalLink className="w-3 h-3" /> View on explorer
+                      </a>
+                    </div>
+                    {declaredAddress && declaredAddress !== derivedAddress && (
+                      <div className="w-full mt-3 bg-surface-900 rounded-lg px-2 py-1.5">
+                        <p className="text-[9px] text-gray-500 uppercase tracking-wide">Address from their profile</p>
+                        <div className="flex items-center gap-2">
+                          <code className="text-[10px] text-gray-300 flex-1 font-mono break-all">{declaredAddress}</code>
+                          <button onClick={() => copy(declaredAddress, 'decl')} className="p-1 hover:bg-surface-700 rounded">
+                            {copied === 'decl' ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5 text-gray-500" />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500">Could not derive an address for this key.</p>
+                )}
+              </>
+            )}
           </>
         )}
 
@@ -310,6 +486,38 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
           <div className="flex flex-col items-center py-6">
             <Loader2 className="w-8 h-8 text-bitcoin animate-spin mb-3" />
             <p className="text-sm text-gray-300">{statusMessage}</p>
+          </div>
+        )}
+
+        {status === 'invoice' && invoice && (
+          <div className="flex flex-col items-center">
+            <QRCode data={`lightning:${invoice}`} size={200} />
+            <p className="text-xs text-gray-300 mt-3">
+              {amount.toLocaleString()} sats on <b className={lnChain === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}>{lnChain.toUpperCase()} Lightning</b>
+            </p>
+            <p className="text-[10px] text-gray-500 mt-1">
+              Pay with a {lnChain === 'xbt' ? 'XBT Lightning' : 'Lightning'} wallet. To {lud16}
+            </p>
+            <div className="flex gap-2 w-full mt-3">
+              <button
+                onClick={() => copy(invoice, 'inv')}
+                className="flex-1 py-2 rounded-lg text-xs font-medium bg-surface-700 text-gray-200 hover:bg-surface-600 flex items-center justify-center gap-1"
+              >
+                {copied === 'inv' ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />} Copy invoice
+              </button>
+              <a
+                href={`lightning:${invoice}`}
+                className="flex-1 py-2 rounded-lg text-xs font-semibold bg-bitcoin text-black hover:bg-bitcoin/90 flex items-center justify-center gap-1"
+              >
+                <Zap className="w-3.5 h-3.5" /> Open wallet
+              </a>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-3 flex items-center gap-1.5">
+              {statusMessage.startsWith('Waiting') && <Loader2 className="w-3 h-3 animate-spin" />} {statusMessage}
+            </p>
+            <button onClick={() => { watchRef.current?.(); setStatus('idle'); }} className="text-[11px] text-gray-500 hover:text-white mt-2">
+              Back
+            </button>
           </div>
         )}
 

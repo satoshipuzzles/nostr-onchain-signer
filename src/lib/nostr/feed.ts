@@ -5,6 +5,7 @@
 
 import { CUSTOM_KIND } from './kinds';
 import { subscribeRelays } from './relay-subscribe';
+import { parseZapReceipt } from './zap';
 import type { Filter } from 'nostr-tools/filter';
 
 export type FeedMode = 'global' | 'following' | 'media' | 'onchain' | 'hashtag' | 'kind';
@@ -268,31 +269,7 @@ export const EMPTY_ENGAGEMENT: Engagement = { replies: 0, reposts: 0, reactions:
 
 /** Sats paid by a kind 9735 zap receipt (0 when it cannot be read). */
 export function zapReceiptSats(event: NostrEvent): number {
-  let amount = 0;
-  const descTag = event.tags.find((t) => t[0] === 'description');
-  if (descTag && descTag[1]) {
-    try {
-      const zapReq = JSON.parse(descTag[1]);
-      const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
-      if (amountTag) amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
-    } catch { /* fall through to bolt11 */ }
-  }
-  if (amount === 0) {
-    const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
-    if (bolt11Tag && bolt11Tag[1]) {
-      const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
-      if (match) {
-        const value = parseInt(match[1], 10);
-        const unit = match[2];
-        if (unit === 'm') amount = value * 100_000;
-        else if (unit === 'u') amount = value * 100;
-        else if (unit === 'n') amount = Math.floor(value / 10);
-        else if (unit === 'p') amount = Math.floor(value / 10_000);
-        else amount = value * 100_000_000;
-      }
-    }
-  }
-  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+  return parseZapReceipt(event)?.amountSats ?? 0;
 }
 
 /**
@@ -302,7 +279,14 @@ export function zapReceiptSats(event: NostrEvent): number {
  */
 export function engagementTarget(event: NostrEvent): string | null {
   const eTags = event.tags.filter((t) => t[0] === 'e' && t[1]);
-  if (eTags.length === 0) return null;
+  if (eTags.length === 0) {
+    if (event.kind === 1111) return event.tags.find((t) => t[0] === 'E' && t[1])?.[1] ?? null;
+    return null;
+  }
+  if (event.kind === 1111) {
+    // NIP-22: lowercase e = parent, uppercase E = root
+    return eTags[eTags.length - 1][1];
+  }
   if (event.kind === 1) {
     const marked = eTags.find((t) => t[3] === 'reply') ?? eTags.find((t) => t[3] === 'root');
     return (marked ?? eTags[eTags.length - 1])[1];
@@ -316,7 +300,7 @@ export function tallyEngagement(event: NostrEvent, into: Map<string, Engagement>
   if (!target) return false;
   const entry = into.get(target);
   if (!entry) return false;
-  if (event.kind === 1) entry.replies += 1;
+  if (event.kind === 1 || event.kind === 1111) entry.replies += 1;
   else if (event.kind === KIND_REPOST) entry.reposts += 1;
   else if (event.kind === 7) entry.reactions += 1;
   else if (event.kind === 9735) entry.zapSats += zapReceiptSats(event);

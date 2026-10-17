@@ -1,24 +1,29 @@
-import { useState, useMemo, useRef, useEffect, memo, type ReactNode } from 'react';
+import { useState, useMemo, useRef, useEffect, useContext, memo } from 'react';
 import { toast } from 'sonner';
-import { type FeedNote, type NostrEvent, subscribeEvents } from '@/lib/nostr/feed';
+import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
-import { safeImageUrl, safeHttpUrl } from '@/lib/utils';
+import { safeImageUrl } from '@/lib/utils';
 import {
   Clock, MessageCircle, Repeat2, Heart, Zap, Link2, Check, Loader2,
   MoreHorizontal, Copy, ExternalLink, Flag,
 } from 'lucide-react';
-import { useAuth } from '@/popup/context/AuthContext';
+import { AuthContext } from '@/popup/context/AuthContext';
 import { createMessageId } from '@/shared/messages';
 import { publishEvent } from '@/lib/nostr/discovery';
 import { KIND, type SignedEvent } from '@/lib/nostr/events';
-import { loadRelayList, getWriteRelays, getReadRelays } from '@/lib/nostr/relays';
+import { loadRelayList, getWriteRelays } from '@/lib/nostr/relays';
 import { ReplyComposer } from './ReplyComposer';
 import { ZapDialog } from './ZapDialog';
 import { bech32 } from '@scure/base';
 import { hexToBytes } from '@noble/hashes/utils';
-import { getCachedProfile } from '@/lib/nostr/cache';
 import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
 import { ClickableAvatar } from './ClickableAvatar';
+import { NoteContent, SelectNoteContext, contentIsLong } from './NoteContent';
+import { useProfile } from '@/popup/hooks/useNostr';
+import { streamQuery, relaysForAuthor } from '@/lib/nostr/query';
+import { parseZapReceipt } from '@/lib/nostr/zap';
+import { eventRelayHints } from '@/lib/nostr/thread';
+import { profileName } from '@/lib/nostr/nostr-store';
 
 export interface NoteEngagement {
   replies: number;
@@ -40,7 +45,6 @@ interface Props {
 
 const IMAGE_REGEX = /https?:\/\/\S+\.(jpg|jpeg|png|gif|webp)(\?\S*)?/gi;
 const MAX_CONTENT_LENGTH = 280;
-const URL_SPLIT_REGEX = /(https?:\/\/[^\s]+)/g;
 
 function formatTimeAgo(timestamp: number): string {
   const now = Math.floor(Date.now() / 1000);
@@ -60,49 +64,6 @@ function extractHashtags(tags: string[][]): string[] {
   return tags.filter((t) => t[0] === 't' && t[1]).map((t) => t[1]);
 }
 
-function renderRichContent(
-  content: string,
-  expanded: boolean,
-): { textParts: ReactNode[]; images: string[] } {
-  let text = content.replace(IMAGE_REGEX, '').trim();
-  if (!expanded && text.length > MAX_CONTENT_LENGTH) {
-    text = text.slice(0, MAX_CONTENT_LENGTH);
-  }
-
-  const images: string[] = [];
-  const rawImages = content.match(IMAGE_REGEX);
-  if (rawImages) {
-    for (const url of rawImages) {
-      if (!images.includes(url)) images.push(url);
-    }
-  }
-
-  const parts = text.split(URL_SPLIT_REGEX);
-  const rendered: ReactNode[] = [];
-
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    if (!part) continue;
-    if (/^https?:\/\//.test(part)) {
-      rendered.push(
-        <a
-          key={i}
-          href={safeHttpUrl(part)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-400 hover:underline break-all"
-        >
-          {part}
-        </a>,
-      );
-    } else {
-      rendered.push(<span key={i}>{part}</span>);
-    }
-  }
-
-  return { textParts: rendered, images };
-}
-
 function encodeNoteId(eventId: string): string {
   const bytes = hexToBytes(eventId);
   const words = bech32.toWords(bytes);
@@ -116,10 +77,36 @@ function formatSats(amount: number): string {
 }
 
 interface ZapperInfo {
+  id: string;
   pubkey: string;
   amount: number;
   timestamp: number;
-  profile?: ProfileMetadata | null;
+  comment: string;
+  chain: 'xbt' | 'btc';
+}
+
+function ZapperRow({ z, onOpen }: { z: ZapperInfo; onOpen: (pubkey: string) => void }) {
+  const p = useProfile(z.pubkey || null);
+  return (
+    <div
+      onClick={() => { if (z.pubkey) onOpen(z.pubkey); }}
+      className="flex items-center gap-2 w-full text-left hover:bg-surface-600 rounded-lg px-1.5 py-1 transition-colors cursor-pointer"
+    >
+      {z.pubkey ? (
+        <ClickableAvatar pubkey={z.pubkey} picture={p?.picture} name={p?.displayName || p?.name} size="xs" />
+      ) : (
+        <div className="w-5 h-5 rounded-full bg-surface-600" />
+      )}
+      <span className="text-[11px] text-gray-300 truncate flex-1" title={z.comment || undefined}>
+        {z.pubkey ? profileName(p, z.pubkey) : 'anon'}
+        {z.comment && <span className="text-gray-500"> · {z.comment}</span>}
+      </span>
+      <span className={`text-[9px] font-semibold px-1 rounded ${z.chain === 'xbt' ? 'text-purple-300 bg-purple-500/15' : 'text-bitcoin bg-bitcoin/15'}`}>
+        {z.chain.toUpperCase()}
+      </span>
+      <span className="text-[11px] text-yellow-500 font-medium">{formatSats(z.amount)}</span>
+    </div>
+  );
 }
 
 interface ReactionGroup {
@@ -130,8 +117,12 @@ interface ReactionGroup {
 
 // Memoized: the feed re-renders frequently as engagement counts stream in,
 // and re-rendering every card each time is the main scroll-jank source
-export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
-  const { publicKey } = useAuth();
+export const NoteCard = memo(function NoteCard({ note, profile: profileProp, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
+  const auth = useContext(AuthContext);
+  const publicKey = auth?.publicKey ?? '';
+  // Fall back to the shared profile store when the page didn't pass one
+  const storeProfile = useProfile(profileProp ? null : note.pubkey);
+  const profile = profileProp ?? storeProfile;
   const { openProfile } = useProfilePopup();
   const viewProfile = (pubkey: string) => {
     openProfile(pubkey);
@@ -173,129 +164,73 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
   useEffect(() => {
     if (!highlighted) return;
     let cancelled = false;
-    const cleanups: (() => void)[] = [];
+    let cancel: (() => void) | null = null;
+    const reactionMap = new Map<string, { count: number; pubkeys: string[] }>();
+    const zapList: ZapperInfo[] = [];
+    const seen = new Set<string>();
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    async function fetchMetadata() {
-      const relayList = await loadRelayList();
-      const relays = getReadRelays(relayList);
-      const relayUrls = relays.length > 0
-        ? relays.slice(0, 3)
-        : ['wss://relay.damus.io', 'wss://nos.lol'];
+    const flush = () => {
+      timer = null;
+      if (cancelled) return;
+      const groups: ReactionGroup[] = Array.from(reactionMap.entries())
+        .map(([emoji, data]) => ({ emoji, count: data.count, pubkeys: data.pubkeys }))
+        .sort((a, b) => b.count - a.count);
+      setReactions(groups);
+      setTotalReactions(groups.reduce((sum, g) => sum + g.count, 0));
+      setZappers([...zapList].sort((a, b) => b.amount - a.amount));
+      setZapTotal(zapList.reduce((sum, z) => sum + z.amount, 0));
+    };
 
-      // Fetch reactions (kind 7) for this note
-      const reactionMap = new Map<string, { count: number; pubkeys: string[] }>();
-      const cleanup1 = subscribeEvents(
-        relayUrls,
-        { kinds: [7], '#e': [note.id], limit: 100 },
-        (event: NostrEvent) => {
-          if (cancelled) return;
-          const emoji = event.content || '+';
-          const normalized = emoji === '+' || emoji === '' ? '❤️' : emoji;
-          const existing = reactionMap.get(normalized);
-          if (existing) {
-            existing.count++;
-            existing.pubkeys.push(event.pubkey);
-          } else {
-            reactionMap.set(normalized, { count: 1, pubkeys: [event.pubkey] });
-          }
-          if (event.pubkey === publicKey) {
-            setUserReacted(true);
-            setLiked(true);
-          }
-          const groups: ReactionGroup[] = Array.from(reactionMap.entries())
-            .map(([emoji, data]) => ({ emoji, count: data.count, pubkeys: data.pubkeys }))
-            .sort((a, b) => b.count - a.count);
-          setReactions(groups);
-          setTotalReactions(groups.reduce((sum, g) => sum + g.count, 0));
-        },
-      );
-      cleanups.push(cleanup1);
-
-      // Fetch zaps (kind 9735) for this note
-      const zapList: ZapperInfo[] = [];
-      const cleanup2 = subscribeEvents(
-        relayUrls,
-        { kinds: [9735], '#e': [note.id], limit: 50 },
-        (event: NostrEvent) => {
-          if (cancelled) return;
-          let amount = 0;
-          let zapperPubkey = '';
-
-          // Parse bolt11 amount from description tag or content
-          const descTag = event.tags.find((t) => t[0] === 'description');
-          if (descTag && descTag[1]) {
-            try {
-              const zapReq = JSON.parse(descTag[1]);
-              zapperPubkey = zapReq.pubkey || '';
-              const amountTag = zapReq.tags?.find((t: string[]) => t[0] === 'amount');
-              if (amountTag) {
-                amount = Math.floor(parseInt(amountTag[1], 10) / 1000);
-              }
-            } catch { /* ignore */ }
-          }
-
-          if (!zapperPubkey) {
-            const pTag = event.tags.find((t) => t[0] === 'P');
-            if (pTag) zapperPubkey = pTag[1];
-          }
-
-          // Try bolt11 tag for amount
-          if (amount === 0) {
-            const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
-            if (bolt11Tag && bolt11Tag[1]) {
-              const match = bolt11Tag[1].match(/lnbc(\d+)([munp]?)/i);
-              if (match) {
-                const value = parseInt(match[1], 10);
-                const unit = match[2];
-                if (unit === 'm') amount = value * 100_000;
-                else if (unit === 'u') amount = value * 100;
-                else if (unit === 'n') amount = Math.floor(value / 10);
-                else if (unit === 'p') amount = Math.floor(value / 10_000);
-                else amount = value * 100_000_000;
-              }
+    relaysForAuthor(note.pubkey, { inbox: true, hints: eventRelayHints(note) }).then((relays) => {
+      if (cancelled) return;
+      cancel = streamQuery({
+        relays,
+        filters: [
+          { kinds: [7], '#e': [note.id], limit: 300 },
+          { kinds: [9735], '#e': [note.id], limit: 300 },
+        ],
+        timeoutMs: 9000,
+        onEvent: (event) => {
+          if (cancelled || seen.has(event.id)) return;
+          seen.add(event.id);
+          if (event.kind === 7) {
+            // Only reactions aimed at this note (last e tag), not at a reply that tags it
+            const eTags = event.tags.filter((t) => t[0] === 'e');
+            if (eTags.length && eTags[eTags.length - 1][1] !== note.id) return;
+            const emoji = event.content || '+';
+            const normalized = emoji === '+' || emoji === '' ? '❤️' : emoji === '-' ? '👎' : emoji;
+            const existing = reactionMap.get(normalized);
+            if (existing) {
+              existing.count++;
+              existing.pubkeys.push(event.pubkey);
+            } else {
+              reactionMap.set(normalized, { count: 1, pubkeys: [event.pubkey] });
             }
-          }
-
-          if (amount > 0 || zapperPubkey) {
+            if (publicKey && event.pubkey === publicKey) {
+              setUserReacted(true);
+              setLiked(true);
+            }
+          } else if (event.kind === 9735) {
+            const z = parseZapReceipt(event);
+            if (!z || z.eventId !== note.id) return;
             zapList.push({
-              pubkey: zapperPubkey,
-              amount,
-              timestamp: event.created_at,
+              id: z.id, pubkey: z.anonymous ? '' : z.sender, amount: z.amountSats,
+              timestamp: z.createdAt, comment: z.comment, chain: z.chain,
             });
-            setZappers([...zapList].sort((a, b) => b.amount - a.amount));
-            setZapTotal(zapList.reduce((sum, z) => sum + z.amount, 0));
           }
+          if (!timer) timer = setTimeout(flush, 250);
         },
-      );
-      cleanups.push(cleanup2);
-    }
-
-    fetchMetadata();
+        onDone: () => { if (timer) clearTimeout(timer); flush(); },
+      });
+    });
 
     return () => {
       cancelled = true;
-      cleanups.forEach((fn) => fn());
+      if (timer) clearTimeout(timer);
+      cancel?.();
     };
-  }, [note.id, publicKey]);
-
-  // Resolve zapper profiles
-  useEffect(() => {
-    async function resolveZapperProfiles() {
-      const updated = [...zappers];
-      let changed = false;
-      for (const zapper of updated) {
-        if (zapper.pubkey && !zapper.profile) {
-          const p = await getCachedProfile(zapper.pubkey);
-          if (p) {
-            zapper.profile = p;
-            changed = true;
-          }
-        }
-      }
-      if (changed) setZappers([...updated]);
-    }
-    if (zappers.length > 0) resolveZapperProfiles();
-  }, [zappers.length]);
+  }, [note.id, publicKey, highlighted]);
 
   useEffect(() => {
     if (!showBoostMenu) return;
@@ -336,12 +271,15 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
   const displayName =
     profile?.displayName || profile?.name || note.pubkey.slice(0, 12);
   const hashtags = useMemo(() => extractHashtags(note.tags), [note.tags]);
-  const { textParts, images } = useMemo(
-    () => renderRichContent(note.content, expanded),
-    [note.content, expanded],
-  );
-  const isLong =
-    note.content.replace(IMAGE_REGEX, '').trim().length > MAX_CONTENT_LENGTH;
+  const images = useMemo(() => [...new Set(note.content.match(IMAGE_REGEX) ?? [])], [note.content]);
+  const hasText = useMemo(() => note.content.replace(IMAGE_REGEX, '').trim().length > 0, [note.content]);
+  const isLong = useMemo(() => contentIsLong(note.content, note.tags, MAX_CONTENT_LENGTH), [note.content, note.tags]);
+
+  function requireLogin(action: string): boolean {
+    if (publicKey) return true;
+    toast.info(`Open the app and sign in to ${action}`);
+    return false;
+  }
 
   async function signAndPublish(
     event: Record<string, unknown>,
@@ -358,6 +296,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
 
   async function handleLike() {
     if (liked || actionPending === 'like') return;
+    if (!requireLogin('react')) return;
     setActionPending('like');
     try {
       await signAndPublish({
@@ -383,6 +322,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
 
   async function handleRepost() {
     if (boosted || actionPending === 'boost') return;
+    if (!requireLogin('repost')) return;
     setActionPending('boost');
     try {
       const relayList = await loadRelayList();
@@ -418,6 +358,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
 
   function handleQuoteBoost() {
     setShowBoostMenu(false);
+    if (!requireLogin('quote')) return;
     setReplyMode('quote');
     setShowReply(true);
   }
@@ -479,6 +420,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
   const noteRef = `nostr:${encodeNoteId(note.id)}`;
 
   return (
+    <SelectNoteContext.Provider value={onSelectNote ?? null}>
     <div className={`relative ${highlighted ? 'bg-purple-500/5 ring-1 ring-purple-500/20 rounded-xl px-1' : ''} ${compact ? 'py-1' : ''}`}>
       {/* Three-dot menu */}
       <div className="absolute top-2 right-2 z-10" ref={moreMenuRef}>
@@ -577,10 +519,13 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
           }
         }}
       >
-        {textParts.length > 0 && (
+        {hasText && (
           <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words mb-2">
-            {textParts}
-            {!expanded && isLong && '...'}
+            <NoteContent
+              content={note.content}
+              tags={note.tags}
+              maxLength={expanded ? undefined : MAX_CONTENT_LENGTH}
+            />
           </p>
         )}
       </div>
@@ -603,7 +548,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
             .map((url) => (
               <img
                 key={url}
-                src={url}
+                src={safeImageUrl(url)}
                 alt=""
                 className="w-full h-auto rounded-xl mt-2 max-h-[400px] object-contain bg-surface-700"
                 loading="lazy"
@@ -648,6 +593,7 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
         {/* Reply */}
         <button
           onClick={() => {
+            if (!requireLogin('reply')) return;
             setReplyMode('reply');
             setShowReply(!showReply);
           }}
@@ -760,32 +706,8 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
                 </button>
               </div>
               <div className="space-y-1.5">
-                {zappers.slice(0, 10).map((z, i) => (
-                  <div
-                    key={`${z.pubkey}-${i}`}
-                    onClick={() => {
-                      if (z.pubkey) viewProfile(z.pubkey);
-                      setShowZappers(false);
-                    }}
-                    className="flex items-center gap-2 w-full text-left hover:bg-surface-600 rounded-lg px-1.5 py-1 transition-colors cursor-pointer"
-                  >
-                    {z.pubkey ? (
-                      <ClickableAvatar
-                        pubkey={z.pubkey}
-                        picture={z.profile?.picture}
-                        name={z.profile?.displayName || z.profile?.name}
-                        size="xs"
-                      />
-                    ) : (
-                      <div className="w-5 h-5 rounded-full bg-surface-600" />
-                    )}
-                    <span className="text-[11px] text-gray-300 truncate flex-1">
-                      {z.profile?.displayName || z.profile?.name || z.pubkey?.slice(0, 8) || 'anon'}
-                    </span>
-                    <span className="text-[11px] text-yellow-500 font-medium">
-                      {formatSats(z.amount)}
-                    </span>
-                  </div>
+                {zappers.slice(0, 20).map((z) => (
+                  <ZapperRow key={z.id} z={z} onOpen={(pk) => { viewProfile(pk); setShowZappers(false); }} />
                 ))}
               </div>
             </div>
@@ -835,5 +757,6 @@ export const NoteCard = memo(function NoteCard({ note, profile, engagement, onNo
         />
       )}
     </div>
+    </SelectNoteContext.Provider>
   );
 });

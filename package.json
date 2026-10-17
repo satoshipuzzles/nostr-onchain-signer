@@ -32,7 +32,8 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.1.0",
     "sonner": "^1.7.0",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",

@@ -1,44 +1,24 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Radio, Gamepad2, ExternalLink, StopCircle } from 'lucide-react';
+import { Radio, Gamepad2, Clapperboard, ExternalLink, StopCircle } from 'lucide-react';
 import { useEmbedPlayer, type EmbedApp } from '../context/EmbedPlayerContext';
+import { AUDIO_APPS, GAME_APPS, VIDEO_APPS, ALL_APPS } from '../apps';
+import { AppCard } from '../components/AppCard';
 
-const AUDIO_APPS: EmbedApp[] = [
-  {
-    id: 'cornychat',
-    name: 'Corny Chat',
-    url: 'https://cornychat.com',
-    description: 'Nostr audio spaces — live voice rooms',
-    kind: 'audio',
-  },
-];
+type Tab = 'audio' | 'games' | 'video';
 
-const GAME_APPS: EmbedApp[] = [
-  {
-    id: 'puzzl35',
-    name: 'Puzzl35',
-    url: 'https://puzzl35.com/',
-    description: 'Turn anything into puzzles — Nostr-powered jigsaw puzzles with zaps',
-    kind: 'game',
-  },
-  {
-    id: 'word5',
-    name: 'WORD5',
-    url: 'https://otherstuff.ai/word5/',
-    description: 'Daily 5-letter word game with Nostr login and streaks',
-    kind: 'game',
-  },
-];
+const TAB_KIND: Record<Tab, EmbedApp['kind']> = { audio: 'audio', games: 'game', video: 'video' };
+const TAB_APPS: Record<Tab, EmbedApp[]> = { audio: AUDIO_APPS, games: GAME_APPS, video: VIDEO_APPS };
 
-const ALL_APPS = [...AUDIO_APPS, ...GAME_APPS];
-
-type Tab = 'audio' | 'games';
+function tabFor(kind?: EmbedApp['kind']): Tab {
+  return kind === 'game' ? 'games' : kind === 'video' ? 'video' : 'audio';
+}
 
 export default function OtherStuff() {
   const { embeds, activeId, open, focus, close, registerDock } = useEmbedPlayer();
   const active = ALL_APPS.find((a) => a.id === activeId) ?? null;
-  const [tab, setTab] = useState<Tab>(active?.kind === 'game' ? 'games' : 'audio');
-  const apps = tab === 'audio' ? AUDIO_APPS : GAME_APPS;
-  const shownApp = active && active.kind === (tab === 'audio' ? 'audio' : 'game')
+  const [tab, setTab] = useState<Tab>(tabFor(active?.kind));
+  const apps = TAB_APPS[tab];
+  const shownApp = active && active.kind === TAB_KIND[tab]
     ? active
     : apps.find((a) => embeds.some((e) => e.id === a.id)) ?? apps[0];
 
@@ -55,63 +35,51 @@ export default function OtherStuff() {
 
   function switchTab(next: Tab) {
     setTab(next);
-    const kind = next === 'audio' ? 'audio' : 'game';
     // Focus an already-open embed of that kind (keeps the other one running),
     // otherwise open the first app of the tab
-    const openOfKind = embeds.find((e) => e.kind === kind);
+    const openOfKind = embeds.find((e) => e.kind === TAB_KIND[next]);
     if (openOfKind) focus(openOfKind.id);
-    else open(next === 'audio' ? AUDIO_APPS[0] : GAME_APPS[0]);
+    else open(TAB_APPS[next][0]);
   }
 
   const isOpen = (id: string) => embeds.some((e) => e.id === id);
 
+  const tabBtn = (t: Tab, Icon: typeof Radio, label: string) => (
+    <button
+      key={t}
+      onClick={() => switchTab(t)}
+      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium transition-colors ${
+        tab === t ? 'bg-purple-600/20 text-purple-300' : 'text-gray-400 hover:bg-white/5'
+      }`}
+    >
+      <Icon className="w-4 h-4" /> {label}
+      {embeds.some((e) => e.kind === TAB_KIND[t]) && (
+        <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Running" />
+      )}
+    </button>
+  );
+
   return (
     <div className="h-full flex flex-col">
       {/* Tab bar */}
-      <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-white/10 flex-shrink-0">
-        <button
-          onClick={() => switchTab('audio')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium transition-colors ${
-            tab === 'audio' ? 'bg-purple-600/20 text-purple-300' : 'text-gray-400 hover:bg-white/5'
-          }`}
-        >
-          <Radio className="w-4 h-4" /> Nostr Audio
-          {embeds.some((e) => e.kind === 'audio') && (
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Running" />
-          )}
-        </button>
-        <button
-          onClick={() => switchTab('games')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium transition-colors ${
-            tab === 'games' ? 'bg-purple-600/20 text-purple-300' : 'text-gray-400 hover:bg-white/5'
-          }`}
-        >
-          <Gamepad2 className="w-4 h-4" /> Games
-          {embeds.some((e) => e.kind === 'game') && (
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Running" />
-          )}
-        </button>
+      <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-white/10 flex-shrink-0 overflow-x-auto">
+        {tabBtn('audio', Radio, 'Nostr Audio')}
+        {tabBtn('games', Gamepad2, 'Games')}
+        {tabBtn('video', Clapperboard, 'Video')}
       </div>
 
-      {/* App selector (when multiple apps in tab) */}
-      {apps.length > 1 && (
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-white/10 flex-shrink-0 overflow-x-auto">
-          {apps.map((app) => (
-            <button
-              key={app.id}
-              onClick={() => open(app)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
-                activeId === app.id
-                  ? 'bg-white/10 text-white'
-                  : 'text-gray-400 hover:bg-white/5'
-              }`}
-            >
-              {app.name}
-              {isOpen(app.id) && <span className="w-1.5 h-1.5 rounded-full bg-green-400" />}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* App cards for this tab */}
+      <div className="flex items-stretch gap-2 px-4 py-2 border-b border-white/10 flex-shrink-0 overflow-x-auto">
+        {apps.map((app) => (
+          <AppCard
+            key={app.id}
+            app={app}
+            active={activeId === app.id}
+            running={isOpen(app.id)}
+            onOpen={() => open(app)}
+          />
+        ))}
+      </div>
 
       {/* Active app header */}
       {shownApp && (
