@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
 import { nip19 } from 'nostr-tools';
 import { subscribeEvents, type FeedNote, type NostrEvent } from '@/lib/nostr/feed';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
@@ -8,7 +8,13 @@ import { sanitizeProfile } from '@/lib/nostr/cache';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
-import { Server, Loader2, Search, X, ChevronDown, ChevronUp, Code2, RefreshCw, Hash, Filter as FilterIcon } from 'lucide-react';
+import { Server, Loader2, Search, X, ChevronDown, ChevronUp, Code2, RefreshCw, Hash, Filter as FilterIcon, KeyRound, AlertTriangle } from 'lucide-react';
+import { explorerRelay, needsAuth, needsNarrowerFilter, needsSearch, reasonPrefix, COMMON_KINDS, type QueryResult } from '@/lib/nostr/explorer-relay';
+import { SavedChips } from '@/popup/components/SavedChips';
+import { FeedFilterPanel } from '@/popup/components/FeedFilterPanel';
+import { useFeedFilters, passesFilters, activeFilterCount, useReplyMode } from '@/lib/nostr/feed-filters';
+import { useSavedList } from '@/lib/nostr/saved-lists';
+import { AuthContext } from '@/popup/context/AuthContext';
 
 // One relay at a time: what it is (NIP-11), which kinds and hashtags it holds,
 // and its events filtered by kind, tag, author or NIP-50 search. Events come
@@ -20,11 +26,18 @@ const SAMPLE_SIZE = 400;
 const PAGE = 40;
 const PROFILE_RELAYS = ['wss://purplepag.es'];
 
+// Probed 2026-10-19 with the explorer's own queries. Gone: nostr.wine (403 to non-members),
+// relay.nostr.band (no longer answers), relay.mostr.pub (redirects), nostr.rocks (expired
+// certificate), several hosts that no longer resolve. purplepag.es only serves listed kinds
+// and search.nos.today only searches; both are handled, so they stay.
 const SUGGESTED = [
   'wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostronchain.com', 'wss://relay.snort.social',
-  'wss://nostr.mom', 'wss://relay.ditto.pub', 'wss://purplepag.es', 'wss://nostr.wine', 'wss://relay.nostr.band',
-  'wss://nostr-pub.wellorder.net', 'wss://offchain.pub', 'wss://nostr.bitcoiner.social',
+  'wss://relay.ditto.pub', 'wss://offchain.pub', 'wss://nostr.bitcoiner.social', 'wss://relay.nos.social',
+  'wss://nostr-pub.wellorder.net', 'wss://relay.coinos.io', 'wss://nostr21.com', 'wss://relay.nostrplebs.com',
+  'wss://nostr.einundzwanzig.space', 'wss://nostr.mom', 'wss://purplepag.es', 'wss://search.nos.today',
+  'wss://pyramid.fiatjaf.com', 'wss://nostr.land', 'wss://relay.utxo.one', 'wss://nostr.data.haus',
 ];
+const DEAD = new Set(['wss://nostr.wine', 'wss://relay.nostr.band', 'wss://relay.mostr.pub', 'wss://nostr.rocks', 'wss://brb.io']);
 
 export const KIND_NAMES: Record<number, string> = {
   0: 'Profile', 1: 'Note', 2: 'Relay rec', 3: 'Follows', 4: 'Encrypted DM', 5: 'Deletion', 6: 'Repost', 7: 'Reaction',
@@ -97,23 +110,18 @@ function timeAgo(ts: number): string {
   return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** One query against one relay, settling at EOSE or after `wait` ms. */
-function fetchFrom(relay: string, filter: Record<string, unknown>, wait = 8000): Promise<NostrEvent[]> {
-  return new Promise((resolve) => {
-    const got: NostrEvent[] = [];
-    let done = false;
-    let close: () => void = () => {};
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { close(); } catch { /* closed */ }
-      resolve(got.sort((a, b) => b.created_at - a.created_at));
-    };
-    const timer = setTimeout(finish, wait);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    close = subscribeEvents([relay], filter as any, (e) => got.push(e), finish);
-  });
+/** What a relay's refusal means for the reader, in plain words. */
+function explain(r: QueryResult): string {
+  if (r.connectError) return r.connectError;
+  const why = r.closed || r.notices.join(' · ');
+  if (!why) return r.timedOut ? 'The relay did not finish answering in time.' : '';
+  const p = reasonPrefix(r.closed);
+  if (p === 'auth-required') return 'This relay only answers people who log in to it (NIP-42).';
+  if (p === 'restricted') return `This relay restricts reads: ${why.replace(/^restricted:\s*/, '')}`;
+  if (p === 'rate-limited') return 'The relay is rate-limiting this connection. Wait a moment and try again.';
+  if (needsSearch(r)) return 'This relay only answers searches. Type something in the search box.';
+  if (needsNarrowerFilter(r)) return `The relay wants narrower questions: “${why}”`;
+  return `The relay said: “${why}”`;
 }
 
 interface Props {
@@ -146,6 +154,19 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [error, setError] = useState('');
+  // what the relay said when it gave nothing back, and whether it wants a NIP-42 login
+  const [refusal, setRefusal] = useState('');
+  const [sampleNote, setSampleNote] = useState('');
+  const [authNeeded, setAuthNeeded] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authTick, setAuthTick] = useState(0);
+  const [searchOnly, setSearchOnly] = useState(false);
+  const needsKindRef = useRef(false);
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [endEl, setEndEl] = useState<HTMLDivElement | null>(null);
+  const auth = useContext(AuthContext);
+  const saved = useSavedList('relays', auth?.publicKey || '');
+  const { prefs: filterPrefs } = useFeedFilters();
 
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const askedRef = useRef<Set<string>>(new Set());
@@ -157,12 +178,13 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
       .then((l) => setMine(getReadRelays(l).map((u) => normalizeRelay(u)).filter((u): u is string => !!u)))
       .catch(() => setMine([]));
   }, []);
+  // suggestions: the user's own read relays first, then known-good ones, minus what is already saved
   const choices = useMemo(() => {
-    const all = [...mine, ...DEFAULT_READ_RELAYS, ...SUGGESTED].map((u) => normalizeRelay(u)).filter((u): u is string => !!u);
-    return [...new Set(all)];
-  }, [mine]);
+    const all = [...mine, ...DEFAULT_READ_RELAYS, ...SUGGESTED].map((u) => normalizeRelay(u)).filter((u): u is string => !!u && !DEAD.has(u));
+    return [...new Set(all)].filter((u) => !saved.items.includes(u));
+  }, [mine, saved.items]);
 
-  const supportsSearch = !!info?.supported_nips?.includes(50);
+  const supportsSearch = !!info?.supported_nips?.includes(50) || searchOnly;
 
   function pick(url: string) {
     const n = normalizeRelay(url);
@@ -173,7 +195,26 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     setDraft(EMPTY_QUERY);
     setQuery(EMPTY_QUERY);
     setKindTyped('');
+    setAuthNeeded(false);
+    setSearchOnly(false);
+    setRefusal('');
+    needsKindRef.current = false;
     try { localStorage.setItem(SAVED_KEY, n); } catch { /* storage blocked */ }
+  }
+
+  async function doAuth() {
+    if (!auth?.confirmAndSign) return;
+    setAuthBusy(true);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const res = await explorerRelay(relay).auth((t) => auth.confirmAndSign(t) as any);
+      if (res.ok) { setAuthNeeded(false); setRefusal(''); setAuthTick((x) => x + 1); }
+      else setRefusal(res.message);
+    } catch (e) {
+      setRefusal(e instanceof Error ? e.message : 'Could not log in to the relay');
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   // ─── NIP-11 ──────────────────────────────────────────────
@@ -197,10 +238,21 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     if (!relay) return;
     setSampleLoading(true);
     setSample(null);
-    const got = await fetchFrom(relay, { limit: SAMPLE_SIZE }, 9000);
-    setSample(got);
+    setSampleNote('');
+    const conn = explorerRelay(relay);
+    let r = await conn.query({ limit: SAMPLE_SIZE }, 9000);
+    // some relays refuse a filter with no kind ("filters must specify at least one kind"): ask for common kinds
+    if (!r.events.length && needsNarrowerFilter(r)) {
+      needsKindRef.current = true;
+      r = await conn.query({ kinds: COMMON_KINDS, limit: SAMPLE_SIZE }, 9000);
+      if (r.events.length) setSampleNote('This relay wants a kind in every question, so the sample covers the common kinds.');
+    }
+    if (!r.events.length && needsSearch(r)) { setSearchOnly(true); setShowFilters(true); }
+    if (needsAuth(r)) setAuthNeeded(true);
+    if (!r.events.length) setSampleNote(explain(r) || 'This relay sent nothing back for recent events.');
+    setSample(r.events);
     setSampleLoading(false);
-  }, [relay]);
+  }, [relay, authTick]);
   useEffect(() => { loadSample(); }, [loadSample]);
 
   const kindCounts = useMemo(() => {
@@ -227,6 +279,7 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
   const buildFilter = useCallback((q: Query): { filter: Record<string, unknown> | null; problem: string } => {
     const f: Record<string, unknown> = { limit: PAGE };
     if (q.kind !== null) f.kinds = [q.kind];
+    else if (needsKindRef.current) f.kinds = COMMON_KINDS;
     if (q.tagKey && q.tagValue.trim()) {
       const key = q.tagKey === 'custom' ? q.customKey.trim() : q.tagKey;
       if (!/^[a-zA-Z]$/.test(key)) return { filter: null, problem: 'A tag key is one letter, like t, p, e, a, d or r.' };
@@ -274,16 +327,27 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     setEvents([]);
     setExhausted(false);
     setError(problem);
+    setRefusal('');
     if (!filter) return;
+    if (searchOnly && !filter.search) { setRefusal('This relay only answers searches. Type something in the search box.'); setExhausted(true); return; }
     setLoading(true);
-    fetchFrom(relay, filter).then((got) => {
+    const conn = explorerRelay(relay);
+    (async () => {
+      let r = await conn.query(filter);
+      if (!r.events.length && !filter.kinds && needsNarrowerFilter(r)) {
+        needsKindRef.current = true;
+        r = await conn.query({ ...filter, kinds: COMMON_KINDS });
+      }
       if (gen !== genRef.current) return;
-      setEvents(got);
+      if (needsAuth(r)) setAuthNeeded(true);
+      if (!r.events.length && needsSearch(r)) setSearchOnly(true);
+      setRefusal(r.events.length ? '' : explain(r));
+      setEvents(r.events);
       setLoading(false);
-      if (got.length < PAGE) setExhausted(true);
-      askProfiles(got);
-    });
-  }, [relay, query, buildFilter, askProfiles]);
+      if (r.events.length < PAGE / 2) setExhausted(true);
+      askProfiles(r.events);
+    })();
+  }, [relay, query, buildFilter, askProfiles, authTick, searchOnly]);
 
   async function loadOlder() {
     if (loadingMore || exhausted || !events.length) return;
@@ -293,8 +357,8 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     const gen = genRef.current;
     const oldest = events[events.length - 1].created_at;
     // until is inclusive: events from the oldest second come back again and are dropped by id
-    const got = await fetchFrom(relay, { ...filter, until: oldest });
-    if (gen !== genRef.current) return;
+    const got = (await explorerRelay(relay).query({ ...filter, until: oldest })).events;
+    if (gen !== genRef.current) { setLoadingMore(false); return; }
     const known = new Set(events.map((e) => e.id));
     const fresh = got.filter((e) => !known.has(e.id));
     if (!fresh.length) setExhausted(true);
@@ -322,6 +386,32 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     e.preventDefault();
     setQuery({ ...draft });
   }
+
+  // the reader's feed filters apply to notes here too; other kinds only show with "Everything"
+  const [replyMode] = useReplyMode('relay');
+  const filtering = activeFilterCount(filterPrefs) > 0 || replyMode === 'notes';
+  const visibleEvents = useMemo(() => {
+    if (!filtering) return events;
+    const prefs = replyMode === 'notes' ? { ...filterPrefs, hideReplies: true } : filterPrefs;
+    const noteKinds = new Set([1, 6, 16, 20, 21, 22, 1111, 1222, 34235, 34236]);
+    return events.filter((e) => (noteKinds.has(e.kind)
+      ? passesFilters(e as FeedNote, prefs, { profile: profiles.get(e.pubkey) })
+      : prefs.only === 'all'));
+  }, [events, filtering, filterPrefs, profiles, replyMode]);
+
+  // older events load as the end comes into view, and keep loading while too few pass the filters
+  useEffect(() => {
+    if (!endEl) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) loadOlder(); }, { rootMargin: '700px 0px' });
+    io.observe(endEl);
+    return () => io.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endEl, events.length, exhausted, loadingMore]);
+  useEffect(() => {
+    if (filtering && !loading && !loadingMore && !exhausted && events.length > 0 && visibleEvents.length < 8) loadOlder();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtering, loading, loadingMore, exhausted, events.length, visibleEvents.length]);
+
   const activeBits = [
     query.kind !== null && kindLabel(query.kind),
     query.tagKey && query.tagValue && `#${query.tagKey === 'custom' ? query.customKey : query.tagKey}: ${query.tagValue.length > 18 ? query.tagValue.slice(0, 16) + '…' : query.tagValue}`,
@@ -341,13 +431,20 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
         <button type="submit" className="px-4 py-2 bg-purple-600 text-white rounded-full text-[13px] font-medium">Open</button>
       </form>
       {typedError && <p className="text-[12px] text-red-400 mt-1.5 ml-2">{typedError}</p>}
-      <div className="flex gap-1.5 overflow-x-auto scrollbar-none mt-2 pb-1" data-testid="relay-choices">
-        {choices.map((u) => (
-          <button key={u} onClick={() => pick(u)} className={chip(u === relay)} title={u}>
-            {mine.includes(u) && <span className="text-purple-400 mr-1">●</span>}{u.replace(/^wss:\/\//, '')}
-          </button>
-        ))}
-      </div>
+      <p className="text-[11px] uppercase tracking-wide text-gray-500 mt-2.5 mb-1 ml-1">Your relays to explore</p>
+      <SavedChips kind="relays" active={relay} onPick={pick} />
+      <button onClick={() => setShowSuggest((v) => !v)} className="flex items-center gap-1 text-[12px] text-gray-500 hover:text-gray-300 mt-1 ml-1">
+        More relays {showSuggest ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+      </button>
+      {showSuggest && (
+        <div className="flex gap-1.5 flex-wrap mt-1.5 pb-1" data-testid="relay-choices">
+          {choices.map((u) => (
+            <button key={u} onClick={() => pick(u)} className={chip(u === relay)} title={u}>
+              {mine.includes(u) && <span className="text-purple-400 mr-1">●</span>}{u.replace(/^wss:\/\//, '')}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 
@@ -357,7 +454,7 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
         {picker}
         <div className="flex flex-col items-center justify-center py-14 px-6">
           <Server className="w-10 h-10 text-gray-700 mb-3" />
-          <p className="text-[15px] text-gray-400 text-center">Pick a relay (● are yours) or type any wss:// address to see what it holds: its kinds, hashtags and events.</p>
+          <p className="text-[15px] text-gray-400 text-center">Pick a relay above or type any wss:// address to see what it holds: its kinds, hashtags and events. Save the ones you like with ✎.</p>
         </div>
       </div>
     );
@@ -410,6 +507,16 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
         </div>
       </div>
 
+      {authNeeded && (
+        <div className="mx-3 mt-2 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 flex items-center gap-3" data-testid="auth-banner">
+          <KeyRound className="w-5 h-5 text-amber-300 flex-shrink-0" />
+          <p className="flex-1 text-[13px] text-amber-100">This relay asks you to log in (NIP-42) before it shares events.</p>
+          {auth?.confirmAndSign
+            ? <button onClick={doAuth} disabled={authBusy} className="px-3 py-1.5 rounded-full bg-amber-400 text-black text-[13px] font-semibold disabled:opacity-60 flex items-center gap-1">{authBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}Log in</button>
+            : <span className="text-[12px] text-amber-200">Sign in to the app first</span>}
+        </div>
+      )}
+
       {/* Kinds on this relay */}
       <div className="px-3 pt-3">
         <div className="flex items-center gap-2 mb-1.5 ml-1">
@@ -430,7 +537,7 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
             <button className={chip(true)}>{kindLabel(query.kind)}</button>
           )}
         </div>
-        {sample && sample.length === 0 && !sampleLoading && <p className="text-[12px] text-gray-500 ml-1 mt-1">This relay sent nothing back. It may be unreachable from your network, need auth, or only answer narrower filters.</p>}
+        {sampleNote && !sampleLoading && <p className={`text-[12px] ml-1 mt-1 ${sample && sample.length ? 'text-gray-500' : 'text-amber-300/90'}`} data-testid="sample-note">{sampleNote}</p>}
         <form onSubmit={submitKind} className="flex gap-2 mt-1.5">
           <input value={kindTyped} onChange={(e) => setKindTyped(e.target.value.replace(/\D/g, '').slice(0, 5))} inputMode="numeric" placeholder="any kind number, e.g. 30023" className={`flex-1 ${input}`} data-testid="kind-input" />
           <button type="submit" className="px-4 py-2 bg-white/10 text-gray-200 rounded-full text-[13px] font-medium">Show</button>
@@ -493,6 +600,8 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
         )}
       </div>
 
+      <FeedFilterPanel hidden={events.length - visibleEvents.length} />
+
       {/* Active filter summary */}
       <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap text-[12px] text-gray-500">
         <Hash className="w-3 h-3" />
@@ -506,10 +615,17 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
       {error && <p className="px-4 py-3 text-[13px] text-red-400">{error}</p>}
       {loading && <div className="flex items-center justify-center py-10 text-gray-500 text-[13px]"><Loader2 className="w-4 h-4 animate-spin mr-2" />Asking {relay.replace(/^wss:\/\//, '')}…</div>}
       {!loading && !error && events.length === 0 && (
-        <p className="px-6 py-12 text-center text-[14px] text-gray-500">Nothing on this relay matches.{query.search && !supportsSearch ? ' This relay does not support search.' : ''}</p>
+        <div className="px-6 py-10 text-center" data-testid="relay-empty">
+          {refusal
+            ? <p className="text-[14px] text-amber-200/90 flex items-start justify-center gap-2"><AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" /><span data-testid="relay-refusal">{refusal}</span></p>
+            : <p className="text-[14px] text-gray-500">Nothing on this relay matches.{query.search && !supportsSearch ? ' This relay does not support search.' : ''}</p>}
+        </div>
+      )}
+      {!loading && events.length > 0 && visibleEvents.length === 0 && (
+        <p className="px-6 py-8 text-center text-[14px] text-gray-500">None of the {events.length} loaded events match your filters{exhausted ? '.' : '. Looking further back…'}</p>
       )}
       <div className="divide-y divide-white/5" data-testid="relay-events">
-        {events.map((e) => (e.kind === 1 || e.kind === 1111)
+        {visibleEvents.map((e) => (e.kind === 1 || e.kind === 1111)
           ? (
             <div key={e.id} className="px-4 py-3" data-event-kind={e.kind}>
               <NoteCard note={e as FeedNote} profile={profiles.get(e.pubkey)} onSelectNote={onSelectNote} onViewProfile={onViewProfile} />
@@ -518,7 +634,7 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
           : <EventCard key={e.id} ev={e} profile={profiles.get(e.pubkey)} onViewProfile={onViewProfile} onKind={chooseKind} />)}
       </div>
       {!loading && events.length > 0 && (
-        <div className="px-4 py-4">
+        <div className="px-4 py-4" ref={setEndEl}>
           {exhausted
             ? <p className="text-center text-[13px] text-gray-600 py-2">Nothing older came back. That's all this relay holds for this filter, or it only keeps recent events.</p>
             : (

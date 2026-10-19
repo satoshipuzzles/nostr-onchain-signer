@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import {
   subscribeFeed, subscribeEvents, mergeNotes, parseRepost, longFormMeta, isLongForm,
   tallyEngagement, loadFeedTab, saveFeedTab, loadFeedHashtag, saveFeedHashtag,
-  PRESET_HASHTAGS, FEED_MAX_NOTES, FEED_PAGE_SIZE, KIND_REPOST, EMPTY_ENGAGEMENT,
+  FEED_MAX_NOTES, FEED_PAGE_SIZE, KIND_REPOST, EMPTY_ENGAGEMENT,
   type FeedNote, type FeedMode, type FeedFilter, type Engagement,
 } from '@/lib/nostr/feed';
 import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-subscribe';
@@ -19,6 +19,10 @@ import { SkeletonFeed } from '@/popup/components/Skeleton';
 import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X, Server } from 'lucide-react';
 import { useEmbedPlayer } from '@/popup/context/EmbedPlayerContext';
 import { RelayExplorer } from '@/popup/components/RelayExplorer';
+import { SavedChips } from '@/popup/components/SavedChips';
+import { FeedFilterPanel } from '@/popup/components/FeedFilterPanel';
+import { useFeedFilters, passesFilters, activeFilterCount, useReplyMode } from '@/lib/nostr/feed-filters';
+import { RepliesSwitch } from '@/popup/components/RepliesSwitch';
 
 interface Props {
   publicKey: string;
@@ -122,6 +126,14 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const { embeds } = useEmbedPlayer();
   const [relayStatus, setRelayStatus] = useState<{ up: number; total: number }>({ up: 0, total: 0 });
   const [loadError, setLoadError] = useState('');
+  // reader's filters (Filters panel); with any on, more notes are kept so enough pass
+  const { prefs: filterPrefs } = useFeedFilters();
+  // Notes / Notes & replies, remembered per feed tab and shown at the top of it
+  const [replyMode] = useReplyMode(activeMode);
+  const effectivePrefs = useMemo(() => (replyMode === 'notes' ? { ...filterPrefs, hideReplies: true } : filterPrefs), [filterPrefs, replyMode]);
+  const filtering = activeFilterCount(filterPrefs) > 0 || replyMode === 'notes';
+  const maxNotes = filtering ? FEED_MAX_NOTES * 3 : FEED_MAX_NOTES;
+  const [endEl, setEndEl] = useState<HTMLDivElement | null>(null);
 
   const cleanupRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -362,7 +374,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
     const filter = buildFilter(activeMode);
     const current = notesRef.current;
     if (!filter || current.length === 0) return;
-    if (current.length >= FEED_MAX_NOTES) { setExhausted(true); return; }
+    if (current.length >= maxNotes) { setExhausted(true); return; }
     setLoadingMore(true);
     const oldest = Math.min(...current.map((n) => n.created_at));
     const relayUrls = await getRelayUrls();
@@ -377,7 +389,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
         const older = found.filter((n) => !known.has(n.id));
         if (older.length === 0) setExhausted(true);
         else {
-          setNotes((prev) => mergeNotes(prev, older, mutedRef.current).slice(0, FEED_MAX_NOTES));
+          setNotes((prev) => mergeNotes(prev, older, mutedRef.current).slice(0, maxNotes));
           hydrate(older);
         }
         setLoadingMore(false);
@@ -485,6 +497,24 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const showEmptyState = !exploring && !loading && notes.length === 0 && !needsHashtag && !noFollows;
   const canCompose = activeMode === 'following' || activeMode === 'global';
 
+  const visibleNotes = useMemo(() => (filtering
+    ? notes.filter((n) => passesFilters(n, effectivePrefs, { inner: parseRepost(n)?.inner, profile: profiles.get(n.pubkey) }))
+    : notes), [notes, filtering, effectivePrefs, profiles]);
+
+  // keep loading older notes while the end of the list is in view, or while too few pass the filters
+  useEffect(() => {
+    if (!endEl || exploring) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) handleLoadMore(); }, { rootMargin: '800px 0px' });
+    io.observe(endEl);
+    return () => io.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endEl, exploring, notes.length, exhausted, loadingMore]);
+  useEffect(() => {
+    if (!filtering || exploring || loading || loadingMore || exhausted || notes.length === 0) return;
+    if (visibleNotes.length < 10) handleLoadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtering, exploring, loading, loadingMore, exhausted, notes.length, visibleNotes.length]);
+
   const emptyMessage = useMemo(() => {
     if (loadError) return loadError + ' Check Settings → Relays, or try again.';
     switch (activeMode) {
@@ -557,23 +587,15 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           </span>
         </div>
 
+        <div className="px-3 pb-2 flex justify-center">
+          <RepliesSwitch feed={activeMode} />
+        </div>
+
         {/* Hashtag chips + box */}
         {activeMode === 'hashtag' && (
           <div className="px-3 pb-2.5">
-            <div className="flex gap-1.5 flex-wrap mb-2">
-              {PRESET_HASHTAGS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => submitHashtag(t)}
-                  className={`px-3 py-1.5 rounded-full text-[13px] font-medium border transition-colors ${
-                    hashtagSubmitted === t
-                      ? 'bg-purple-600/25 text-purple-200 border-purple-500/40'
-                      : 'bg-white/5 text-gray-300 border-white/10 hover:border-white/25'
-                  }`}
-                >
-                  #{t}
-                </button>
-              ))}
+            <div className="mb-2">
+              <SavedChips kind="tags" active={hashtagSubmitted} onPick={submitHashtag} />
             </div>
             <form onSubmit={handleHashtagSubmit} className="flex gap-2">
               <input
@@ -664,8 +686,13 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           </div>
         )}
 
+        {!exploring && <FeedFilterPanel hidden={notes.length - visibleNotes.length} />}
+        {!loading && notes.length > 0 && visibleNotes.length === 0 && (
+          <p className="px-6 py-8 text-center text-[14px] text-gray-500">None of the {notes.length} loaded notes match your filters{exhausted ? '.' : '. Looking further back…'}</p>
+        )}
+
         <div className="divide-y divide-white/5">
-          {notes.map((note) => {
+          {visibleNotes.map((note) => {
             const repost = parseRepost(note);
             if (repost) {
               const byName = displayNameOf(profiles.get(repost.by), repost.by);
@@ -722,12 +749,12 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           })}
         </div>
 
-        {/* Load older */}
+        {/* Load older (also by scrolling to the end) */}
         {!loading && notes.length > 0 && (
-          <div className="px-4 py-4">
+          <div className="px-4 py-4" ref={setEndEl}>
             {exhausted ? (
               <p className="text-center text-[13px] text-gray-600 py-2">
-                {notes.length >= FEED_MAX_NOTES ? `Showing the latest ${FEED_MAX_NOTES} notes.` : "That's everything your relays have."}
+                {notes.length >= maxNotes ? `Showing the latest ${maxNotes} notes.` : "That's everything your relays have."}
               </p>
             ) : (
               <button

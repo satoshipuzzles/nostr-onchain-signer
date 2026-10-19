@@ -28,6 +28,8 @@ export interface ProfileMetadata {
   bitcoinAddress?: string;
   /** BIP-352 silent payment address (sp1...) declared in kind-0 metadata */
   silentPaymentAddress?: string;
+  /** kind-0 `bot` flag: the account says it is automated */
+  bot?: boolean;
 }
 
 /** Pull an sp1... silent payment address out of free-form text (e.g. about) */

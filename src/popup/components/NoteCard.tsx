@@ -20,6 +20,8 @@ import { hexToBytes } from '@noble/hashes/utils';
 import { useProfilePopup } from '@/popup/context/ProfilePopupContext';
 import { ClickableAvatar } from './ClickableAvatar';
 import { NoteContent, SelectNoteContext, contentIsLong } from './NoteContent';
+import { MediaEmbeds } from './MediaEmbeds';
+import { useFeedFilters } from '@/lib/nostr/feed-filters';
 import { useProfile } from '@/popup/hooks/useNostr';
 import { streamQuery, relaysForAuthor } from '@/lib/nostr/query';
 import { parseZapReceipt } from '@/lib/nostr/zap';
@@ -272,8 +274,11 @@ export const NoteCard = memo(function NoteCard({ note, profile: profileProp, eng
   const displayName =
     profile?.displayName || profile?.name || note.pubkey.slice(0, 12);
   const hashtags = useMemo(() => extractHashtags(note.tags), [note.tags]);
-  const images = useMemo(() => [...new Set(note.content.match(IMAGE_REGEX) ?? [])], [note.content]);
-  const hasText = useMemo(() => note.content.replace(IMAGE_REGEX, '').trim().length > 0, [note.content]);
+  // with media turned off in the feed filters, image links stay in the text as links
+  const { prefs: filterPrefs } = useFeedFilters();
+  const mediaInline = filterPrefs.mediaInline;
+  const images = useMemo(() => (mediaInline ? [...new Set(note.content.match(IMAGE_REGEX) ?? [])] : []), [note.content, mediaInline]);
+  const hasText = useMemo(() => (mediaInline ? note.content.replace(IMAGE_REGEX, '') : note.content).trim().length > 0, [note.content, mediaInline]);
   const isLong = useMemo(() => contentIsLong(note.content, note.tags, MAX_CONTENT_LENGTH), [note.content, note.tags]);
 
   function requireLogin(action: string): boolean {
@@ -528,10 +533,14 @@ export const NoteCard = memo(function NoteCard({ note, profile: profileProp, eng
               content={note.content}
               tags={note.tags}
               maxLength={expanded ? undefined : MAX_CONTENT_LENGTH}
+              stripImages={mediaInline}
             />
           </p>
         )}
       </div>
+
+      {/* YouTube, music and video players, audio/video files, link cards */}
+      {!compact && <MediaEmbeds content={note.content} />}
 
       {/* Show more / less */}
       {isLong && (

@@ -35,6 +35,7 @@ export function sanitizeProfile(raw: any, pubkey: string): ProfileMetadata {
     silentPaymentAddress: typeof (raw.silent_payment_address || raw.sp_address || raw.silentPaymentAddress) === 'string'
       ? (raw.silent_payment_address || raw.sp_address || raw.silentPaymentAddress)
       : extractSilentPaymentAddress(typeof raw.about === 'string' ? raw.about : undefined),
+    bot: raw.bot === true || raw.bot === 'true' || undefined,
   };
 }
 
