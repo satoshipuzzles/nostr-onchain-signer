@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { nip19 } from 'nostr-tools';
 import { ArrowLeft, Zap, ArrowUpRight, ArrowDownLeft, Loader2, Repeat, FileText, Info } from 'lucide-react';
 import { useAuth } from '@/popup/context/AuthContext';
-import { streamZapHistory, type ZapRow } from '@/lib/nostr/zap-history';
+import { streamZapHistory, bridgePaysFromWallet, type ZapRow } from '@/lib/nostr/zap-history';
 import { useProfile } from '@/popup/hooks/useNostr';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 
@@ -73,7 +73,13 @@ export function ZapsPage() {
   useEffect(() => {
     if (!publicKey) return;
     setLoading(true);
-    return streamZapHistory(publicKey, (r, done) => { setRows(r); if (done) setLoading(false); });
+    let stop: (() => void) | null = null;
+    let live = true;
+    // your own history: ask the XBT wallet which BTC zaps it paid through the bridge
+    (publicKey === auth.publicKey ? bridgePaysFromWallet().catch(() => []) : Promise.resolve([])).then((bridge) => {
+      if (live) stop = streamZapHistory(publicKey, (r, done) => { setRows(r); if (done) setLoading(false); }, bridge);
+    });
+    return () => { live = false; stop?.(); };
   }, [publicKey]);
 
   const cutoff = span ? Date.now() / 1000 - span * 86400 : 0;
@@ -117,7 +123,7 @@ export function ZapsPage() {
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div><p className="text-[10px] text-purple-300 uppercase tracking-wider">XBT Lightning</p><p className="text-lg font-bold">{T.xbt.toLocaleString()}<span className="text-xs text-gray-400 font-medium"> sats</span></p></div>
+          <div><p className="text-[10px] text-purple-300 uppercase tracking-wider">XBT Lightning{tab === 'sent' && T.bridgeXbt > 0 ? ' + bridge' : ''}</p><p className="text-lg font-bold">{(T.xbt + (tab === 'sent' ? T.bridgeXbt : 0)).toLocaleString()}<span className="text-xs text-gray-400 font-medium"> sats</span></p></div>
           <div><p className="text-[10px] text-orange-300 uppercase tracking-wider">BTC Lightning</p><p className="text-lg font-bold">{T.btc.toLocaleString()}<span className="text-xs text-gray-400 font-medium"> sats</span></p></div>
         </div>
         {tab === 'sent' && T.bridgeXbt > 0 && <p className="text-[11px] text-gray-400 mt-2">BTC zaps paid from XBT through the bridge cost {T.bridgeXbt.toLocaleString()} XBT sats.</p>}

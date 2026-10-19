@@ -53,10 +53,11 @@ function hashOf(e: NEvent): string | undefined {
 }
 
 /** Stream both directions; rows arrive newest first. */
-export function streamZapHistory(me: string, onUpdate: (rows: ZapRow[], done: boolean) => void): () => void {
+export function streamZapHistory(me: string, onUpdate: (rows: ZapRow[], done: boolean) => void, extra: SentZapLog[] = []): () => void {
   const rows = new Map<string, ZapRow>();
-  const log = loadSentLog(me);
-  const byHash = new Map(log.map((l) => [l.paymentHash, l]));
+  const local = loadSentLog(me);
+  const byHash = new Map([...extra, ...local].map((l) => [l.paymentHash, l]));
+  const log = local;
   let stop: (() => void) | null = null;
   let live = true;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -102,3 +103,18 @@ export function streamZapHistory(me: string, onUpdate: (rows: ZapRow[], done: bo
   });
   return () => { live = false; stop?.(); };
 }
+
+/**
+ * BTC zaps the user's XBT wallet paid through the bridge, from wallets that offer the
+ * non-standard list_bridge_pays (our NWC service). Works for zaps sent from any device.
+ */
+export async function bridgePaysFromWallet(): Promise<SentZapLog[]> {
+  const { loadNwcConnection, nwcRequest } = await import('./nwc');
+  const c = await loadNwcConnection('xbt').catch(() => null);
+  if (!c) return [];
+  const r = await nwcRequest<{ pays: { payment_hash: string; btc_sats: number; cost_xbt_sats: number; fee_sats?: number; at: number }[] }>(c, 'list_bridge_pays', {}, 15000).catch(() => ({ error: 'x' } as { error: string }));
+  if ('error' in r && r.error) return [];
+  const pays = ('result' in r && r.result?.pays) || [];
+  return pays.map((p) => ({ paymentHash: p.payment_hash, recipient: '', amountSats: p.btc_sats, chain: 'btc' as const, via: 'bridge' as const, costXbtSats: p.cost_xbt_sats, feeSats: p.fee_sats, at: p.at }));
+}
+
