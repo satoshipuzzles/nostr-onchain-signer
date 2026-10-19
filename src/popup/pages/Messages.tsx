@@ -462,7 +462,7 @@ export function Messages() {
     setSending(true);
     try {
       const result = await sendDM(publicKey, selectedPubkey, newMessage);
-      celebratePublish('Sent');
+      celebratePublish('Sent', undefined, undefined, 'dm');
       setMessages(prev => [...prev, {
         id: result.eventId || `local_${Date.now()}`,
         pubkey: publicKey,

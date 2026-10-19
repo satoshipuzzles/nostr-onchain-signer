@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useContext, memo } from 'react';
+import { celebrateAction } from '@/lib/ui/celebrations';
 import { toast } from 'sonner';
 import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
@@ -310,6 +311,7 @@ export const NoteCard = memo(function NoteCard({ note, profile: profileProp, eng
         content: '+',
       });
       setLiked(true);
+      void celebrateAction('reaction');
       setUserReacted(true);
       setTotalReactions((prev) => prev + 1);
     } catch (err) {
@@ -347,6 +349,7 @@ export const NoteCard = memo(function NoteCard({ note, profile: profileProp, eng
         }),
       });
       setBoosted(true);
+      void celebrateAction('repost');
     } catch (err) {
       console.error('Failed to repost:', err);
       toast.error('Failed to publish repost');

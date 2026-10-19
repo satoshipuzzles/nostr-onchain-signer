@@ -5,6 +5,7 @@ import { AuthContext } from '@/popup/context/AuthContext';
 import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
 import { loadNwcConnection, sendNwcPayment, getNwcInfo, estimateNwcFee, type LightningChain } from '@/lib/nostr/nwc';
+import { celebrateAction } from '@/lib/ui/celebrations';
 import {
   fetchLnurlPayInfo,
   requestZapInvoice,
@@ -151,6 +152,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
           if (b && b.toLowerCase() === bolt11.toLowerCase() && !stopped) {
             stopped = true;
             setStatus('success');
+            void celebrateAction('zap');
             setStatusMessage('Paid. The zap receipt is on Nostr.');
           }
         },
@@ -321,6 +323,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       ? `Zapped ${amount.toLocaleString()} BTC sats, paid with ${Math.ceil((payResult.costMsats ?? pending.bridge.costMsats) / 1000).toLocaleString()} XBT sats through the bridge!`
       : `Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!${paidFee != null ? ` Network fee: ${paidFee.toLocaleString()} sat${paidFee === 1 ? '' : 's'}.` : ''}`);
     setPending(null);
+    void celebrateAction('zap');
     setTimeout(onClose, 2600);
   }
 

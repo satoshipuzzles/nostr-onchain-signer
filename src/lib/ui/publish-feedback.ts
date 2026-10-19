@@ -1,7 +1,7 @@
 import { toast } from 'sonner';
 import { publishEvent, formatPublishResult, type PublishResult } from '@/lib/nostr/publish';
 
-import { celebrate } from './celebrations';
+import { celebrate, celebrateAction, type CelebrationAction } from './celebrations';
 
 const host = (u: string) => u.replace(/^wss?:\/\//, '').replace(/\/$/, '');
 
@@ -21,9 +21,18 @@ const TOAST_STYLE = {
   padding: '14px 16px',
 };
 
-export function celebratePublish(message = 'Published!', description?: string, id?: string | number): void {
+export function celebratePublish(message = 'Published!', description?: string, id?: string | number, action?: CelebrationAction): void {
   toast.success(message, { id, description, duration: 3500, style: TOAST_STYLE });
-  void celebrate();
+  void (action ? celebrateAction(action) : celebrate());
+}
+
+/** Which celebration an event gets: replies (e-tag or kind 1111), likes, reposts, else a note. */
+function actionOf(e: { kind: number; tags?: string[][] }): CelebrationAction {
+  if (e.kind === 7) return 'reaction';
+  if (e.kind === 6 || e.kind === 16) return 'repost';
+  if (e.kind === 1111 || (e.kind === 1 && e.tags?.some((t) => t[0] === 'e'))) return 'reply';
+  if (e.kind === 4 || e.kind === 14 || e.kind === 1059) return 'dm';
+  return 'note';
 }
 
 export async function publishWithFeedback(
@@ -64,6 +73,6 @@ export async function publishWithFeedback(
   }
   const secs = ((performance.now() - t0) / 1000).toFixed(1);
   shown = true;
-  celebratePublish(successMessage, tally ? `${tally} · ${secs}s` : `Live on ${host(result.success[0])} · ${secs}s · more relays confirming…`, toastId);
+  celebratePublish(successMessage, tally ? `${tally} · ${secs}s` : `Live on ${host(result.success[0])} · ${secs}s · more relays confirming…`, toastId, actionOf(event));
   return result;
 }
