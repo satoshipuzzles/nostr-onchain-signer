@@ -15,7 +15,8 @@ import { NoteThread } from '@/popup/components/NoteThread';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonFeed } from '@/popup/components/Skeleton';
-import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio } from 'lucide-react';
+import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X } from 'lucide-react';
+import { useEmbedPlayer } from '@/popup/context/EmbedPlayerContext';
 
 interface Props {
   publicKey: string;
@@ -108,6 +109,11 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
   const [engagement, setEngagement] = useState<Map<string, Engagement>>(new Map());
   const [showComposer, setShowComposer] = useState(false);
+  // the floating + : shown once the inline composer has scrolled out of view
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [composerVisible, setComposerVisible] = useState(true);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const { embeds } = useEmbedPlayer();
   const [relayStatus, setRelayStatus] = useState<{ up: number; total: number }>({ up: 0, total: 0 });
   const [loadError, setLoadError] = useState('');
 
@@ -481,6 +487,32 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
     }
   }, [activeMode, hashtagSubmitted, loadError]);
 
+  const afterPublish = () => {
+    setShowComposer(false);
+    setSheetOpen(false);
+    // Fetch our own fresh note straight away rather than waiting for the poll
+    setTimeout(async () => {
+      const filter = buildFilter(activeMode);
+      if (!filter) return;
+      const relayUrls = await getRelayUrls();
+      const found: FeedNote[] = [];
+      const close = subscribeFeed(
+        relayUrls,
+        { mode: 'following', pubkeys: [publicKey], limit: 5 },
+        (n) => found.push(n),
+        () => { close(); if (found.length) setNotes((prev) => mergeNotes(prev, found, mutedRef.current)); },
+      );
+    }, 1500);
+  };
+
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([e]) => setComposerVisible(e.isIntersecting));
+    io.observe(el);
+    return () => io.disconnect();
+  }, [canCompose]);
+
   return (
     <div className="flex flex-col min-h-full">
       {/* Sticky tab bar */}
@@ -551,27 +583,10 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
 
       {/* Composer */}
       {canCompose && (
-        <div className="px-4 pt-3">
+        <div className="px-4 pt-3" ref={composerRef}>
           {showComposer ? (
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-              <ComposeNote
-                onPublished={() => {
-                  setShowComposer(false);
-                  // Fetch our own fresh note straight away rather than waiting for the poll
-                  setTimeout(async () => {
-                    const filter = buildFilter(activeMode);
-                    if (!filter) return;
-                    const relayUrls = await getRelayUrls();
-                    const found: FeedNote[] = [];
-                    const close = subscribeFeed(
-                      relayUrls,
-                      { mode: 'following', pubkeys: [publicKey], limit: 5 },
-                      (n) => found.push(n),
-                      () => { close(); if (found.length) setNotes((prev) => mergeNotes(prev, found, mutedRef.current)); },
-                    );
-                  }, 1500);
-                }}
-              />
+              <ComposeNote onPublished={afterPublish} />
               <button onClick={() => setShowComposer(false)} className="mt-2 text-xs text-gray-500 hover:text-gray-300">
                 Cancel
               </button>
@@ -721,6 +736,36 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           onClose={() => setSelectedNote(null)}
           onViewProfile={onViewProfile}
         />
+      )}
+
+      {/* Floating "new note" button once the composer has scrolled away, above any mini-player */}
+      {publicKey && !sheetOpen && !selectedNote && (!canCompose || !composerVisible) && (
+        <button
+          onClick={() => setSheetOpen(true)}
+          aria-label="New note"
+          title="New note"
+          className="fixed right-4 md:right-6 z-40 w-14 h-14 rounded-full bg-bitcoin text-black shadow-lg shadow-black/60 flex items-center justify-center active:scale-95 transition-transform"
+          style={{ bottom: `calc(${embeds.length ? 5 + embeds.length * 3.25 : 5.5}rem + env(safe-area-inset-bottom))` }}
+        >
+          <Plus className="w-7 h-7" strokeWidth={2.5} />
+        </button>
+      )}
+
+      {sheetOpen && (
+        <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setSheetOpen(false)}>
+          <div
+            className="w-full md:max-w-lg rounded-t-3xl md:rounded-3xl border border-white/10 bg-surface-900 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold text-white">New note</span>
+              <button onClick={() => setSheetOpen(false)} aria-label="Close" className="p-2 -mr-2 text-gray-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <ComposeNote onPublished={afterPublish} />
+          </div>
+        </div>
       )}
     </div>
   );

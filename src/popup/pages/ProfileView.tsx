@@ -1,4 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useContext } from 'react';
+import { AuthContext } from '@/popup/context/AuthContext';
+import { ProfileConversations } from '@/popup/components/ProfileConversations';
 import { ArrowLeft, Copy, Check, BadgeCheck, Zap, Globe, Loader2, MessageCircle } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
@@ -29,7 +31,7 @@ interface Props {
   guest?: boolean;
 }
 
-type ProfileTab = 'notes' | 'replies' | 'reactions' | 'zaps';
+type ProfileTab = 'notes' | 'replies' | 'conversations' | 'reactions' | 'zaps';
 
 interface ReactionEntry {
   eventId: string;
@@ -101,6 +103,9 @@ function ZapRow({ z, onOpen }: { z: ZapReceiptInfo; onOpen: (pk: string) => void
 
 export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, onViewProfile, guest }: Props) {
   const { openProfile } = useProfilePopup();
+  // the signed-in viewer, if any (the public page has no AuthProvider)
+  const me = useContext(AuthContext)?.publicKey || '';
+  const canConverse = !guest && !!me && me !== user.pubkey;
   const viewProfile = (pubkey: string) => {
     openProfile(pubkey);
     onViewProfile?.(pubkey);
@@ -162,7 +167,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   // Notes / replies / reactions: stream per tab
   useEffect(() => {
     if (!relays) return;
-    if (activeTab === 'zaps') { setLoading(false); return; }
+    if (activeTab === 'zaps' || activeTab === 'conversations') { setLoading(false); return; }
     setLoading(true);
     const found = new Map<string, NEvent>();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -223,6 +228,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   const TABS: { id: ProfileTab; label: string }[] = [
     { id: 'notes', label: 'Notes' },
     { id: 'replies', label: 'Replies' },
+    ...(canConverse ? [{ id: 'conversations' as ProfileTab, label: 'Conversations' }] : []),
     { id: 'reactions', label: 'Reactions' },
     { id: 'zaps', label: zaps.length ? `Zaps (${zaps.length})` : 'Zaps' },
   ];
@@ -385,13 +391,13 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
       </div>
 
       {/* Profile Tabs */}
-      <div className="px-4 border-b border-surface-200/10">
-        <div className="flex">
+      <div className="px-2 border-b border-surface-200/10">
+        <div className="flex overflow-x-auto no-scrollbar">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 py-2.5 text-xs font-medium text-center transition-colors relative ${
+              className={`flex-1 shrink-0 whitespace-nowrap px-2.5 py-2.5 text-xs font-medium text-center transition-colors relative ${
                 activeTab === tab.id
                   ? 'text-white'
                   : 'text-gray-500 hover:text-gray-300'
@@ -436,6 +442,11 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
               ))
             )}
           </div>
+        )}
+
+        {/* Conversations Tab (from Damus): every thread between the viewer and this person */}
+        {activeTab === 'conversations' && canConverse && (
+          <ProfileConversations me={me} them={user.pubkey} onSelectNote={setSelectedNote} onViewProfile={viewProfile} />
         )}
 
         {/* Reactions Tab */}

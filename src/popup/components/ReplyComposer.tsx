@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Loader2, Search } from 'lucide-react';
+import { Send, Loader2, Search, ImageIcon, X } from 'lucide-react';
+import { uploadImageToNostrBuild } from '@/lib/nostr/image-upload';
 import { useAuth } from '@/popup/context/AuthContext';
 import { createMessageId } from '@/shared/messages';
 import { loadRelayList, getWriteRelays } from '@/lib/nostr/relays';
@@ -32,6 +33,9 @@ export function ReplyComposer({
   const [mentionResults, setMentionResults] = useState<MentionSearchResult[]>([]);
   const [mentionLoading, setMentionLoading] = useState(false);
   const [showMentionDropdown, setShowMentionDropdown] = useState(false);
+  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -94,8 +98,31 @@ export function ReplyComposer({
     });
   }
 
+  async function uploadFiles(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith('image/'));
+    if (!images.length) return;
+    setUploading(true);
+    setError('');
+    try {
+      for (const file of images) {
+        const url = await uploadImageToNostrBuild(file);
+        setImageUrls((prev) => [...prev, url]);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); uploadFiles(files); }
+  }
+
   async function handlePublish() {
-    if (!content.trim() || publishing) return;
+    if ((!content.trim() && !imageUrls.length) || publishing || uploading) return;
 
     setPublishing(true);
     setError('');
@@ -104,7 +131,8 @@ export function ReplyComposer({
       const relays = getWriteRelays(relayList);
       const relayUrl = relays[0] || '';
 
-      let eventContent = content.trim();
+      const body = [content.trim(), ...imageUrls].filter(Boolean).join('\n');
+      let eventContent = body;
       let tags: string[][] = [];
 
       if (mode === 'reply') {
@@ -113,13 +141,14 @@ export function ReplyComposer({
           ['p', parentNote.pubkey],
         ];
       } else {
-        eventContent = `${content.trim()}\n${noteRef}`;
+        eventContent = `${body}\n${noteRef}`;
         tags = [
           ['q', parentNote.id],
           ['p', parentNote.pubkey],
         ];
       }
 
+      for (const url of imageUrls) tags.push(['image', url]);
       for (const pubkey of mentionedPubkeys.keys()) {
         if (!tags.some((t) => t[0] === 'p' && t[1] === pubkey)) {
           tags.push(['p', pubkey]);
@@ -143,6 +172,7 @@ export function ReplyComposer({
       if (response.error) throw new Error(response.error);
       await publishWithFeedback(response.result, mode === 'reply' ? 'Reply published!' : 'Quote published!');
       setContent('');
+      setImageUrls([]);
       onPublished?.();
       onClose();
     } catch (err) {
@@ -174,6 +204,7 @@ export function ReplyComposer({
             ref={textareaRef}
             value={content}
             onChange={handleContentChange}
+            onPaste={handlePaste}
             placeholder={placeholder}
             rows={2}
             className="w-full bg-surface-700/50 border border-surface-200/10 rounded-xl px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-white/30 resize-none"
@@ -198,14 +229,50 @@ export function ReplyComposer({
               )}
             </div>
           )}
+          {imageUrls.length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-2">
+              {imageUrls.map((url) => (
+                <div key={url} className="relative w-14 h-14 rounded-lg overflow-hidden bg-surface-700">
+                  <img src={url} alt="" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => setImageUrls((prev) => prev.filter((u) => u !== url))}
+                    className="absolute top-0.5 right-0.5 w-5 h-5 bg-black/70 rounded-full flex items-center justify-center"
+                    aria-label="Remove image"
+                  >
+                    <X className="w-3 h-3 text-white" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
-          <div className="flex items-center justify-end gap-2 mt-2">
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="flex items-center justify-center text-gray-400 hover:text-nostr disabled:opacity-50 min-w-[36px] min-h-[36px]"
+              title="Add image"
+              aria-label="Add image"
+            >
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(e) => uploadFiles([...(e.target.files || [])])}
+              className="hidden"
+            />
+            <span className="flex-1" />
             <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 min-h-[36px]">
               Cancel
             </button>
             <button
               onClick={handlePublish}
-              disabled={!content.trim() || publishing}
+              disabled={(!content.trim() && !imageUrls.length) || publishing || uploading}
               className="flex items-center gap-1 px-3 py-1.5 bg-bitcoin text-black rounded-lg text-xs font-medium disabled:opacity-50 min-h-[36px]"
             >
               {publishing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}

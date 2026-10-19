@@ -145,3 +145,7 @@
     padding-bottom: calc(1rem + var(--safe-bottom));
   }
 }
+
+/* horizontally scrolling tab rows without a visible scrollbar */
+.no-scrollbar { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

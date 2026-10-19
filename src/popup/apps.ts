@@ -10,6 +10,13 @@ export const AUDIO_APPS: EmbedApp[] = [
     description: 'Nostr audio spaces — live voice rooms',
     kind: 'audio',
   },
+  {
+    id: 'hivetalk',
+    name: 'HiveTalk',
+    url: 'https://honey.hivetalk.org/',
+    description: 'Nostr voice and video rooms — log in with Nostr, zap the speakers',
+    kind: 'audio',
+  },
 ];
 
 export const GAME_APPS: EmbedApp[] = [
