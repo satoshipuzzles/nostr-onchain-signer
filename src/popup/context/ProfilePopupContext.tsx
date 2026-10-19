@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, type ReactNode, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { ProfilePopup } from '@/popup/components/ProfilePopup';
 
 interface ProfilePopupContextType {
@@ -24,6 +25,16 @@ export function ProfilePopupProvider({ children }: { children: ReactNode }) {
   const closeProfile = useCallback(() => {
     setPubkey(null);
   }, []);
+
+  // never left stranded: going to any page closes it, and so does Escape
+  const location = useLocation();
+  useEffect(() => { setPubkey(null); }, [location.pathname, location.search]);
+  useEffect(() => {
+    if (!pubkey) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') setPubkey(null); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [pubkey]);
 
   return (
     <ProfilePopupContext.Provider value={{ openProfile, closeProfile }}>

@@ -240,13 +240,19 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200/10 flex-shrink-0">
-          <h3 className="text-sm font-semibold text-white">Profile</h3>
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-surface-200/10 flex-shrink-0">
+          <button
+            onClick={() => { onClose(); navigate(`/discover/${pubkey}`); }}
+            className="text-xs font-medium text-purple-300 hover:text-purple-200 px-2 py-2 rounded-lg hover:bg-white/5"
+          >
+            Full profile →
+          </button>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-white transition-colors p-1"
+            aria-label="Close"
+            className="text-gray-400 hover:text-white transition-colors w-10 h-10 rounded-full hover:bg-white/10 flex items-center justify-center"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
@@ -536,6 +542,12 @@ export function ProfilePopup({ pubkey, onClose }: Props) {
                     />
                   </div>
                 ))}
+                <button
+                  onClick={() => { onClose(); navigate(`/discover/${pubkey}`); }}
+                  className="w-full py-3.5 text-sm text-purple-300 hover:text-purple-200 hover:bg-white/5"
+                >
+                  See all of {displayName}'s notes →
+                </button>
               </div>
             )}
           </div>

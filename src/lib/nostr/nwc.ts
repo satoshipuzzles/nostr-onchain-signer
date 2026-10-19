@@ -204,11 +204,23 @@ export async function sendNwcPayment(
   connection: NwcConnection,
   invoice: string,
   amountMsats?: number,
-): Promise<{ preimage?: string; error?: string }> {
+): Promise<{ preimage?: string; feesPaidMsats?: number; error?: string }> {
   const params: Record<string, unknown> = { invoice };
   if (amountMsats) params.amount = amountMsats;
-  const r = await nwcRequest<{ preimage?: string }>(connection, 'pay_invoice', params, 60000);
-  return r.error ? { error: r.error } : { preimage: r.result?.preimage };
+  const r = await nwcRequest<{ preimage?: string; fees_paid?: number }>(connection, 'pay_invoice', params, 60000);
+  return r.error ? { error: r.error } : { preimage: r.result?.preimage, feesPaidMsats: r.result?.fees_paid };
+}
+
+/** What paying an invoice should cost in routing fees, before paying it. `estimate_fee` is a
+ *  non-standard method our own NWC service offers; other wallets don't, so this resolves to
+ *  null there and the caller shows the wallet's cap or a typical range instead. */
+export async function estimateNwcFee(
+  c: NwcConnection, invoice: string, info?: NwcInfo,
+): Promise<{ feeMsats: number; maxFeeMsats?: number } | { error: string } | null> {
+  if (info?.methods && !info.methods.includes('estimate_fee')) return null;
+  const r = await nwcRequest<{ fee_msat: number; max_fee_msat?: number }>(c, 'estimate_fee', { invoice }, 20000);
+  if (r.error) return /not supported|NOT_IMPLEMENTED|RESTRICTED|unknown method/i.test(r.error) ? null : { error: r.error };
+  return { feeMsats: Number(r.result?.fee_msat ?? 0), maxFeeMsats: r.result?.max_fee_msat };
 }
 
 export interface NwcInfo {
@@ -217,6 +229,8 @@ export interface NwcInfo {
   network?: string;
   block_height?: number;
   methods?: string[];
+  /** non-standard (our NWC service): the most one payment may spend on routing */
+  fee_limit_sat?: number;
 }
 
 export interface NwcTransaction {

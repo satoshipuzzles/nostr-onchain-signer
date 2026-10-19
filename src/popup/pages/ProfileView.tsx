@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo, useContext } from 'react';
+import { useState, useEffect, useMemo, useContext, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { ProfileConversations } from '@/popup/components/ProfileConversations';
-import { ArrowLeft, Copy, Check, BadgeCheck, Zap, Globe, Loader2, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Copy, Check, BadgeCheck, Zap, Globe, Loader2, MessageCircle, Home as HomeIcon, Rss } from 'lucide-react';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { type DiscoveredUser } from '@/lib/nostr/discovery';
 import { type FeedNote } from '@/lib/nostr/feed';
@@ -120,6 +121,12 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
   const [zapsLoading, setZapsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
+  // paging back through notes / replies: the events seen so far, the oldest time asked, and whether the relays ran dry
+  const foundRef = useRef<Map<string, NEvent>>(new Map());
+  const [olderLoading, setOlderLoading] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
+  const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
   const [showZapDialog, setShowZapDialog] = useState(false);
 
   const npub = pubkeyToNpub(user.pubkey);
@@ -169,7 +176,9 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
     if (!relays) return;
     if (activeTab === 'zaps' || activeTab === 'conversations') { setLoading(false); return; }
     setLoading(true);
+    setExhausted(false);
     const found = new Map<string, NEvent>();
+    foundRef.current = found;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const flush = () => {
@@ -195,7 +204,7 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
 
     const filter = activeTab === 'reactions'
       ? { kinds: [7], authors: [user.pubkey], limit: 100 }
-      : { kinds: activeTab === 'replies' ? [1, 1111] : [1], authors: [user.pubkey], limit: 80 };
+      : { kinds: activeTab === 'replies' ? [1, 1111] : [1], authors: [user.pubkey], limit: 150 };
 
     return streamQuery({
       relays,
@@ -213,6 +222,53 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
       onDone: () => { if (timer) clearTimeout(timer); flush(); setLoading(false); },
     });
   }, [activeTab, relays, user.pubkey]);
+
+  // the next page: everything they posted before the oldest one we have
+  const loadOlder = useCallback(() => {
+    if (!relays || olderLoading || exhausted || (activeTab !== 'notes' && activeTab !== 'replies')) return;
+    const have = [...foundRef.current.values()];
+    const oldest = have.length ? Math.min(...have.map((e) => e.created_at)) : Math.floor(Date.now() / 1000);
+    const tab = activeTab;
+    const found = foundRef.current;
+    setOlderLoading(true);
+    let added = 0;
+    streamQuery({
+      relays,
+      filters: [{ kinds: tab === 'replies' ? [1, 1111] : [1], authors: [user.pubkey], until: oldest - 1, limit: 150 }],
+      timeoutMs: 9000,
+      onEvent: (e) => {
+        if (e.pubkey !== user.pubkey || found.has(e.id)) return;
+        if (tab === 'notes' && parentOf(e)) { found.set(e.id, e); return; } // counts for paging, not shown
+        if (tab === 'replies' && !parentOf(e)) { found.set(e.id, e); return; }
+        primeEvent(e);
+        found.set(e.id, e);
+        added++;
+      },
+      onDone: () => {
+        if (foundRef.current !== found) return; // tab changed meanwhile
+        const shown = [...found.values()].filter((e) => (tab === 'notes' ? !parentOf(e) : !!parentOf(e))).sort((a, b) => b.created_at - a.created_at).map(toNote);
+        if (tab === 'notes') setNotes(shown); else setReplies(shown);
+        const oldestNow = Math.min(...[...found.values()].map((e) => e.created_at));
+        if (!added && !(oldestNow < oldest)) setExhausted(true);
+        setOlderLoading(false);
+      },
+    });
+  }, [relays, olderLoading, exhausted, activeTab, user.pubkey]);
+
+  // keep loading as the end of the list comes into view
+  // (a callback ref, so this attaches when the end of the list first renders)
+  useEffect(() => {
+    if (!sentinel) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting && !loading) loadOlder(); }, { rootMargin: '600px' });
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [sentinel, loadOlder, loading]);
+
+  // Back goes back when there is somewhere to go, otherwise to the feed
+  const goBack = () => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    if (idx > 0) onBack(); else navigate('/feed');
+  };
 
   const listed = activeTab === 'notes' ? notes : activeTab === 'replies' ? replies : [];
   const listedIds = useMemo(() => listed.map((n) => n.id).slice(0, 100), [listed]);
@@ -237,7 +293,18 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
 
   return (
     <SelectNoteContext.Provider value={setSelectedNote}>
-    <div className="h-full flex flex-col overflow-y-auto pb-24">
+    <div className="min-h-full flex flex-col pb-8">
+      {/* Always-there way out: back, plus Feed and Home */}
+      {!guest && (
+        <div className="sticky top-0 z-30 flex items-center gap-1 px-2 py-1.5 bg-black/80 backdrop-blur-md border-b border-white/5">
+          <button onClick={goBack} className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg hover:bg-white/10 text-sm text-white min-h-[40px]" aria-label="Back">
+            <ArrowLeft className="w-5 h-5" /> Back
+          </button>
+          <span className="flex-1 truncate text-sm text-gray-400 text-center">{profile?.displayName || profile?.name || ''}</span>
+          <button onClick={() => navigate('/feed')} className="p-2.5 rounded-lg hover:bg-white/10 text-gray-300" aria-label="Feed" title="Feed"><Rss className="w-5 h-5" /></button>
+          <button onClick={() => navigate('/')} className="p-2.5 rounded-lg hover:bg-white/10 text-gray-300" aria-label="Home" title="Home"><HomeIcon className="w-5 h-5" /></button>
+        </div>
+      )}
       {/* Banner / Header */}
       <div className="relative">
         {profile?.banner ? (
@@ -245,12 +312,14 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
         ) : (
           <div className="w-full h-24 bg-gradient-to-br from-bitcoin/20 to-nostr/20" />
         )}
-        <button
-          onClick={onBack}
-          className="absolute top-3 left-3 btn-back bg-black/60 backdrop-blur"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
+        {guest && (
+          <button
+            onClick={onBack}
+            className="absolute top-3 left-3 btn-back bg-black/60 backdrop-blur"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       {/* Avatar */}
@@ -440,6 +509,17 @@ export function ProfileView({ user, isFollowing, onFollow, onUnfollow, onBack, o
                   />
                 </div>
               ))
+            )}
+            {listed.length > 0 && (
+              <div ref={setSentinel} className="py-5 text-center">
+                {olderLoading ? (
+                  <Loader2 className="w-5 h-5 text-nostr animate-spin inline" />
+                ) : exhausted ? (
+                  <p className="text-[11px] text-gray-600">That's everything their relays have · {listed.length} {activeTab === 'notes' ? 'notes' : 'replies'}</p>
+                ) : (
+                  <button onClick={loadOlder} className="text-xs text-purple-300 hover:text-purple-200 px-4 py-2">Load older</button>
+                )}
+              </div>
             )}
           </div>
         )}

@@ -4,7 +4,7 @@ import { generateSecretKey, finalizeEvent } from 'nostr-tools/pure';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
-import { loadNwcConnection, sendNwcPayment, type LightningChain } from '@/lib/nostr/nwc';
+import { loadNwcConnection, sendNwcPayment, getNwcInfo, estimateNwcFee, type LightningChain } from '@/lib/nostr/nwc';
 import {
   fetchLnurlPayInfo,
   requestZapInvoice,
@@ -32,7 +32,17 @@ const ZAP_AMOUNTS = [21, 100, 420, 1000, 5000, 10000];
 const ONCHAIN_AMOUNTS = [1000, 5000, 10000, 21000, 50000, 100000];
 
 type Rail = 'xbt' | 'btc' | 'onchain';
-type ZapStatus = 'idle' | 'fetching' | 'paying' | 'invoice' | 'success' | 'error';
+type ZapStatus = 'idle' | 'fetching' | 'review' | 'paying' | 'invoice' | 'success' | 'error';
+
+/** A zap that is ready to pay, waiting for the user to see the fee and confirm. */
+interface PendingZap {
+  invoice: string;
+  nwc: NonNullable<Awaited<ReturnType<typeof loadNwcConnection>>>;
+  /** null = the wallet can't quote; then capMsats (if known) is the most it may cost */
+  feeMsats: number | null;
+  capMsats?: number;
+  feeError?: string;
+}
 
 function isOnchainAddress(a?: string): a is string {
   return !!a && /^(bc1[02-9ac-hj-np-z]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/i.test(a.trim());
@@ -46,6 +56,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   const [onchainAmount, setOnchainAmount] = useState(10000);
   const [comment, setComment] = useState('');
   const [status, setStatus] = useState<ZapStatus>('idle');
+  const [pending, setPending] = useState<PendingZap | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [invoice, setInvoice] = useState('');
   const [copied, setCopied] = useState('');
@@ -258,10 +269,27 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       return;
     }
 
+    // Before any money moves, show what it costs: the zap plus the routing fee
+    setStatusMessage('Checking the network fee...');
+    const info = await getNwcInfo(nwc).catch(() => ({ result: undefined } as Awaited<ReturnType<typeof getNwcInfo>>));
+    const est = await estimateNwcFee(nwc, invoiceResult.invoice, info.result).catch(() => null);
+    const cap = info.result?.fee_limit_sat != null ? info.result.fee_limit_sat * 1000 : undefined;
+    setPending({
+      invoice: invoiceResult.invoice,
+      nwc,
+      feeMsats: est && 'feeMsats' in est ? est.feeMsats : null,
+      capMsats: est && 'maxFeeMsats' in est && est.maxFeeMsats ? est.maxFeeMsats : cap,
+      feeError: est && 'error' in est ? est.error : undefined,
+    });
+    setStatus('review');
+  }
+
+  async function confirmZap() {
+    if (!pending) return;
     setStatus('paying');
     setStatusMessage(`Paying on ${lnChain.toUpperCase()} Lightning...`);
 
-    const payResult = await sendNwcPayment(nwc, invoiceResult.invoice);
+    const payResult = await sendNwcPayment(pending.nwc, pending.invoice);
     if (payResult.error) {
       setStatus('error');
       setStatusMessage(
@@ -272,9 +300,11 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       return;
     }
 
+    const paidFee = payResult.feesPaidMsats != null ? Math.ceil(payResult.feesPaidMsats / 1000) : null;
     setStatus('success');
-    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!`);
-    setTimeout(onClose, 2000);
+    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!${paidFee != null ? ` Network fee: ${paidFee.toLocaleString()} sat${paidFee === 1 ? '' : 's'}.` : ''}`);
+    setPending(null);
+    setTimeout(onClose, 2600);
   }
 
   const displayName =
@@ -481,6 +511,43 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
             )}
           </>
         )}
+
+        {status === 'review' && pending && (() => {
+          const feeSats = pending.feeMsats != null ? Math.ceil(pending.feeMsats / 1000) : null;
+          const capSats = pending.capMsats != null ? Math.ceil(pending.capMsats / 1000) : null;
+          const pct = (n: number) => (amount ? ` (${((n / amount) * 100).toFixed(n / amount < 0.01 ? 2 : 1)}%)` : '');
+          return (
+            <div className="py-1">
+              <p className="text-xs text-gray-400 mb-3 text-center">Review before it's sent. Nothing has been paid yet.</p>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] divide-y divide-white/5 text-sm">
+                <div className="flex justify-between px-3 py-2.5"><span className="text-gray-400">Zap to {displayName}</span><b>{amount.toLocaleString()} sats</b></div>
+                <div className="flex justify-between px-3 py-2.5">
+                  <span className="text-gray-400">Network fee</span>
+                  <span className="text-right">
+                    {feeSats != null
+                      ? <b>~{feeSats.toLocaleString()} sat{feeSats === 1 ? '' : 's'}{pct(feeSats)}</b>
+                      : <span className="text-gray-300">{capSats != null ? `up to ${capSats.toLocaleString()} sats` : 'set by your wallet'}</span>}
+                    {feeSats != null && capSats != null && <span className="block text-[10px] text-gray-500">never more than {capSats.toLocaleString()}</span>}
+                  </span>
+                </div>
+                <div className="flex justify-between px-3 py-2.5 bg-white/[0.03]">
+                  <span className="text-gray-300 font-medium">Total</span>
+                  <b className="text-bitcoin">
+                    {feeSats != null ? `~${(amount + feeSats).toLocaleString()}` : capSats != null ? `at most ${(amount + capSats).toLocaleString()}` : `${amount.toLocaleString()} + fee`} sats
+                  </b>
+                </div>
+              </div>
+              {pending.feeError && <p className="text-[11px] text-amber-300/90 mt-2">Couldn't estimate the fee ({pending.feeError}). The payment may still find a route.</p>}
+              {feeSats == null && !pending.feeError && <p className="text-[11px] text-gray-500 mt-2">Your wallet doesn't quote fees ahead of time; Lightning routing usually costs under 1%.</p>}
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => { setPending(null); setStatus('idle'); }} className="flex-1 py-2.5 rounded-xl text-sm bg-surface-700 text-gray-200 hover:bg-surface-600">Cancel</button>
+                <button onClick={confirmZap} className="flex-[2] py-2.5 rounded-xl text-sm font-semibold bg-bitcoin text-black hover:bg-bitcoin/90 flex items-center justify-center gap-1.5">
+                  <Zap className="w-4 h-4" /> Zap {amount.toLocaleString()} sats
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {(status === 'fetching' || status === 'paying') && (
           <div className="flex flex-col items-center py-6">
