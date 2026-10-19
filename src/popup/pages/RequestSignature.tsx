@@ -119,6 +119,7 @@ export function RequestSignature({ wallet, publicKey, onDone, onBack, initialRec
         signer_pubkeys: signerPubkeys,
         amount_sats: amount,
         recipient,
+        chain,
       };
 
       const signUrl = `${appOrigin()}/sign/${round.id}`;

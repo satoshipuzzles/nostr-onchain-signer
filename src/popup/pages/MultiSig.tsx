@@ -4,6 +4,7 @@ import { createMultisigFromPubkeys, type MultisigWallet } from '@/lib/bitcoin/mu
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { saveMultisigWallet, createArchivedMultisig, addressFingerprint, type KeyHolder } from '@/lib/bitcoin/wallet-store';
 import { fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
+import { CHAIN_INFO, type Chain } from '@/lib/bitcoin/chain';
 import {
   ArrowLeft, Users, Check, Loader2, Search, Shield, Copy,
   BadgeCheck, Zap,
@@ -30,6 +31,8 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
   const [searchQuery, setSearchQuery] = useState('');
   const [result, setResult] = useState<{ address: string; threshold: number; total: number; wallet: MultisigWallet } | null>(null);
   const [walletName, setWalletName] = useState('');
+  // XBT (the BLAKE2b chain) first and by default
+  const [chain, setChain] = useState<Chain>('xbt');
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -198,14 +201,14 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
           ? Array.from(wallet.merkleRoot).map(b => b.toString(16).padStart(2, '0')).join('')
           : String(wallet.merkleRoot ?? ''),
       };
-      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, trimmedName, undefined, publicKey);
+      const archived = createArchivedMultisig(serializableWallet as any, keyHolders, trimmedName, undefined, publicKey, chain);
       await saveMultisigWallet(archived);
 
       setResult({ address: wallet.address, threshold, total: allKeys.length, wallet });
       setStep('result');
 
       // Fetch balance in background (don't block UI)
-      fetchBalance(wallet.address).then(bal => {
+      fetchBalance(wallet.address, { chain }).then(bal => {
         if (bal.total > 0) {
           archived.currentBalance = bal.total;
           saveMultisigWallet(archived).catch(() => {});
@@ -247,14 +250,14 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
             {walletName.trim()}
           </p>
           <p className="text-sm text-gray-400 mb-1">
-            {result.threshold}-of-{result.total} Social Multi-Sig
+            {result.threshold}-of-{result.total} Social Multi-Sig on <b className={chain === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}>{CHAIN_INFO[chain].ticker}</b>
           </p>
           <p className="text-[10px] text-gray-600 mb-6 font-mono">
             ID {addressFingerprint(result.address)}
           </p>
 
           <div className="card w-full">
-            <p className="text-xs text-gray-400 mb-2">Taproot Address</p>
+            <p className="text-xs text-gray-400 mb-2">Taproot address · deposit {CHAIN_INFO[chain].ticker} here</p>
             <div className="flex items-center gap-2">
               <code className="text-xs text-green-300 break-all flex-1 leading-relaxed">
                 {result.address}
@@ -400,6 +403,31 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
         </label>
 
         <div className="card mb-4">
+          <p className="text-xs text-gray-400 mb-2">Chain</p>
+          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Chain">
+            {(['xbt', 'btc'] as Chain[]).map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setChain(c)}
+                aria-pressed={chain === c}
+                className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                  chain === c
+                    ? c === 'xbt' ? 'border-purple-400/70 bg-purple-500/15' : 'border-bitcoin bg-bitcoin/10'
+                    : 'border-surface-200/20 hover:border-white/30'
+                }`}
+              >
+                <span className={`block text-sm font-semibold ${c === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}`}>{CHAIN_INFO[c].ticker}</span>
+                <span className="block text-[10px] text-gray-500">{c === 'xbt' ? 'BLAKE2b chain' : 'SHA-256 chain'}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-600 mt-2">
+            The address is the same on both chains; this sets where the wallet shows its balance and spends.
+          </p>
+        </div>
+
+        <div className="card mb-4">
           <label className="text-xs text-gray-400 mb-1 block">Wallet Name (required)</label>
           <input
             value={walletName}
@@ -416,7 +444,7 @@ export function MultiSig({ publicKey, followingPubkeys, onBack, onCreated }: Pro
         <div className="mt-auto pb-24 md:pb-0">
           <button onClick={handleCreate} disabled={saving || !walletName.trim()} className="btn-primary w-full flex items-center justify-center gap-2">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-            {saving ? 'Creating...' : `Create ${threshold}-of-${totalKeys} Multi-Sig`}
+            {saving ? 'Creating...' : `Create ${threshold}-of-${totalKeys} ${CHAIN_INFO[chain].ticker} Multi-Sig`}
           </button>
         </div>
       </div>

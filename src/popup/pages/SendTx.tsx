@@ -12,7 +12,7 @@ import { encodeCustomOpReturn, encodeInvoiceOpReturn } from '@/lib/bitcoin/opret
 import { checkOpReturnCompliance, BIP110_MAX_OP_RETURN_SCRIPT } from '@/lib/bitcoin/bip110';
 import { loadBitcoinNodeConfig } from '@/lib/bitcoin/node';
 import { detectBitcoinSigners, tryExternalPsbtSign, promptExtensionAccess, type BitcoinSignerSource } from '@/lib/bitcoin/psbt-external-sign';
-import { loadMultisigWallets, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
+import { loadMultisigWallets, multisigChain, type ArchivedMultisig } from '@/lib/bitcoin/wallet-store';
 import { useAuth } from '../context/AuthContext';
 import { RecipientPicker } from '../components/RecipientPicker';
 
@@ -833,12 +833,13 @@ export function SendTx({ publicKey, onBack }: Props) {
               <button
                 key={w.id}
                 type="button"
-                onClick={() => { setSenderSource(w.id); setShowSenderPicker(false); }}
+                // a vault is used on its own chain, so picking it switches to that chain
+                onClick={() => { setSenderSource(w.id); setChain(multisigChain(w)); setShowSenderPicker(false); }}
                 className={`w-full text-left p-2 rounded-lg transition-colors ${senderSource === w.id ? 'bg-purple-500/10 border border-purple-500/30' : 'hover:bg-surface-700'}`}
               >
                 <p className="text-xs font-medium text-gray-200">{w.name || 'Multisig'}</p>
                 <p className="text-[10px] text-gray-500">
-                  {w.wallet.config.threshold}-of-{w.wallet.config.pubkeys.length}
+                  {w.wallet.config.threshold}-of-{w.wallet.config.pubkeys.length} · {multisigChain(w).toUpperCase()}
                 </p>
                 <p className="text-[10px] font-mono text-gray-500 truncate">{w.wallet.address}</p>
               </button>

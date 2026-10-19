@@ -8,14 +8,17 @@ import { useAuth } from '../context/AuthContext';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats, getCachedBalance } from '@/lib/bitcoin/mempool';
 import {
-  loadMyMultisigWallets, updateMultisigBalance,
+  loadMyMultisigWallets, updateMultisigBalance, multisigChain,
   getPersonalWalletLabel, addressFingerprint,
   type ArchivedMultisig,
 } from '@/lib/bitcoin/wallet-store';
+import { ChainBadge } from '@/popup/components/ChainBadge';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonWalletList } from '@/popup/components/Skeleton';
 import { log } from '@/lib/utils/logger';
-import { loadNwcConnection, getNwcBalance } from '@/lib/nostr/nwc';
+import { loadNwcConnection, getNwcBalance, type LightningChain } from '@/lib/nostr/nwc';
+
+const LN_CHAINS: LightningChain[] = ['xbt', 'btc'];
 
 export function Wallets() {
   const navigate = useNavigate();
@@ -28,8 +31,9 @@ export function Wallets() {
   const [copied, setCopied] = useState(false);
   const [personalLabel, setPersonalLabel] = useState('Personal Wallet');
   const fetchGenRef = useRef(0);
-  // XBT Lightning balance via NWC: undefined while loading, null when no wallet is connected
-  const [lnSats, setLnSats] = useState<number | null | undefined>(undefined);
+  // Lightning balances via NWC, per chain: undefined while loading, null when no wallet is
+  // connected, 'error' when connected but not answering
+  const [lnSats, setLnSats] = useState<Record<LightningChain, number | null | 'error' | undefined>>({ xbt: undefined, btc: undefined });
 
   const address = pubkeyToTaprootAddress(publicKey);
 
@@ -38,11 +42,13 @@ export function Wallets() {
   }, [publicKey]);
 
   useEffect(() => {
-    loadNwcConnection('xbt').then(async (conn) => {
-      if (!conn) { setLnSats(null); return; }
-      const b = await getNwcBalance(conn);
-      setLnSats(b.msats !== undefined ? Math.floor(b.msats / 1000) : null);
-    });
+    for (const c of LN_CHAINS) {
+      loadNwcConnection(c).then(async (conn) => {
+        if (!conn) { setLnSats((s) => ({ ...s, [c]: null })); return; }
+        const b = await getNwcBalance(conn).catch(() => ({ msats: undefined }));
+        setLnSats((s) => ({ ...s, [c]: b.msats !== undefined ? Math.floor(b.msats / 1000) : 'error' }));
+      }).catch(() => setLnSats((s) => ({ ...s, [c]: null })));
+    }
   }, []);
 
   async function loadData() {
@@ -90,7 +96,7 @@ export function Wallets() {
       for (const wallet of all) {
         if (gen !== fetchGenRef.current) return;
         try {
-          const wbal = await fetchBalance(wallet.wallet.address);
+          const wbal = await fetchBalance(wallet.wallet.address, { chain: multisigChain(wallet) });
           if (wbal.total !== wallet.currentBalance || wbal.cached) {
             if (!wbal.error || wbal.cached) {
               await updateMultisigBalance(wallet.id, wbal.total);
@@ -152,21 +158,33 @@ export function Wallets() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3">
-          <button
-            onClick={() => navigate('/lightning')}
-            className="card w-full text-left hover:opacity-90 transition-opacity flex items-center gap-3"
-          >
-            <div className="w-10 h-10 rounded-xl bg-bitcoin/15 flex items-center justify-center flex-shrink-0">
-              <Zap className="w-5 h-5 text-bitcoin" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">XBT Lightning</p>
-              <p className="text-xs text-gray-500">
-                {lnSats === undefined ? 'Checking…' : lnSats === null ? 'Connect a wallet to scan, pay and zap' : `${lnSats.toLocaleString()} sats · scan, pay, receive`}
-              </p>
-            </div>
-            <ChevronRight className="w-4 h-4 text-gray-500" />
-          </button>
+          {LN_CHAINS.map((c) => {
+            const v = lnSats[c];
+            const xbt = c === 'xbt';
+            return (
+              <button
+                key={c}
+                onClick={() => navigate(`/lightning?chain=${c}`)}
+                className="card w-full text-left hover:opacity-90 transition-opacity flex items-center gap-3"
+              >
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${xbt ? 'bg-purple-500/15' : 'bg-bitcoin/15'}`}>
+                  <Zap className={`w-5 h-5 ${xbt ? 'text-purple-300' : 'text-bitcoin'}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium flex items-center gap-2">{xbt ? 'XBT' : 'BTC'} Lightning <ChainBadge chain={c} /></p>
+                  <p className="text-xs text-gray-500">
+                    {v === undefined ? 'Checking…' : v === null ? 'Not connected · tap to connect a wallet' : v === 'error' ? 'Connected · wallet not answering' : 'Scan, pay, receive and zap'}
+                  </p>
+                </div>
+                {typeof v === 'number' ? (
+                  <p className={`text-sm font-bold flex-shrink-0 ${v > 0 ? (xbt ? 'text-purple-300' : 'text-bitcoin') : 'text-gray-400'}`}>{formatSats(v)}</p>
+                ) : v === null ? (
+                  <span className="text-[11px] font-medium text-purple-200 bg-purple-500/20 px-2 py-1 rounded-lg flex-shrink-0">Connect</span>
+                ) : null}
+                <ChevronRight className="w-4 h-4 text-gray-500 flex-shrink-0" />
+              </button>
+            );
+          })}
           <div className="card">
             <button
               onClick={() => navigate('/wallets/personal')}
@@ -248,7 +266,8 @@ export function Wallets() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium truncate">{wallet.name}</p>
-                            <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
+                            <ChainBadge chain={multisigChain(wallet)} />
+                            <span className="text-[10px] bg-white/5 text-gray-300 px-1.5 py-0.5 rounded font-mono">
                               {wallet.wallet.config.threshold}/{wallet.wallet.config.pubkeys.length}
                             </span>
                           </div>

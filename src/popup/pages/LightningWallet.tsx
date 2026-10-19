@@ -154,7 +154,10 @@ export function LightningWallet() {
   }, []);
 
   useEffect(() => {
-    Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')]).then(([x, b]) => {
+    // /lightning?chain=btc (from the Wallets tab) opens that wallet; otherwise XBT first
+    const asked = params.get('chain');
+    if (asked === 'xbt' || asked === 'btc') setChain(asked);
+    else Promise.all([loadNwcConnection('xbt'), loadNwcConnection('btc')]).then(([x, b]) => {
       // XBT first, like everywhere else in the suite
       setChain(x || !b ? 'xbt' : 'btc');
     });

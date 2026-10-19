@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
 import { fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
-import { loadMyMultisigWallets } from '@/lib/bitcoin/wallet-store';
+import { loadMyMultisigWallets, multisigChain } from '@/lib/bitcoin/wallet-store';
 import { loadSigningRounds, type SigningRound } from '@/lib/bitcoin/signing-round';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { log } from '@/lib/utils/logger';
@@ -18,6 +18,8 @@ interface DashboardCache {
   balance: number;
   multisigCount: number;
   multisigTotalSats: number;
+  /** the same total split by chain; each vault counts on its own chain */
+  multisigByChain?: { xbt: number; btc: number };
   pendingSignatures: number;
   /** Lightning balances in sats; undefined = no wallet connected, null = not answering */
   ln?: Partial<Record<LightningChain, number | null>>;
@@ -46,6 +48,7 @@ export function Home() {
   const [pendingSignatures, setPendingSignatures] = useState(0);
   const [multisigCount, setMultisigCount] = useState(0);
   const [multisigTotalSats, setMultisigTotalSats] = useState(0);
+  const [multisigByChain, setMultisigByChain] = useState<{ xbt: number; btc: number }>({ xbt: 0, btc: 0 });
   const [copied, setCopied] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -63,6 +66,7 @@ export function Home() {
     setBalance(cache.balance);
     setMultisigCount(cache.multisigCount);
     setMultisigTotalSats(cache.multisigTotalSats);
+    if (cache.multisigByChain) setMultisigByChain(cache.multisigByChain);
     setPendingSignatures(cache.pendingSignatures);
     if (cache.ln) setLn(cache.ln);
   }, []);
@@ -92,6 +96,9 @@ export function Home() {
       const wallets = await loadMyMultisigWallets(publicKey);
       const walletCount = wallets.length;
       const cachedTotal = wallets.reduce((sum, w) => sum + (w.currentBalance || 0), 0);
+      const byChain = { xbt: 0, btc: 0 };
+      for (const w of wallets) byChain[multisigChain(w)] += w.currentBalance || 0;
+      setMultisigByChain(byChain);
       setMultisigCount(walletCount);
       setMultisigTotalSats(cachedTotal);
 
@@ -121,6 +128,7 @@ export function Home() {
         balance: bal.error && !bal.cached && balance !== null ? balance : bal.total,
         multisigCount: walletCount,
         multisigTotalSats: cachedTotal,
+        multisigByChain: byChain,
         pendingSignatures: pending.length,
         updatedAt: Date.now(),
       };
@@ -330,7 +338,9 @@ export function Home() {
           </div>
           <p className="text-xl font-bold text-white">{multisigCount}</p>
           <p className="text-[10px] text-gray-500 mt-1">
-            {multisigTotalSats > 0 ? formatSats(multisigTotalSats) + ' total' : 'Wallets'}
+            {multisigTotalSats > 0
+              ? [multisigByChain.xbt > 0 && `${formatSats(multisigByChain.xbt)} XBT`, multisigByChain.btc > 0 && `${formatSats(multisigByChain.btc)} BTC`].filter(Boolean).join(' · ') || formatSats(multisigTotalSats) + ' total'
+              : 'Wallets'}
           </p>
         </button>
       </div>

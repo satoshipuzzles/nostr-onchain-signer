@@ -10,9 +10,9 @@ export function MultisigVaultWrapper() {
     <MultisigVaultPage
       publicKey={publicKey}
       onCreateNew={() => navigate('/wallets/create')}
-      onRequestSignature={(wallet) => {
+      onRequestSignature={(wallet, chain) => {
         setSelectedMultisigWallet(wallet);
-        navigate('/wallets/sign');
+        navigate(`/wallets/sign?chain=${chain}`);
       }}
       onBack={() => navigate(-1)}
     />
