@@ -42,6 +42,8 @@ interface PendingZap {
   feeMsats: number | null;
   capMsats?: number;
   feeError?: string;
+  /** paying a BTC invoice from the XBT wallet through the bridge */
+  bridge?: { costMsats: number; maxCostMsats: number; spread?: number };
 }
 
 function isOnchainAddress(a?: string): a is string {
@@ -63,6 +65,8 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   // Which Lightning wallets are connected; null while loading
   const [wallets, setWallets] = useState<Record<LightningChain, boolean> | null>(null);
   const [rail, setRail] = useState<Rail>('xbt');
+  // Which of the user's wallets pays. A BTC zap can come from the XBT wallet through the bridge.
+  const [payFromPick, setPayFromPick] = useState<LightningChain | null>(null);
   const [onchainChain, setOnchainChain] = useState<Chain>('xbt');
   // Which network the recipient's plain lud16 is actually on (see lightning-chain.ts)
   const [lud16Chain, setLud16Chain] = useState<LnChain | 'checking' | 'unknown' | null>(null);
@@ -103,6 +107,10 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
   if (wallets === null) return null;
 
   const lnChain: LightningChain = rail === 'btc' ? 'btc' : 'xbt';
+  // BTC zaps: the BTC wallet by default, else the XBT wallet via the bridge. XBT zaps need the XBT wallet
+  // (the bridge here only converts XBT into BTC).
+  const payFrom: LightningChain = lnChain === 'xbt' ? 'xbt' : (payFromPick ?? (wallets.btc ? 'btc' : wallets.xbt ? 'xbt' : 'btc'));
+  const viaBridge = lnChain === 'btc' && payFrom === 'xbt';
   // XBT zaps go to the XBT Lightning address. Without one, the regular address
   // is used only if its invoices carry the BLAKE2b flag, i.e. it is an XBT node.
   const xbtFallback = rail === 'xbt' && !profile?.lud16Xbt;
@@ -259,7 +267,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
       return;
     }
 
-    const nwc = payWithWallet ? await loadNwcConnection(lnChain) : null;
+    const nwc = payWithWallet ? await loadNwcConnection(payFrom) : null;
     if (!nwc) {
       // No connected wallet: hand over the invoice to pay from any wallet
       setInvoice(invoiceResult.invoice);
@@ -274,9 +282,15 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     const info = await getNwcInfo(nwc).catch(() => ({ result: undefined } as Awaited<ReturnType<typeof getNwcInfo>>));
     const est = await estimateNwcFee(nwc, invoiceResult.invoice, info.result).catch(() => null);
     const cap = info.result?.fee_limit_sat != null ? info.result.fee_limit_sat * 1000 : undefined;
+    if (viaBridge && !(est && 'bridge' in est && est.bridge)) {
+      setStatus('error');
+      setStatusMessage(est && 'error' in est ? est.error : 'Your XBT wallet cannot pay BTC invoices (no bridge set up on it). Nothing was sent.');
+      return;
+    }
     setPending({
       invoice: invoiceResult.invoice,
       nwc,
+      bridge: est && 'bridge' in est && est.bridge ? est.bridge : undefined,
       feeMsats: est && 'feeMsats' in est ? est.feeMsats : null,
       capMsats: est && 'maxFeeMsats' in est && est.maxFeeMsats ? est.maxFeeMsats : cap,
       feeError: est && 'error' in est ? est.error : undefined,
@@ -289,7 +303,8 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     setStatus('paying');
     setStatusMessage(`Paying on ${lnChain.toUpperCase()} Lightning...`);
 
-    const payResult = await sendNwcPayment(pending.nwc, pending.invoice);
+    // a bridge payment waits for the bridge to pay the BTC side, which can take a while over Tor
+    const payResult = await sendNwcPayment(pending.nwc, pending.invoice, undefined, pending.bridge ? 200000 : 60000);
     if (payResult.error) {
       setStatus('error');
       setStatusMessage(
@@ -302,14 +317,16 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
 
     const paidFee = payResult.feesPaidMsats != null ? Math.ceil(payResult.feesPaidMsats / 1000) : null;
     setStatus('success');
-    setStatusMessage(`Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!${paidFee != null ? ` Network fee: ${paidFee.toLocaleString()} sat${paidFee === 1 ? '' : 's'}.` : ''}`);
+    setStatusMessage(pending.bridge
+      ? `Zapped ${amount.toLocaleString()} BTC sats, paid with ${Math.ceil((payResult.costMsats ?? pending.bridge.costMsats) / 1000).toLocaleString()} XBT sats through the bridge!`
+      : `Zapped ${amount.toLocaleString()} sats on ${lnChain.toUpperCase()}!${paidFee != null ? ` Network fee: ${paidFee.toLocaleString()} sat${paidFee === 1 ? '' : 's'}.` : ''}`);
     setPending(null);
     setTimeout(onClose, 2600);
   }
 
   const displayName =
     profile?.displayName || profile?.name || recipientPubkey.slice(0, 12);
-  const hasWallet = wallets[lnChain];
+  const hasWallet = wallets[payFrom];
   const onchainBtc = (onchainAmount / 1e8).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
 
   const railBtn = (r: Rail, label: string) => (
@@ -367,6 +384,16 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
                   </div>
                 )}
 
+                {lnChain === 'btc' && wallets.xbt && (
+                  <div className="flex items-center gap-2 mb-3 text-[11px]">
+                    <span className="text-gray-500">Pay from</span>
+                    <div className="flex rounded-lg bg-surface-700 p-0.5 font-medium">
+                      <button onClick={() => setPayFromPick('btc')} disabled={!wallets.btc} className={`px-2.5 py-1 rounded-md disabled:opacity-40 ${payFrom === 'btc' ? 'bg-bitcoin text-black' : 'text-gray-400'}`}>BTC wallet</button>
+                      <button onClick={() => setPayFromPick('xbt')} className={`px-2.5 py-1 rounded-md ${payFrom === 'xbt' ? 'bg-purple-500 text-white' : 'text-gray-400'}`}>XBT wallet · bridge</button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-2 mb-4">
                   {ZAP_AMOUNTS.map((a) => (
                     <button
@@ -398,7 +425,7 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
                     className="w-full py-2.5 bg-bitcoin text-black rounded-lg text-sm font-semibold hover:bg-bitcoin/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40 mb-2"
                   >
                     <Wallet className="w-4 h-4" />
-                    Zap {amount.toLocaleString()} sats from my {lnChain.toUpperCase()} wallet
+                    {viaBridge ? `Zap ${amount.toLocaleString()} BTC sats from my XBT wallet` : `Zap ${amount.toLocaleString()} sats from my ${lnChain.toUpperCase()} wallet`}
                   </button>
                 )}
                 <button
@@ -512,7 +539,32 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
           </>
         )}
 
-        {status === 'review' && pending && (() => {
+        {status === 'review' && pending && pending.bridge && (() => {
+          const cost = Math.ceil(pending.bridge.costMsats / 1000);
+          const most = Math.ceil(pending.bridge.maxCostMsats / 1000);
+          return (
+            <div className="py-1">
+              <p className="text-xs text-gray-400 mb-3 text-center">Paid from your <b className="text-purple-300">XBT</b> wallet through the bridge, which pays their <b className="text-bitcoin">BTC</b> invoice. Nothing has been paid yet.</p>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] divide-y divide-white/5 text-sm">
+                <div className="flex justify-between px-3 py-2.5"><span className="text-gray-400">{displayName} gets</span><b>{amount.toLocaleString()} BTC sats</b></div>
+                <div className="flex justify-between px-3 py-2.5"><span className="text-gray-400">Bridge fee</span><span>{pending.bridge.spread != null ? `${(pending.bridge.spread * 100).toFixed(1)}%` : 'included'}</span></div>
+                <div className="flex justify-between px-3 py-2.5 bg-white/[0.03]">
+                  <span className="text-gray-300 font-medium">You pay</span>
+                  <span className="text-right"><b className="text-purple-300">~{cost.toLocaleString()} XBT sats</b><span className="block text-[10px] text-gray-500">never more than {most.toLocaleString()} incl. routing</span></span>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-500 mt-2">If the bridge can't pay their invoice, your XBT comes back.</p>
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => { setPending(null); setStatus('idle'); }} className="flex-1 py-2.5 rounded-xl text-sm bg-surface-700 text-gray-200 hover:bg-surface-600">Cancel</button>
+                <button onClick={confirmZap} className="flex-[2] py-2.5 rounded-xl text-sm font-semibold bg-bitcoin text-black hover:bg-bitcoin/90 flex items-center justify-center gap-1.5">
+                  <Zap className="w-4 h-4" /> Pay {cost.toLocaleString()} XBT
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
+        {status === 'review' && pending && !pending.bridge && (() => {
           const feeSats = pending.feeMsats != null ? Math.ceil(pending.feeMsats / 1000) : null;
           const capSats = pending.capMsats != null ? Math.ceil(pending.capMsats / 1000) : null;
           const pct = (n: number) => (amount ? ` (${((n / amount) * 100).toFixed(n / amount < 0.01 ? 2 : 1)}%)` : '');

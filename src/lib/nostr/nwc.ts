@@ -204,23 +204,36 @@ export async function sendNwcPayment(
   connection: NwcConnection,
   invoice: string,
   amountMsats?: number,
-): Promise<{ preimage?: string; feesPaidMsats?: number; error?: string }> {
+  timeoutMs = 60000,
+): Promise<{ preimage?: string; feesPaidMsats?: number; costMsats?: number; error?: string }> {
   const params: Record<string, unknown> = { invoice };
   if (amountMsats) params.amount = amountMsats;
-  const r = await nwcRequest<{ preimage?: string; fees_paid?: number }>(connection, 'pay_invoice', params, 60000);
-  return r.error ? { error: r.error } : { preimage: r.result?.preimage, feesPaidMsats: r.result?.fees_paid };
+  const r = await nwcRequest<{ preimage?: string; fees_paid?: number; cost_msat?: number }>(connection, 'pay_invoice', params, timeoutMs);
+  return r.error ? { error: r.error } : { preimage: r.result?.preimage, feesPaidMsats: r.result?.fees_paid, costMsats: r.result?.cost_msat };
 }
 
 /** What paying an invoice should cost in routing fees, before paying it. `estimate_fee` is a
  *  non-standard method our own NWC service offers; other wallets don't, so this resolves to
  *  null there and the caller shows the wallet's cap or a typical range instead. */
+export interface FeeEstimate {
+  feeMsats: number;
+  maxFeeMsats?: number;
+  /** Set when an XBT wallet will pay a BTC invoice through a bridge: what leaves the wallet, in XBT */
+  bridge?: { costMsats: number; maxCostMsats: number; btcMsats: number; rate?: number; spread?: number };
+}
+
 export async function estimateNwcFee(
   c: NwcConnection, invoice: string, info?: NwcInfo,
-): Promise<{ feeMsats: number; maxFeeMsats?: number } | { error: string } | null> {
+): Promise<FeeEstimate | { error: string } | null> {
   if (info?.methods && !info.methods.includes('estimate_fee')) return null;
-  const r = await nwcRequest<{ fee_msat: number; max_fee_msat?: number }>(c, 'estimate_fee', { invoice }, 20000);
+  const r = await nwcRequest<{ fee_msat: number; max_fee_msat?: number; bridge?: boolean; cost_msat?: number; max_cost_msat?: number; btc_msat?: number; rate?: number; spread?: number }>(c, 'estimate_fee', { invoice }, 60000);
   if (r.error) return /not supported|NOT_IMPLEMENTED|RESTRICTED|unknown method/i.test(r.error) ? null : { error: r.error };
-  return { feeMsats: Number(r.result?.fee_msat ?? 0), maxFeeMsats: r.result?.max_fee_msat };
+  const x = r.result;
+  return {
+    feeMsats: Number(x?.fee_msat ?? 0),
+    maxFeeMsats: x?.max_fee_msat,
+    bridge: x?.bridge ? { costMsats: Number(x.cost_msat), maxCostMsats: Number(x.max_cost_msat), btcMsats: Number(x.btc_msat), rate: x.rate, spread: x.spread } : undefined,
+  };
 }
 
 export interface NwcInfo {
