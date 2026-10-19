@@ -15,7 +15,8 @@ import { NoteThread } from '@/popup/components/NoteThread';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonFeed } from '@/popup/components/Skeleton';
-import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio } from 'lucide-react';
+import { RelayExplorer } from '@/popup/components/RelayExplorer';
+import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Server } from 'lucide-react';
 
 interface Props {
   publicKey: string;
@@ -31,6 +32,7 @@ const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
   { mode: 'global', label: 'Global', icon: Globe },
   { mode: 'onchain', label: 'On-chain', icon: Bitcoin },
   { mode: 'hashtag', label: '#Tags', icon: Hash },
+  { mode: 'relay', label: 'Relays', icon: Server },
 ];
 
 /** How often the page quietly asks the relays for anything newer. */
@@ -226,6 +228,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const followingKey = Array.from(followingPubkeys).sort().join(',');
 
   const buildFilter = useCallback((mode: FeedMode): FeedFilter | null => {
+    if (mode === 'relay') return null;  // the relay explorer runs its own queries
     const filter: FeedFilter = { mode, limit: FEED_PAGE_SIZE };
     if (mode === 'following') {
       if (followingPubkeys.size === 0) return null;
@@ -468,7 +471,8 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   // ─── Derived view state ───────────────────────────────────────
   const needsHashtag = activeMode === 'hashtag' && !hashtagSubmitted;
   const noFollows = activeMode === 'following' && followingPubkeys.size === 0;
-  const showEmptyState = !loading && notes.length === 0 && !needsHashtag && !noFollows;
+  const exploring = activeMode === 'relay';
+  const showEmptyState = !exploring && !loading && notes.length === 0 && !needsHashtag && !noFollows;
   const canCompose = activeMode === 'following' || activeMode === 'global';
 
   const emptyMessage = useMemo(() => {
@@ -490,6 +494,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
             {TABS.map(({ mode, label, icon: Icon }) => (
               <button
                 key={mode}
+                data-mode={mode}
                 onClick={() => handleTabChange(mode)}
                 className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-[13px] font-medium whitespace-nowrap transition-all ${
                   activeMode === mode
@@ -549,6 +554,8 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
 
       <div ref={listTopRef} />
 
+      {exploring && <RelayExplorer onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />}
+
       {/* Composer */}
       {canCompose && (
         <div className="px-4 pt-3">
@@ -602,7 +609,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
       )}
 
       {/* Feed content */}
-      <div>
+      <div hidden={exploring}>
         {loading && notes.length === 0 && <SkeletonFeed count={7} />}
 
         {!loading && needsHashtag && (
