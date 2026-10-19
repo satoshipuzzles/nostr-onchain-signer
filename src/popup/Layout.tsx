@@ -17,7 +17,7 @@ export function Layout() {
 
         {/* Main content — single scroll container. Suspense here keeps the
             nav/shell visible while a lazy-loaded page chunk downloads */}
-        <main className="flex-1 min-w-0 min-h-0 overflow-y-auto pb-20 md:pb-0">
+        <main className="flex-1 min-w-0 min-h-0 overflow-y-auto pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
           <Suspense
             fallback={
               <div className="h-full min-h-[40vh] flex items-center justify-center">

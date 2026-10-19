@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks, RefreshCw } from 'lucide-react';
+import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks, RefreshCw, Zap, Users } from 'lucide-react';
+import { loadNwcConnection, getNwcBalance, type LightningChain } from '@/lib/nostr/nwc';
+import { streamQuery, relaysForAuthor } from '@/lib/nostr/query';
+import { parseZapReceipt } from '@/lib/nostr/zap';
+import { safeImageUrl } from '@/lib/utils';
 import { useAuth } from '../context/AuthContext';
 import { pubkeyToNpub } from '@/lib/nostr/keys';
 import { pubkeyToTaprootAddress } from '@/lib/bitcoin/address';
@@ -15,8 +19,12 @@ interface DashboardCache {
   multisigCount: number;
   multisigTotalSats: number;
   pendingSignatures: number;
+  /** Lightning balances in sats; undefined = no wallet connected, null = not answering */
+  ln?: Partial<Record<LightningChain, number | null>>;
   updatedAt: number;
 }
+
+interface ZapStats { count: number; sats: number; xbt: number; btc: number; last?: number }
 
 function cacheKey(pubkey: string) {
   return `dashboard_cache_${pubkey}`;
@@ -41,6 +49,9 @@ export function Home() {
   const [copied, setCopied] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [ln, setLn] = useState<Partial<Record<LightningChain, number | null>>>({});
+  const [lnLoading, setLnLoading] = useState(true);
+  const [zaps, setZaps] = useState<ZapStats | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fetchGenRef = useRef(0);
 
@@ -53,6 +64,22 @@ export function Home() {
     setMultisigCount(cache.multisigCount);
     setMultisigTotalSats(cache.multisigTotalSats);
     setPendingSignatures(cache.pendingSignatures);
+    if (cache.ln) setLn(cache.ln);
+  }, []);
+
+  // Lightning balances over NWC, for whichever wallets are connected (XBT and/or BTC)
+  const loadLightning = useCallback(async () => {
+    setLnLoading(true);
+    const out: Partial<Record<LightningChain, number | null>> = {};
+    await Promise.all((['xbt', 'btc'] as LightningChain[]).map(async (c) => {
+      const conn = await loadNwcConnection(c).catch(() => null);
+      if (!conn) return;
+      const bal = await getNwcBalance(conn).catch(() => ({ error: 'unreachable' } as { msats?: number; error?: string }));
+      out[c] = bal.msats != null ? Math.floor(bal.msats / 1000) : null;
+    }));
+    setLn(out);
+    setLnLoading(false);
+    return out;
   }, []);
 
   const loadDashboardData = useCallback(async (background = false) => {
@@ -88,7 +115,9 @@ export function Home() {
         setBalance(bal.total);
       }
 
+      const lnNow = await loadLightning();
       const cache: DashboardCache = {
+        ln: lnNow,
         balance: bal.error && !bal.cached && balance !== null ? balance : bal.total,
         multisigCount: walletCount,
         multisigTotalSats: cachedTotal,
@@ -105,7 +134,33 @@ export function Home() {
         setSyncing(false);
       }
     }
-  }, [publicKey, btcAddress, balance]);
+  }, [publicKey, btcAddress, balance, loadLightning]);
+
+  // Zaps received: count and sats per chain, from receipts on their relays
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let live = true;
+    setZaps(null);
+    relaysForAuthor(publicKey, { inbox: true }).then((relays) => {
+      if (!live) return;
+      const t: ZapStats = { count: 0, sats: 0, xbt: 0, btc: 0 };
+      const seen = new Set<string>();
+      stop = streamQuery({
+        relays,
+        filters: [{ kinds: [9735], '#p': [publicKey], limit: 500 }],
+        timeoutMs: 9000,
+        onEvent: (e) => {
+          const z = parseZapReceipt(e);
+          if (!z || z.recipient !== publicKey || seen.has(z.id)) return;
+          seen.add(z.id);
+          t.count++; t.sats += z.amountSats; t[z.chain] += z.amountSats;
+          t.last = Math.max(t.last ?? 0, z.createdAt);
+        },
+        onDone: () => { if (live) setZaps({ ...t }); },
+      });
+    });
+    return () => { live = false; stop?.(); };
+  }, [publicKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,36 +192,64 @@ export function Home() {
     setTimeout(() => setCopied(''), 2000);
   }
 
+  const banner = safeImageUrl(myProfile?.banner || '');
+  const fmtLn = (c: LightningChain) => ln[c] === undefined ? null : ln[c] === null ? '—' : formatSats(ln[c] as number);
+  const lnConnected = ln.xbt !== undefined || ln.btc !== undefined;
+  const ago = (ts?: number) => {
+    if (!ts) return '';
+    const m = (Date.now() / 1000 - ts) / 60;
+    return m < 60 ? `${Math.max(1, Math.round(m))}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+  };
+
   return (
-    <div className="h-full flex flex-col p-4 md:p-6 pb-20 md:pb-6">
-      {/* Mobile profile header */}
-      <div className="flex items-center gap-3 mb-5 md:mb-6">
-        <div className="relative flex-shrink-0">
-          <ClickableAvatar
-            key={publicKey}
-            pubkey={publicKey}
-            picture={myProfile?.picture || accounts[activeAccountIndex]?.picture}
-            name={displayName}
-            size="2xl"
-          />
-          <button
-            onClick={() => navigate('/settings/profile')}
-            className="absolute -bottom-0.5 -right-0.5 w-5 h-5 bg-surface-900 rounded-full flex items-center justify-center z-10"
-          >
-            <Edit3 className="w-3 h-3 text-gray-400" />
-          </button>
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-base font-semibold truncate">{displayName}</p>
-          <p className="text-xs text-gray-500">
-            {following instanceof Set ? following.size : 0} following &bull; {accounts.length} account{accounts.length !== 1 ? 's' : ''}
-            {syncing && <span className="text-nostr ml-1">· syncing</span>}
-          </p>
+    // min-h-full, not h-full: with h-full the content overflowed its own box and the last
+    // buttons slid under the tab bar on short phones; <main> pads for the bar and home indicator
+    <div className="min-h-full flex flex-col p-4 md:p-6 pb-4 md:pb-6">
+      {/* Profile hero: their banner behind avatar, name and social stats */}
+      <div className="relative -mx-4 -mt-4 md:mx-0 md:mt-0 mb-4 md:rounded-2xl overflow-hidden border-b md:border border-white/10">
+        {banner ? (
+          <img src={banner} alt="" className="absolute inset-0 w-full h-full object-cover" />
+        ) : (
+          <div className="absolute inset-0 bg-gradient-to-br from-bitcoin/25 via-nostr/20 to-black" />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/55 to-black/90" />
+        <div className="relative px-4 pt-14 pb-4 md:pt-20">
+          <div className="flex items-end gap-3">
+            <div className="relative flex-shrink-0 rounded-full ring-2 ring-black/60">
+              <ClickableAvatar
+                key={publicKey}
+                pubkey={publicKey}
+                picture={myProfile?.picture || accounts[activeAccountIndex]?.picture}
+                name={displayName}
+                size="2xl"
+              />
+              <button
+                onClick={() => navigate('/settings/profile')}
+                aria-label="Edit profile"
+                className="absolute -bottom-0.5 -right-0.5 w-6 h-6 bg-surface-900 rounded-full flex items-center justify-center z-10 border border-white/10"
+              >
+                <Edit3 className="w-3 h-3 text-gray-300" />
+              </button>
+            </div>
+            <div className="flex-1 min-w-0 pb-0.5">
+              <p className="text-lg font-semibold truncate drop-shadow">{displayName}</p>
+              {myProfile?.nip05 && <p className="text-xs text-gray-300 truncate">{myProfile.nip05.replace(/^_@/, '')}</p>}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs text-gray-300">
+            <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" /><b className="text-white">{following instanceof Set ? following.size : 0}</b> following</span>
+            <span className="flex items-center gap-1">
+              <Zap className="w-3.5 h-3.5 text-amber-300" />
+              {zaps ? <><b className="text-white">{formatSats(zaps.sats)}</b> in {zaps.count} zap{zaps.count === 1 ? '' : 's'}</> : <span className="text-gray-500">zaps…</span>}
+            </span>
+            <span>{accounts.length} account{accounts.length !== 1 ? 's' : ''}</span>
+            {syncing && <span className="text-nostr">syncing</span>}
+          </div>
         </div>
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <button
           onClick={() => navigate('/wallets')}
           className="card hover:border-bitcoin/30 transition-colors text-left"
@@ -175,12 +258,37 @@ export function Home() {
             <div className="w-8 h-8 rounded-lg bg-bitcoin/15 flex items-center justify-center">
               <Wallet className="w-4 h-4 text-bitcoin" />
             </div>
-            <span className="text-xs text-gray-500">Balance</span>
+            <span className="text-xs text-gray-500">On-chain</span>
           </div>
           <p className="text-xl font-bold text-bitcoin">
             {balance !== null ? formatSats(balance) : '—'}
           </p>
           <p className="text-[10px] text-gray-500 mt-1">Taproot wallet</p>
+        </button>
+
+        <button
+          onClick={() => navigate('/lightning')}
+          className="card hover:border-amber-400/30 transition-colors text-left"
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-8 h-8 rounded-lg bg-amber-400/15 flex items-center justify-center">
+              <Zap className="w-4 h-4 text-amber-300" />
+            </div>
+            <span className="text-xs text-gray-500">Lightning</span>
+            {lnLoading && lnConnected && <RefreshCw className="w-3 h-3 text-gray-600 animate-spin ml-auto" />}
+          </div>
+          {lnConnected ? (
+            <div className="space-y-0.5">
+              {fmtLn('xbt') !== null && <p className="text-base font-bold text-white leading-tight"><span className="text-[10px] font-medium text-purple-300 mr-1">XBT</span>{fmtLn('xbt')}</p>}
+              {fmtLn('btc') !== null && <p className="text-base font-bold text-white leading-tight"><span className="text-[10px] font-medium text-amber-300 mr-1">BTC</span>{fmtLn('btc')}</p>}
+            </div>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-white">{lnLoading ? '…' : 'Not connected'}</p>
+              <p className="text-[10px] text-gray-500 mt-1">{lnLoading ? 'Checking wallets' : 'Tap to connect a wallet'}</p>
+            </>
+          )}
+          {lnConnected && zaps && zaps.count > 0 && <p className="text-[10px] text-gray-500 mt-1">last zap {ago(zaps.last)}</p>}
         </button>
 
         {/* div + role=button instead of <button> so the nested refresh button is valid HTML */}
