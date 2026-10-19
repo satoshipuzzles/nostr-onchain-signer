@@ -22,6 +22,7 @@ const MultiSigWrapper = lazy(() => import('./pages/MultiSigWrapper').then((m) =>
 const MultisigVaultWrapper = lazy(() => import('./pages/MultisigVaultWrapper').then((m) => ({ default: m.MultisigVaultWrapper })));
 const RequestSignatureWrapper = lazy(() => import('./pages/RequestSignatureWrapper').then((m) => ({ default: m.RequestSignatureWrapper })));
 const WalletViewWrapper = lazy(() => import('./pages/WalletViewWrapper').then((m) => ({ default: m.WalletViewWrapper })));
+const CelebrationSettings = lazy(() => import('./pages/CelebrationSettings').then((m) => ({ default: m.CelebrationSettings })));
 const RelaySettingsWrapper = lazy(() => import('./pages/RelaySettingsWrapper').then((m) => ({ default: m.RelaySettingsWrapper })));
 const EditProfileWrapper = lazy(() => import('./pages/EditProfileWrapper').then((m) => ({ default: m.EditProfileWrapper })));
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
@@ -247,6 +248,7 @@ export function App() {
           <Route path="explorer" element={<OnchainExplorer />} />
           <Route path="settings" element={<Settings />} />
           <Route path="settings/relays" element={<RelaySettingsWrapper />} />
+          <Route path="settings/celebrations" element={<CelebrationSettings />} />
           <Route path="settings/profile" element={<EditProfileWrapper />} />
           <Route path="settings/apps" element={<ConnectedApps />} />
           <Route path="settings/events" element={<SignedEventsLog />} />

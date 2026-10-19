@@ -215,20 +215,22 @@ export function Home() {
         <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/55 to-black/90" />
         <div className="relative px-4 pt-14 pb-4 md:pt-20">
           <div className="flex items-end gap-3">
-            <div className="relative flex-shrink-0 rounded-full ring-2 ring-black/60">
+            {/* the ring sits on a box exactly the avatar's size, so it stays centred on the picture */}
+            <div className="relative flex-shrink-0 w-14 h-14 rounded-full ring-2 ring-black/70 shadow-lg shadow-black/50">
               <ClickableAvatar
                 key={publicKey}
                 pubkey={publicKey}
                 picture={myProfile?.picture || accounts[activeAccountIndex]?.picture}
                 name={displayName}
                 size="2xl"
+                className="block w-14 h-14 leading-none"
               />
               <button
                 onClick={() => navigate('/settings/profile')}
                 aria-label="Edit profile"
-                className="absolute -bottom-0.5 -right-0.5 w-6 h-6 bg-surface-900 rounded-full flex items-center justify-center z-10 border border-white/10"
+                className="absolute -bottom-1 -right-1 w-7 h-7 bg-surface-800 rounded-full flex items-center justify-center z-10 ring-2 ring-black/80 hover:bg-surface-700"
               >
-                <Edit3 className="w-3 h-3 text-gray-300" />
+                <Edit3 className="w-3.5 h-3.5 text-white" strokeWidth={2.25} />
               </button>
             </div>
             <div className="flex-1 min-w-0 pb-0.5">
