@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useContext, memo } from 'react';
 import { celebrateAction } from '@/lib/ui/celebrations';
+import { mutedNow, onMutesChanged } from '@/lib/nostr/mute';
 import { toast } from 'sonner';
 import { type FeedNote } from '@/lib/nostr/feed';
 import { type ProfileMetadata } from '@/lib/nostr/social';
@@ -120,7 +121,38 @@ interface ReactionGroup {
 
 // Memoized: the feed re-renders frequently as engagement counts stream in,
 // and re-rendering every card each time is the main scroll-jank source
-export const NoteCard = memo(function NoteCard({ note, profile: profileProp, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
+/** True while the note's author (or, for a repost, the reposted author) is muted. */
+function useHidden(note: FeedNote): boolean {
+  const [muted, setMuted] = useState(() => mutedNow());
+  useEffect(() => onMutesChanged((m) => setMuted(new Set(m))), []);
+  if (muted.has(note.pubkey)) return true;
+  if (note.kind === 6 || note.kind === 16) return note.tags.some((t) => t[0] === 'p' && muted.has(t[1]));
+  return false;
+}
+
+// Blocked people never render, wherever a note shows: feeds, threads, search, profiles' lists
+export const NoteCard = memo(function NoteCard(props: Props) {
+  const note = useMemo(() => withMediaUrls(props.note), [props.note]);
+  return useHidden(props.note) ? null : <NoteCardBody {...props} note={note} />;
+});
+
+/** Picture and video posts (kinds 20, 21, 22) and file events keep their media in imeta tags,
+ *  not the text; put the URLs in the content so the usual image and video rendering applies. */
+function withMediaUrls(note: FeedNote): FeedNote {
+  if (![20, 21, 22, 1063].includes(note.kind ?? 1)) return note;
+  const urls = note.tags.flatMap((t) => {
+    if (t[0] === 'url' && t[1]) return [t[1]];
+    if (t[0] !== 'imeta') return [];
+    const u = t.find((x) => x.startsWith('url '));
+    return u ? [u.slice(4)] : [];
+  }).filter((u) => /^https:\/\//.test(u) && !note.content.includes(u));
+  const title = note.tags.find((t) => t[0] === 'title')?.[1];
+  if (!urls.length && !title) return note;
+  const head = title && !note.content.includes(title) ? `${title}\n` : '';
+  return { ...note, content: `${head}${note.content}${urls.length ? `\n${[...new Set(urls)].slice(0, 6).join('\n')}` : ''}`.trim() };
+}
+
+const NoteCardBody = memo(function NoteCardBody({ note, profile: profileProp, engagement, onNotePublished, onSelectNote, onViewProfile, highlighted, compact }: Props) {
   const auth = useContext(AuthContext);
   const publicKey = auth?.publicKey ?? '';
   // Fall back to the shared profile store when the page didn't pass one
