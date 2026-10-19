@@ -32,6 +32,28 @@ interface DM {
   invoice?: InvoiceDmPayload | null;
 }
 
+// Decrypted DM text by event id, kept on this device so a thread opens without decrypting again.
+// k = event kind; for gift wraps (1059) also the real sender, time and recipient from the rumor.
+type PlainEntry = { c: string; s: string; t: number; to?: string; k: number };
+const plainCaches = new Map<string, Map<string, PlainEntry>>();
+const PLAIN_MAX = 3000;
+async function loadPlainCache(pk: string): Promise<Map<string, PlainEntry>> {
+  const have = plainCaches.get(pk);
+  if (have) return have;
+  const key = `dm_plain_${pk}`;
+  let m = new Map<string, PlainEntry>();
+  try {
+    const got = (await chrome.storage.local.get(key))[key];
+    if (got && typeof got === 'object') m = new Map(Object.entries(got as Record<string, PlainEntry>));
+  } catch { /* storage blocked */ }
+  plainCaches.set(pk, m);
+  return m;
+}
+function savePlainCache(pk: string, m: Map<string, PlainEntry>) {
+  const entries = [...m.entries()].sort((a, b) => b[1].t - a[1].t).slice(0, PLAIN_MAX);
+  chrome.storage.local.set({ [`dm_plain_${pk}`]: Object.fromEntries(entries) }).catch(() => {});
+}
+
 async function getReadRelayUrls(publicKey?: string | null): Promise<string[]> {
   const relayList = await loadRelayList();
   const configured = getReadRelays(relayList);
@@ -338,17 +360,62 @@ export function Messages() {
 
     try {
       const readRelays = await getReadRelayUrls(publicKey);
-      const dms: DM[] = [];
+      const plain = await loadPlainCache(publicKey!);
+      const shown = new Map<string, DM>();
       const seen = new Set<string>();
+      let dirty = false;
 
-      // All relays in parallel (was sequential — up to 40s)
+      // One event to a thread message, using the cache so nothing is decrypted twice. Gift wraps
+      // carry every conversation, so each is unwrapped once ever, not once per thread opened.
+      const decryptOne = async (dm: DM): Promise<DM | null> => {
+        const hit = plain.get(dm.id);
+        if (hit) {
+          if (hit.k === 1059) {
+            const isMine = hit.s === publicKey;
+            if (isMine ? hit.to !== peerPubkey : hit.s !== peerPubkey) return null;
+            return { ...dm, content: hit.c, isMine, pubkey: hit.s, created_at: hit.t, invoice: parseInvoiceDmPayload(hit.c) };
+          }
+          return { ...dm, content: hit.c, invoice: parseInvoiceDmPayload(hit.c) };
+        }
+        try {
+          if (dm.kind === 1059) {
+            const unwrapped = await unwrapGiftWrapEvent({ pubkey: dm.pubkey, content: dm.content, kind: 1059 });
+            if (!unwrapped) return null;
+            const { senderPubkey: sender, content, createdAt, rumor } = unwrapped;
+            const to = rumor.tags?.find((t: string[]) => t[0] === 'p')?.[1] || '';
+            plain.set(dm.id, { c: content, s: sender, t: createdAt, to, k: 1059 });
+            dirty = true;
+            const isMine = sender === publicKey;
+            if (isMine ? to !== peerPubkey : sender !== peerPubkey) return null;
+            return { ...dm, content, isMine, pubkey: sender, created_at: createdAt, invoice: parseInvoiceDmPayload(content) };
+          }
+          const other = dm.isMine ? peerPubkey : dm.pubkey;
+          const content = await decryptDM(other, dm.content, dm.kind);
+          plain.set(dm.id, { c: content, s: dm.pubkey, t: dm.created_at, k: dm.kind });
+          dirty = true;
+          return { ...dm, content, invoice: parseInvoiceDmPayload(content) };
+        } catch {
+          if (dm.content.includes('?iv=') || (dm.content.length > 200 && !/\s/.test(dm.content))) {
+            return { ...dm, content: '(unable to decrypt)' };
+          }
+          return dm;
+        }
+      };
+
+      const publish = () => {
+        if (isStale()) return;
+        const list = [...shown.values()].sort((x, y) => x.created_at - y.created_at);
+        if (list.length) { setMessages(list); setDecrypting(false); }
+      };
+
+      // Every relay at once; each one's messages are decrypted and shown as soon as it answers
       await Promise.allSettled(readRelays.slice(0, 6).map(async (relayUrl) => {
         const ws = await openRelay(relayUrl);
         const subId = `dm_thread_${Date.now()}_${relayUrl.slice(-6)}`;
+        const batch: DM[] = [];
 
         await new Promise<void>((resolve) => {
           const timeout = setTimeout(() => { ws.close(); resolve(); }, 6000);
-
           ws.onmessage = (ev: MessageEvent) => {
             try {
               const msg = JSON.parse(ev.data);
@@ -356,73 +423,28 @@ export function Messages() {
                 const event = msg[2];
                 if (!seen.has(event.id)) {
                   seen.add(event.id);
-                  dms.push({
-                    id: event.id,
-                    pubkey: event.pubkey,
-                    content: event.content,
-                    created_at: event.created_at,
-                    isMine: event.pubkey === publicKey,
-                    kind: event.kind,
-                  });
+                  batch.push({ id: event.id, pubkey: event.pubkey, content: event.content, created_at: event.created_at, isMine: event.pubkey === publicKey, kind: event.kind });
                 }
               }
               if (msg[0] === 'EOSE') { clearTimeout(timeout); ws.close(); resolve(); }
             } catch {}
           };
-
           ws.send(JSON.stringify(['REQ', subId,
             { kinds: [4, 14], authors: [publicKey!], '#p': [peerPubkey], limit: 100 },
             { kinds: [4, 14], authors: [peerPubkey], '#p': [publicKey!], limit: 100 },
             { kinds: [1059], '#p': [publicKey!], limit: 100 },
           ]));
         });
+
+        // cached ones first (instant), then the rest
+        batch.sort((x, y) => Number(plain.has(y.id)) - Number(plain.has(x.id)));
+        const out = await Promise.all(batch.map(decryptOne));
+        for (const d of out) if (d) shown.set(d.id, d);
+        publish();
       }));
 
-      const sorted = dms.sort((a, b) => a.created_at - b.created_at);
-
-      // Decrypt all messages in parallel — local key makes each fast
-      const results = await Promise.allSettled(sorted.map(async (dm): Promise<DM | null> => {
-        try {
-          if (dm.kind === 1059) {
-            const unwrapped = await unwrapGiftWrapEvent({
-              pubkey: dm.pubkey,
-              content: dm.content,
-              kind: 1059,
-            });
-            if (!unwrapped) return null;
-            const { senderPubkey: sender, content, createdAt, rumor } = unwrapped;
-            const isMine = sender === publicKey;
-            // Thread filter: incoming must be FROM peer; outgoing must be TO peer
-            if (isMine) {
-              const to = rumor.tags?.find((t: string[]) => t[0] === 'p')?.[1];
-              if (to !== peerPubkey) return null;
-            } else if (sender !== peerPubkey) {
-              return null;
-            }
-            dm.content = content;
-            dm.isMine = isMine;
-            dm.pubkey = sender;
-            dm.created_at = createdAt; // real timestamp from the rumor
-          } else {
-            const other = dm.isMine ? peerPubkey : dm.pubkey;
-            dm.content = await decryptDM(other, dm.content, dm.kind);
-          }
-          dm.invoice = parseInvoiceDmPayload(dm.content);
-          return dm;
-        } catch {
-          if (dm.content.includes('?iv=') || (dm.content.length > 200 && !/\s/.test(dm.content))) {
-            dm.content = '(unable to decrypt)';
-          }
-          return dm;
-        }
-      }));
-
-      const decrypted = results
-        .filter((r): r is PromiseFulfilledResult<DM | null> => r.status === 'fulfilled')
-        .map((r) => r.value)
-        .filter((d): d is DM => d !== null)
-        .sort((a, b) => a.created_at - b.created_at);
-
+      const decrypted = [...shown.values()].sort((x, y) => x.created_at - y.created_at);
+      if (dirty) savePlainCache(publicKey!, plain);
       if (decrypted.length > 0) {
         // Cache the decrypted thread (last 50) for instant display next time
         chrome.storage.local.set({ [threadCacheKey]: decrypted.slice(-50) }).catch(() => {});
@@ -465,7 +487,8 @@ export function Messages() {
     const displayName = profile?.displayName || profile?.name || selectedPubkey.slice(0, 12) + '...';
 
     return (
-      <div className="fixed inset-0 z-40 bg-black flex flex-col">
+      // above the bottom tab bar (z-50), so the message box and send button are never hidden
+      <div className="fixed inset-x-0 top-0 z-[55] bg-black flex flex-col h-[100dvh]">
         {/* Header */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-black/80 backdrop-blur-sm">
           <button onClick={() => setSelectedPubkey(null)} className="p-2 -ml-1 hover:bg-white/10 rounded-lg">
