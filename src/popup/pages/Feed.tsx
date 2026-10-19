@@ -7,6 +7,7 @@ import {
   type FeedNote, type FeedMode, type FeedFilter, type Engagement,
 } from '@/lib/nostr/feed';
 import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-subscribe';
+import { outboxRelaysFor } from '@/lib/nostr/query';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { loadCache, cacheProfiles, sanitizeProfile } from '@/lib/nostr/cache';
 import { loadMutedPubkeys } from '@/lib/nostr/mute';
@@ -156,13 +157,17 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   }, []);
 
   // ─── Relays ───────────────────────────────────────────────────
+  const followsKey = Array.from(followingPubkeys).sort().join(',');
+  useEffect(() => { relayUrlsRef.current = []; }, [followsKey]); // new follows, new outbox relays
   const getRelayUrls = useCallback(async () => {
     if (relayUrlsRef.current.length > 0) return relayUrlsRef.current;
     const relayList = await loadRelayList();
     const relays = getReadRelays(relayList);
-    relayUrlsRef.current = [...new Set([...relays, ...DEFAULT_READ_RELAYS])].slice(0, 8);
+    // plus where the people you follow post (outbox), so their notes on other relays show too
+    const outbox = followingPubkeys.size ? await outboxRelaysFor([...followingPubkeys], 5).catch(() => []) : [];
+    relayUrlsRef.current = [...new Set([...relays.slice(0, 6), ...DEFAULT_READ_RELAYS, ...outbox])].slice(0, 14);
     return relayUrlsRef.current;
-  }, []);
+  }, [followsKey]);
 
   useEffect(() => {
     const tick = () => {
