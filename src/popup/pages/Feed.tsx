@@ -17,9 +17,10 @@ import { NoteThread } from '@/popup/components/NoteThread';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonFeed } from '@/popup/components/Skeleton';
-import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X, Server } from 'lucide-react';
+import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X, Server, Sparkles } from 'lucide-react';
 import { useEmbedPlayer } from '@/popup/context/EmbedPlayerContext';
 import { RelayExplorer } from '@/popup/components/RelayExplorer';
+import { ForYouFeed } from '@/popup/components/ForYouFeed';
 import { SavedChips } from '@/popup/components/SavedChips';
 import { FeedFilterPanel } from '@/popup/components/FeedFilterPanel';
 import { useFeedFilters, passesFilters, activeFilterCount, useReplyMode } from '@/lib/nostr/feed-filters';
@@ -36,6 +37,7 @@ interface Props {
 
 const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
   { mode: 'following', label: 'Following', icon: Users },
+  { mode: 'foryou', label: 'For you', icon: Sparkles },
   { mode: 'global', label: 'Global', icon: Globe },
   { mode: 'onchain', label: 'On-chain', icon: Bitcoin },
   { mode: 'hashtag', label: '#Tags', icon: Hash },
@@ -255,7 +257,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const followingKey = Array.from(followingPubkeys).sort().join(',');
 
   const buildFilter = useCallback((mode: FeedMode): FeedFilter | null => {
-    if (mode === 'relay') return null;  // the relay explorer runs its own queries
+    if (mode === 'relay' || mode === 'foryou') return null;  // the relay explorer and the algorithm run their own queries
     const filter: FeedFilter = { mode, limit: FEED_PAGE_SIZE };
     if (mode === 'following') {
       if (followingPubkeys.size === 0) return null;
@@ -498,7 +500,8 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   // ─── Derived view state ───────────────────────────────────────
   const needsHashtag = activeMode === 'hashtag' && !hashtagSubmitted;
   const noFollows = activeMode === 'following' && followingPubkeys.size === 0;
-  const exploring = activeMode === 'relay';
+  // the relay explorer and the For you algorithm render their own lists
+  const exploring = activeMode === 'relay' || activeMode === 'foryou';
   const showEmptyState = !exploring && !loading && notes.length === 0 && !needsHashtag && !noFollows;
   const canCompose = activeMode === 'following' || activeMode === 'global';
 
@@ -620,7 +623,13 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
 
       <div ref={listTopRef} />
 
-      {exploring && <RelayExplorer onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />}
+      {activeMode === 'relay' && <RelayExplorer onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />}
+      {activeMode === 'foryou' && (
+        <>
+          <div className="px-4 pt-2"><FeedFilterPanel /></div>
+          <ForYouFeed publicKey={publicKey} followingPubkeys={followingPubkeys} onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />
+        </>
+      )}
 
       {/* Composer */}
       {canCompose && (

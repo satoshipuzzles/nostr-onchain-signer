@@ -8,7 +8,7 @@ import { subscribeRelays } from './relay-subscribe';
 import { parseZapReceipt } from './zap';
 import type { Filter } from 'nostr-tools/filter';
 
-export type FeedMode = 'global' | 'following' | 'media' | 'onchain' | 'hashtag' | 'kind' | 'relay';
+export type FeedMode = 'global' | 'following' | 'foryou' | 'media' | 'onchain' | 'hashtag' | 'kind' | 'relay';
 
 export interface NostrEvent {
   id: string;
@@ -316,7 +316,7 @@ const HASHTAG_KEY = 'feed_hashtag_v2';
 export function loadFeedTab(): FeedMode {
   try {
     const v = localStorage.getItem(TAB_KEY);
-    if (v === 'following' || v === 'global' || v === 'onchain' || v === 'hashtag' || v === 'relay') return v;
+    if (v === 'following' || v === 'foryou' || v === 'global' || v === 'onchain' || v === 'hashtag' || v === 'relay') return v;
   } catch { /* storage unavailable */ }
   return 'following';
 }
