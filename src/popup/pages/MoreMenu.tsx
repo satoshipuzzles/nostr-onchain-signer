@@ -23,6 +23,7 @@ const sections = [
     title: 'Bitcoin',
     items: [
       { to: '/lightning', icon: Zap, label: 'Lightning' },
+      { to: '/zaps', icon: Zap, label: 'Zaps sent & received' },
       { to: '/send', icon: Hammer, label: 'TX Builder' },
       { to: '/signing', icon: Inbox, label: 'Signing Inbox' },
       { to: '/lightops', icon: Fingerprint, label: 'Light OPs' },

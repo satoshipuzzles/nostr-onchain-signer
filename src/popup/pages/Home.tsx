@@ -248,7 +248,7 @@ export function Home() {
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs text-gray-300">
             <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5" /><b className="text-white">{following instanceof Set ? following.size : 0}</b> following</span>
-            <span className="flex items-center gap-1">
+            <span role="link" tabIndex={0} onClick={() => navigate('/zaps')} onKeyDown={(e) => { if (e.key === 'Enter') navigate('/zaps'); }} className="flex items-center gap-1 cursor-pointer hover:text-white" title="Zaps sent and received">
               <Zap className="w-3.5 h-3.5 text-amber-300" />
               {zaps ? <><b className="text-white">{formatSats(zaps.sats)}</b> in {zaps.count} zap{zaps.count === 1 ? '' : 's'}</> : <span className="text-gray-500">zaps…</span>}
             </span>

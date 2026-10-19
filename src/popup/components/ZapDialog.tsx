@@ -6,6 +6,7 @@ import { signEventWithFallback } from '@/lib/nostr/sign-event';
 import { loadRelayList, getReadRelays, getWriteRelays } from '@/lib/nostr/relays';
 import { loadNwcConnection, sendNwcPayment, getNwcInfo, estimateNwcFee, type LightningChain } from '@/lib/nostr/nwc';
 import { celebrateAction } from '@/lib/ui/celebrations';
+import { recordSentZap } from '@/lib/nostr/zap-history';
 import {
   fetchLnurlPayInfo,
   requestZapInvoice,
@@ -318,6 +319,14 @@ export function ZapDialog({ note, recipientPubkey, profile, onClose }: Props) {
     }
 
     const paidFee = payResult.feesPaidMsats != null ? Math.ceil(payResult.feesPaidMsats / 1000) : null;
+    // what relays can't tell the Zaps page: the route, the XBT cost and the fee
+    const hash = decodeInvoice(pending.invoice)?.paymentHash;
+    if (hash && publicKey) recordSentZap(publicKey, {
+      paymentHash: hash, recipient: recipientPubkey, noteId: note?.id, amountSats: amount, chain: lnChain,
+      via: pending.bridge ? 'bridge' : 'direct',
+      costXbtSats: pending.bridge ? Math.ceil((payResult.costMsats ?? pending.bridge.costMsats) / 1000) : undefined,
+      feeSats: paidFee ?? undefined, comment, at: Math.floor(Date.now() / 1000),
+    });
     setStatus('success');
     setStatusMessage(pending.bridge
       ? `Zapped ${amount.toLocaleString()} BTC sats, paid with ${Math.ceil((payResult.costMsats ?? pending.bridge.costMsats) / 1000).toLocaleString()} XBT sats through the bridge!`

@@ -18,6 +18,7 @@ const mainNav = [
   { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
   { to: '/lightning', icon: Zap, label: 'Lightning' },
+  { to: '/zaps', icon: Zap, label: 'Zaps' },
   { to: '/send', icon: Hammer, label: 'TX Builder' },
   { to: '/signing', icon: Inbox, label: 'Signing' },
   { to: '/lightops', icon: Fingerprint, label: 'Light OPs' },
