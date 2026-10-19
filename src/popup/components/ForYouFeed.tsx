@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { useEngagement } from '@/popup/hooks/useNostr';
 import { useProfile } from '@/popup/hooks/useNostr';
-import { loadMutedPubkeys } from '@/lib/nostr/mute';
+import { mutedNow, onMutesChanged } from '@/lib/nostr/mute';
 import { DEFAULT_RELAYS } from '@/lib/nostr/query';
 import { useFeedFilters, passesFilters, useReplyMode } from '@/lib/nostr/feed-filters';
 import { runAlgo, loadTune, saveTune, loadLess, saveLess, clearAlgoCache, DEFAULT_TUNE, type Ranked, type AlgoTune, type ShowLess, type WhyKind } from '@/lib/nostr/algo';
@@ -45,17 +45,20 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
   const [tuneOpen, setTuneOpen] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [run, setRun] = useState(0);
-  const [muted, setMuted] = useState<Set<string> | null>(null);
+  const [muted, setMuted] = useState<Set<string>>(() => new Set(mutedNow()));
   const { prefs } = useFeedFilters();
   const [replyMode] = useReplyMode('foryou');
   const lockedRef = useRef<Ranked[] | null>(null);   // once the user scrolls, the top stays put
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => { loadMutedPubkeys().then(setMuted).catch(() => setMuted(new Set())); }, []);
+  // a block / mute anywhere drops that author here at once (ranking reads the live set)
+  useEffect(() => onMutesChanged((m) => {
+    setMuted(new Set(m));
+    setRanked((list) => list.filter((r) => !m.has(r.note.pubkey)));
+  }), []);
   const followsKey = useMemo(() => [...followingPubkeys].sort().join(','), [followingPubkeys]);
 
   useEffect(() => {
-    if (!muted) return;
     setDone(false);
     lockedRef.current = null;
     return runAlgo({

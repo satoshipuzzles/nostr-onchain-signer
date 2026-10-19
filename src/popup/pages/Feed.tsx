@@ -587,15 +587,18 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
               </button>
             ))}
           </div>
-          <span
-            className={`flex items-center gap-1 text-[11px] whitespace-nowrap pl-2 ${
-              relayStatus.total === 0 ? 'text-gray-600' : relayStatus.up === 0 ? 'text-red-400' : 'text-gray-500'
-            }`}
-            title="Relays connected"
-          >
-            <Radio className="w-3 h-3" />
-            {relayStatus.total > 0 ? <>{relayStatus.up}/{relayStatus.total}<span className="hidden sm:inline"> relays</span></> : '…'}
-          </span>
+          {/* counts the regular feed's sockets; For you runs its own queries, so it would read 0 there */}
+          {activeMode !== 'foryou' && (
+            <span
+              className={`flex items-center gap-1 text-[11px] whitespace-nowrap pl-2 ${
+                relayStatus.total === 0 ? 'text-gray-600' : relayStatus.up === 0 ? 'text-red-400' : 'text-gray-500'
+              }`}
+              title="Relays connected"
+            >
+              <Radio className="w-3 h-3" />
+              {relayStatus.total > 0 ? <>{relayStatus.up}/{relayStatus.total}<span className="hidden sm:inline"> relays</span></> : '…'}
+            </span>
+          )}
         </div>
 
         <div className="px-3 pb-2 flex justify-center">

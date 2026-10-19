@@ -14,6 +14,8 @@ import { parseZapReceipt } from './zap';
 import { resolveProfiles } from './cache';
 import { mediaKinds } from './embeds';
 import { isReply } from './feed-filters';
+import { mutedNow } from './mute';
+import { KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO } from './feed';
 import type { FeedNote } from './feed';
 import type { ProfileMetadata } from './social';
 
@@ -67,6 +69,9 @@ const SEED_ACCOUNTS = [
 const ONCHAIN_TAGS = ['xbt', 'onchain', 'bip110', 'nostronchain', 'bitcoinnotbtc', 'knots', 'blake2b'];
 const SPAM_HOSTS = /(surge\.sh|originality|\.sell\.app|gumroad\.com\/l\/|bit\.ly\/|tinyurl\.com|t\.me\/joinchat)/i;
 const HOUR = 3600;
+/** Notes, plus picture and video posts (NIP-68 / NIP-71), which NoteCard renders from their imeta. */
+const CANDIDATE_KINDS = [1, KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO];
+const MEDIA_POST = new Set([KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO]);
 
 // ─── helpers ────────────────────────────────────────────────────
 
@@ -89,6 +94,7 @@ function fingerprint(text: string): string {
 /** Junk no one wants in a curated feed: presence pings, raw JSON, link-only product spam. */
 export function isJunk(n: FeedNote): boolean {
   const c = n.content.trim();
+  if (MEDIA_POST.has(n.kind ?? 1)) return !n.tags.some((t) => t[0] === 'imeta' || t[0] === 'url');
   if (!c) return true;
   if (/^[[{]/.test(c)) { try { JSON.parse(c); return true; } catch { /* not JSON */ } }
   if (/"type"\s*:\s*"presence"/.test(c)) return true;
@@ -221,7 +227,7 @@ export function runAlgo(input: AlgoInput, onProgress: (ranked: Ranked[], done: b
       lastEmit = now;
       onProgress(rank(pool, input), done);
     };
-    const addNote = (e: NEvent) => { if (e.kind === 1 && !pool.notes.has(e.id)) { pool.notes.set(e.id, toNote(e)); if (pool.follows.has(e.pubkey)) emit(); } };
+    const addNote = (e: NEvent) => { if (CANDIDATE_KINDS.includes(e.kind) && !pool.notes.has(e.id)) { pool.notes.set(e.id, toNote(e)); if (pool.follows.has(e.pubkey)) emit(); } };
     const addSignal = (e: NEvent) => {
       if (e.kind === 9735) {
         const z = parseZapReceipt(e);
@@ -236,7 +242,7 @@ export function runAlgo(input: AlgoInput, onProgress: (ranked: Ranked[], done: b
       if (!t) return;
       const s = sig(pool.signals, t);
       if (e.kind === 7) s.likes.add(e.pubkey);
-      else if (e.kind === 6) s.reposts.add(e.pubkey);
+      else if (e.kind === 6 || e.kind === 16) s.reposts.add(e.pubkey);
       else if (e.kind === 1 && isReply(toNote(e))) s.replies.set(e.pubkey, Math.max(s.replies.get(e.pubkey) ?? 0, e.content.replace(/nostr:\S+/g, '').trim().length));
     };
 
@@ -247,9 +253,9 @@ export function runAlgo(input: AlgoInput, onProgress: (ranked: Ranked[], done: b
     const followList = [...follows];
 
     const fromFollows = (relays: string[]) => Promise.all(chunk(followList, 250).map((authors) => queryOnce(relays, [
-      { kinds: [1], authors, since, limit: 400 },
-      { kinds: [7, 6], authors, since, limit: 600 },
-    ], 7000, (e) => { if (e.kind === 1) { addNote(e); if (isReply(toNote(e))) addSignal(e); } else addSignal(e); })));
+      { kinds: CANDIDATE_KINDS, authors, since, limit: 400 },
+      { kinds: [7, 6, 16], authors, since, limit: 600 },
+    ], 7000, (e) => { if (CANDIDATE_KINDS.includes(e.kind)) { addNote(e); if (e.kind === 1 && isReply(toNote(e))) addSignal(e); } else addSignal(e); })));
     const zapsFrom = (relays: string[]) => queryOnce(relays, chunk(followList, 250).map((P) => ({ kinds: [9735], '#P': P, since, limit: 400 })), 7000, addSignal);
 
     const followNotes = fromFollows(base).then(() => emit());
@@ -269,9 +275,9 @@ export function runAlgo(input: AlgoInput, onProgress: (ranked: Ranked[], done: b
       await Promise.all([
         extra.length ? fromFollows(extra) : Promise.resolve(),
         extra.length ? zapsFrom(extra) : Promise.resolve(),
-        topWot.length ? Promise.all(chunk(topWot, 200).map((authors) => queryOnce(relays, [{ kinds: [1], authors, since, limit: 250 }], 7000, addNote))) : Promise.resolve(),
-        queryOnce(['wss://relay.damus.io', 'wss://relay.ditto.pub', 'wss://nos.lol', 'wss://relay.snort.social'], [{ kinds: [1], since: Math.floor(Date.now() / 1000) - 12 * HOUR, limit: 250 }], 6000, addNote),
-        queryOnce(relays, [{ kinds: [1], '#t': topics, since: Math.floor(Date.now() / 1000) - 3 * windowSecs, limit: 150 }], 6000, addNote),
+        topWot.length ? Promise.all(chunk(topWot, 200).map((authors) => queryOnce(relays, [{ kinds: CANDIDATE_KINDS, authors, since, limit: 250 }], 7000, addNote))) : Promise.resolve(),
+        queryOnce(['wss://relay.damus.io', 'wss://relay.ditto.pub', 'wss://nos.lol', 'wss://relay.snort.social'], [{ kinds: CANDIDATE_KINDS, since: Math.floor(Date.now() / 1000) - 12 * HOUR, limit: 250 }], 6000, addNote),
+        queryOnce(relays, [{ kinds: CANDIDATE_KINDS, '#t': topics, since: Math.floor(Date.now() / 1000) - 3 * windowSecs, limit: 150 }], 6000, addNote),
       ]);
       return relays;
     })();
@@ -289,7 +295,7 @@ export function runAlgo(input: AlgoInput, onProgress: (ranked: Ranked[], done: b
     // 4) engagement from everyone on the strongest non-network candidates (trending check)
     const prelim = rank(pool, input).slice(0, 160).map((r) => r.note.id);
     const engagement = await Promise.all(chunk(prelim, 80).map((ids) => queryOnce(relays, [
-      { kinds: [7, 6], '#e': ids, limit: 1500 },
+      { kinds: [7, 6, 16], '#e': ids, limit: 1500 },
       { kinds: [9735], '#e': ids, limit: 600 },
       { kinds: [1], '#e': ids, limit: 800 },
     ], 6000)));
@@ -322,6 +328,8 @@ function trust(pk: string, pool: Pool, me: string): number {
 
 function rank(pool: Pool, input: AlgoInput): Ranked[] {
   const now = Math.floor(Date.now() / 1000);
+  // blocked / muted now (also changes made after the pool was built), not just at the start
+  const muted = new Set([...input.muted, ...mutedNow()]);
   const less = { a: new Set(input.less.authors), t: new Set(input.less.topics.map((t) => t.toLowerCase())) };
   const boostTopics = new Set(input.tune.topics.map((t) => t.toLowerCase().replace(/^#/, '')));
   const seenText = new Set<string>();
@@ -330,7 +338,7 @@ function rank(pool: Pool, input: AlgoInput): Ranked[] {
   const notes = [...pool.notes.values()].sort((a, b) => b.created_at - a.created_at);
   for (const n of notes) {
     if (n.pubkey === input.me) continue;
-    if (input.muted.has(n.pubkey) || less.a.has(n.pubkey)) continue;
+    if (muted.has(n.pubkey) || less.a.has(n.pubkey)) continue;
     const followed = pool.follows.has(n.pubkey);
     if (NO_PROMOTE.has(n.pubkey) && !(input.me && pool.follows.has(n.pubkey))) continue;
     const reply = isReply(n);
@@ -355,12 +363,12 @@ function rank(pool: Pool, input: AlgoInput): Ranked[] {
     let E = 0;
     let netLikes = 0, netReposts = 0, netReplies = 0, netZappers = 0, netZapSats = 0;
     if (s) {
-      for (const pk of s.likes) { const w = trust(pk, pool, input.me); E += 1 * w; if (pool.follows.has(pk)) netLikes++; }
-      for (const pk of s.reposts) { const w = trust(pk, pool, input.me); E += 2 * w; if (pool.follows.has(pk)) netReposts++; }
-      for (const [pk, len] of s.replies) { const w = trust(pk, pool, input.me); E += (len >= 12 ? 3 : 1) * w; if (pool.follows.has(pk)) netReplies++; }
+      for (const pk of s.likes) { if (muted.has(pk)) continue; const w = trust(pk, pool, input.me); E += 1 * w; if (pool.follows.has(pk)) netLikes++; }
+      for (const pk of s.reposts) { if (muted.has(pk)) continue; const w = trust(pk, pool, input.me); E += 2 * w; if (pool.follows.has(pk)) netReposts++; }
+      for (const [pk, len] of s.replies) { if (muted.has(pk)) continue; const w = trust(pk, pool, input.me); E += (len >= 12 ? 3 : 1) * w; if (pool.follows.has(pk)) netReplies++; }
       if (s.zapSats > 0) {
         let wz = 0;
-        for (const pk of s.zapFrom) { const w = trust(pk, pool, input.me); wz = Math.max(wz, w); if (pool.follows.has(pk)) netZappers++; }
+        for (const pk of s.zapFrom) { if (muted.has(pk)) continue; const w = trust(pk, pool, input.me); wz = Math.max(wz, w); if (pool.follows.has(pk)) netZappers++; }
         const zapW = (1 + Math.log10(1 + s.zapSats)) * 1.5 * Math.max(wz, 0.08) * Math.max(1, Math.sqrt(s.zapFrom.size));
         E += zapW;
         if (netZappers) netZapSats = s.zapSats;
@@ -375,10 +383,10 @@ function rank(pool: Pool, input: AlgoInput): Ranked[] {
     const words = n.content.replace(/https?:\/\/\S+/g, '').trim().split(/\s+/).filter(Boolean).length;
     let quality = 1;
     if (tags.length > 4) quality *= 0.35;
-    if (words < 3 && !media.size) quality *= 0.4;
+    if (words < 3 && !media.size && !MEDIA_POST.has(n.kind ?? 1)) quality *= 0.4;
     if (!followed && !prof && pool.profiles.size) quality *= 0.5;   // no profile at all
     if (reply) quality *= 0.6;
-    const hasMedia = media.has('image') || media.has('video') || media.has('audio');
+    const hasMedia = MEDIA_POST.has(n.kind ?? 1) || media.has('image') || media.has('video') || media.has('audio');
     let boost = 1;
     if (hasMedia) boost *= 1.25 + 0.35 * input.tune.media;          // media -1 → 0.9, 0 → 1.25, 1 → 1.6
     else if (input.tune.media < 0) boost *= 1 + 0.2 * -input.tune.media;
