@@ -5,6 +5,7 @@
  */
 
 import { type MultisigWallet, type MultisigConfig, createMultisigFromPubkeys } from './multisig';
+import { isChain, type Chain } from './chain';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { type SyncableWalletConfig } from '@/lib/nostr/wallet-sync';
 
@@ -31,6 +32,18 @@ export interface ArchivedMultisig {
   currentBalance: number; // sats (cached)
   balanceUpdatedAt: number;
   signingRoundIds: string[]; // references to signing rounds
+  /**
+   * The chain this vault is used on. The same taproot address exists on both chains;
+   * this decides where its balance, UTXOs, explorer links and spends go. Vaults saved
+   * before this field existed have none and are BTC: every lookup they ever made used the
+   * mempool lib's default chain, 'btc'. Read it through multisigChain().
+   */
+  chain?: Chain;
+}
+
+/** A vault's chain; vaults from before chains were stored are BTC. */
+export function multisigChain(w: Pick<ArchivedMultisig, 'chain'>): Chain {
+  return isChain(w.chain) ? w.chain : 'btc';
 }
 
 export interface PendingSignatureRequest {
@@ -221,10 +234,12 @@ export function createArchivedMultisig(
   keyHolders: KeyHolder[],
   name: string,
   description?: string,
-  ownerPubkey?: string
+  ownerPubkey?: string,
+  chain: Chain = 'xbt',
 ): ArchivedMultisig {
   return {
     id: generateId(),
+    chain,
     ownerPubkey: ownerPubkey || '',
     wallet,
     name,
@@ -256,6 +271,7 @@ export function walletToSyncConfig(wallet: ArchivedMultisig): SyncableWalletConf
     threshold: wallet.wallet.config.threshold,
     pubkeys: wallet.wallet.config.pubkeys,
     createdAt: wallet.createdAt,
+    chain: multisigChain(wallet),
   };
 }
 
@@ -268,6 +284,8 @@ export function syncConfigToWallet(
   return {
     id: config.id,
     ownerPubkey,
+    // configs synced before chains existed carry none: BTC, as above
+    chain: isChain(config.chain) ? config.chain : 'btc',
     wallet,
     name: config.name,
     description: config.description,

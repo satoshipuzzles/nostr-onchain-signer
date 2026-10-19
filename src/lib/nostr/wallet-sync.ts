@@ -22,6 +22,8 @@ export interface SyncableWalletConfig {
   threshold: number;
   pubkeys: string[];
   createdAt: number;
+  /** 'btc' | 'xbt'; absent in configs published before vaults had a chain (= btc) */
+  chain?: 'btc' | 'xbt';
 }
 
 /**

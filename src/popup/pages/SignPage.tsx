@@ -12,9 +12,12 @@ import type { ProfileMetadata } from '@/lib/nostr/social';
 import { isSigningExpired } from '@/lib/nostr/signing-inbox';
 import { queryPublicEvents, publishPublicEvent, appOrigin } from '@/lib/nostr/public-relay';
 import { broadcastPsbts } from '@/lib/bitcoin/psbt-broadcast';
-import { formatSats } from '@/lib/bitcoin/mempool';
+import { formatSats, getMempoolTxUrl, getMempoolAddressUrl } from '@/lib/bitcoin/mempool';
+import { psbtTargetChain } from '@/lib/bitcoin/psbt-builder';
+import { CHAIN_INFO, type Chain } from '@/lib/bitcoin/chain';
 import { describePsbt, psbtSpendsOnlyFrom, type PsbtView } from '@/lib/bitcoin/psbt-describe';
 import { QRCode } from '@/popup/components/QRCode';
+import { ChainBadge } from '@/popup/components/ChainBadge';
 import { fireConfetti } from '@/lib/ui/publish-feedback';
 
 interface NostrEvent {
@@ -177,6 +180,7 @@ export function SignPage() {
         `${request.threshold}-of-${request.signer_pubkeys.length} Social Multisig`,
         `Restored from signing round ${request.round_id.slice(0, 8)}`,
         userPubkey,
+        requestChain(request),
       );
       await saveMultisigWallet(archived);
       setWalletInStore(true);
@@ -501,13 +505,13 @@ export function SignPage() {
             </div>
           </div>
           <a
-            href={`https://mempool.space/tx/${broadcastTxid}`}
+            href={getMempoolTxUrl(broadcastTxid, request ? requestChain(request) : 'btc')}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-4 py-3 bg-bitcoin text-black rounded-xl text-sm font-medium hover:bg-bitcoin/90 transition-colors"
           >
             <ExternalLink className="w-4 h-4" />
-            View on Mempool
+            View on {request && requestChain(request) === 'xbt' ? 'mempool.guide (XBT)' : 'mempool.space (BTC)'}
           </a>
         </div>
       </div>
@@ -522,7 +526,7 @@ export function SignPage() {
           <div className="w-14 h-14 rounded-full bg-gradient-to-br from-bitcoin/40 to-nostr/30 flex items-center justify-center mx-auto mb-3">
             <Shield className="w-7 h-7 text-white/80" />
           </div>
-          <h1 className="text-xl font-bold text-white">Multi-Sig Spend</h1>
+          <h1 className="text-xl font-bold text-white">Multi-Sig Spend <ChainBadge chain={requestChain(request)} prefix="on " className="ml-1" /></h1>
           {request.memo && <p className="text-gray-300 text-sm mt-1">{request.memo}</p>}
           {request.amount_sats ? (
             <p className="text-bitcoin text-lg font-bold mt-1">{formatSats(request.amount_sats)} sats</p>
@@ -751,12 +755,12 @@ export function SignPage() {
             </div>
           )}
           <a
-            href={`https://mempool.space/address/${request.multisig_address}`}
+            href={getMempoolAddressUrl(request.multisig_address, requestChain(request))}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-bitcoin transition-colors"
           >
-            <ExternalLink className="w-3 h-3" /> View address on mempool.space
+            <ExternalLink className="w-3 h-3" /> View address on {CHAIN_INFO[requestChain(request)].ticker} explorer
           </a>
         </div>
 
@@ -783,6 +787,12 @@ export function SignPage() {
       </div>
     </div>
   );
+}
+
+/** The chain a request spends on: its own field, else the PSBT (SIGHASH_UNIFIED = XBT), else BTC. */
+function requestChain(r: Pick<SigningRequestContent, 'chain' | 'psbt_hex'>): Chain {
+  if (r.chain === 'xbt' || r.chain === 'btc') return r.chain;
+  try { return r.psbt_hex ? psbtTargetChain(r.psbt_hex) : 'btc'; } catch { return 'btc'; }
 }
 
 function safeDescribe(psbtHex: string): PsbtView | null {

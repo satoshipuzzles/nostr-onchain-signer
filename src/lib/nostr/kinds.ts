@@ -155,6 +155,8 @@ export interface SigningRequestContent {
   signer_pubkeys?: string[];
   amount_sats?: number;
   recipient?: string;
+  /** Chain the spend is for. Absent in older requests; then the PSBT says (SIGHASH_UNIFIED = xbt), else btc. */
+  chain?: 'btc' | 'xbt';
 }
 
 export function createSigningRequestEvent(

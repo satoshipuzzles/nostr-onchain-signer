@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import {
   ArrowLeft, Plus, Wallet, Users, Clock, ExternalLink,
   Copy, Check, Send, Loader2, Shield,
@@ -8,15 +9,17 @@ import { ProfileBadge } from '@/popup/components/ProfileBadge';
 import { getMempoolAddressUrl, fetchBalance, formatSats } from '@/lib/bitcoin/mempool';
 import { QRCode } from '@/popup/components/QRCode';
 import {
-  loadMultisigWallets, saveMultisigWallet, updateMultisigBalance,
+  loadMultisigWallets, saveMultisigWallet, updateMultisigBalance, multisigChain,
   type ArchivedMultisig, type KeyHolder, type PendingSignatureRequest,
   getRequestsForWallet,
 } from '@/lib/bitcoin/wallet-store';
+import { CHAIN_INFO, type Chain } from '@/lib/bitcoin/chain';
+import { ChainBadge } from '@/popup/components/ChainBadge';
 
 interface Props {
   publicKey: string;
   onCreateNew: () => void;
-  onRequestSignature: (wallet: ArchivedMultisig) => void;
+  onRequestSignature: (wallet: ArchivedMultisig, chain: Chain) => void;
   onBack: () => void;
 }
 
@@ -24,6 +27,8 @@ export function MultisigVault({ publicKey, onCreateNew, onRequestSignature, onBa
   const [wallets, setWallets] = useState<ArchivedMultisig[]>([]);
   const [selectedWallet, setSelectedWallet] = useState<ArchivedMultisig | null>(null);
   const [loading, setLoading] = useState(true);
+  // /wallets/:id opens that vault directly
+  const { id: routeId } = useParams<{ id: string }>();
 
   useEffect(() => {
     loadWallets();
@@ -33,12 +38,16 @@ export function MultisigVault({ publicKey, onCreateNew, onRequestSignature, onBa
     setLoading(true);
     const all = await loadMultisigWallets();
     setWallets(all.sort((a, b) => b.lastActivityAt - a.lastActivityAt));
+    if (routeId && !selectedWallet) {
+      const hit = all.find((w) => w.id === routeId);
+      if (hit) setSelectedWallet(hit);
+    }
     setLoading(false);
 
-    // Refresh balances in background for all wallets
+    // Refresh balances in background for all wallets, each on its own chain
     for (const wallet of all) {
       try {
-        const bal = await fetchBalance(wallet.wallet.address);
+        const bal = await fetchBalance(wallet.wallet.address, { chain: multisigChain(wallet) });
         if (bal.total !== wallet.currentBalance) {
           await updateMultisigBalance(wallet.id, bal.total);
           setWallets((prev) =>
@@ -53,7 +62,7 @@ export function MultisigVault({ publicKey, onCreateNew, onRequestSignature, onBa
     return (
       <WalletDetail
         wallet={selectedWallet}
-        onRequestSignature={() => onRequestSignature(selectedWallet)}
+        onRequestSignature={(chain) => onRequestSignature(selectedWallet, chain)}
         onBack={() => { setSelectedWallet(null); loadWallets(); }}
       />
     );
@@ -139,7 +148,8 @@ function WalletCard({ wallet, onClick }: { wallet: ArchivedMultisig; onClick: ()
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <p className="text-sm font-medium truncate">{wallet.name}</p>
-            <span className="text-[10px] bg-bitcoin/15 text-bitcoin px-1.5 py-0.5 rounded font-mono">
+            <ChainBadge chain={multisigChain(wallet)} />
+            <span className="text-[10px] bg-white/5 text-gray-300 px-1.5 py-0.5 rounded font-mono">
               {wallet.wallet.config.threshold}/{wallet.wallet.config.pubkeys.length}
             </span>
           </div>
@@ -169,24 +179,31 @@ function WalletDetail({
   onBack,
 }: {
   wallet: ArchivedMultisig;
-  onRequestSignature: () => void;
+  onRequestSignature: (chain: Chain) => void;
   onBack: () => void;
 }) {
+  // The vault's own chain, unless the user peeks at the same address on the other chain
+  const homeChain = multisigChain(wallet);
+  const [chain, setChain] = useState<Chain>(homeChain);
+  const other: Chain = homeChain === 'xbt' ? 'btc' : 'xbt';
   const [balance, setBalance] = useState(wallet.currentBalance);
   const [loadingBalance, setLoadingBalance] = useState(false);
   const [copied, setCopied] = useState(false);
   const [requests, setRequests] = useState<PendingSignatureRequest[]>([]);
 
   useEffect(() => {
-    refreshBalance();
     loadRequests();
   }, []);
+  useEffect(() => {
+    refreshBalance(chain);
+  }, [chain]);
 
-  async function refreshBalance() {
+  async function refreshBalance(c: Chain) {
     setLoadingBalance(true);
-    const bal = await fetchBalance(wallet.wallet.address);
+    const bal = await fetchBalance(wallet.wallet.address, { chain: c });
     setBalance(bal.total);
-    await updateMultisigBalance(wallet.id, bal.total);
+    // the stored balance (Wallets list, Home total) is always the vault's own chain
+    if (c === homeChain) await updateMultisigBalance(wallet.id, bal.total);
     setLoadingBalance(false);
   }
 
@@ -211,24 +228,33 @@ function WalletDetail({
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1>{wallet.name}</h1>
-        <span className="text-xs bg-bitcoin/15 text-bitcoin px-2 py-0.5 rounded-full font-medium">
+        <ChainBadge chain={homeChain} />
+        <span className="text-xs bg-white/5 text-gray-300 px-2 py-0.5 rounded-full font-medium">
           {wallet.wallet.config.threshold}-of-{wallet.wallet.config.pubkeys.length}
         </span>
       </div>
 
       {/* Balance */}
-      <div className="card text-center mb-3">
-        <p className="text-2xl font-bold text-bitcoin">
+      <div className={`card text-center mb-3 ${chain !== homeChain ? 'border-amber-400/40' : ''}`}>
+        <p className={`text-2xl font-bold ${chain === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}`}>
           {loadingBalance ? '...' : formatSats(balance)}
         </p>
-        <p className="text-xs text-gray-500 mt-1">Current balance</p>
+        <p className="text-xs text-gray-500 mt-1">
+          Balance on {CHAIN_INFO[chain].label}{chain !== homeChain ? ' (not this vault\'s chain)' : ''}
+        </p>
+        <button
+          onClick={() => setChain(chain === homeChain ? other : homeChain)}
+          className="mt-2 text-[11px] text-gray-400 hover:text-white underline underline-offset-2"
+        >
+          {chain === homeChain ? `Also view this address on ${CHAIN_INFO[other].ticker}` : `Back to ${CHAIN_INFO[homeChain].ticker}`}
+        </button>
       </div>
 
       {/* Address + Receive QR */}
       <div className="card mb-3">
         <div className="flex flex-col items-center mb-3">
           <QRCode data={`bitcoin:${wallet.wallet.address}`} size={140} className="mb-2" />
-          <p className="text-[10px] text-gray-500">Scan to deposit to this multisig</p>
+          <p className="text-[10px] text-gray-500">Scan to deposit <b className={chain === 'xbt' ? 'text-purple-300' : 'text-bitcoin'}>{CHAIN_INFO[chain].ticker}</b> to this multisig</p>
         </div>
         <div className="flex items-center gap-2">
           <code className="text-[10px] text-gray-400 break-all flex-1 font-mono">
@@ -238,7 +264,7 @@ function WalletDetail({
             {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4 text-gray-500" />}
           </button>
           <a
-            href={getMempoolAddressUrl(wallet.wallet.address)}
+            href={getMempoolAddressUrl(wallet.wallet.address, chain)}
             target="_blank"
             rel="noopener"
             className="p-2 hover:bg-surface-700 rounded-lg flex-shrink-0"
@@ -257,11 +283,11 @@ function WalletDetail({
 
       {/* Spend action (primary) */}
       <button
-        onClick={onRequestSignature}
+        onClick={() => onRequestSignature(chain)}
         className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
       >
         <Send className="w-4 h-4" />
-        Spend from this Wallet
+        Spend {CHAIN_INFO[chain].ticker} from this Wallet
       </button>
 
       {/* Key Holders */}
@@ -304,11 +330,11 @@ function WalletDetail({
       {/* Actions */}
       <div className="mt-auto space-y-2 pt-4">
         <button
-          onClick={onRequestSignature}
+          onClick={() => onRequestSignature(chain)}
           className="btn-primary w-full flex items-center justify-center gap-2"
         >
           <Send className="w-4 h-4" />
-          Spend from Wallet
+          Spend {CHAIN_INFO[chain].ticker} from Wallet
         </button>
         <p className="text-[10px] text-gray-500 text-center">
           Creates a transaction and requests signatures from {wallet.wallet.config.threshold - 1} co-signer{wallet.wallet.config.threshold > 2 ? 's' : ''}
