@@ -10,7 +10,7 @@ import { DEFAULT_READ_RELAYS, relayConnectionStatus } from '@/lib/nostr/relay-su
 import { outboxRelaysFor } from '@/lib/nostr/query';
 import { loadRelayList, getReadRelays } from '@/lib/nostr/relays';
 import { loadCache, cacheProfiles, sanitizeProfile } from '@/lib/nostr/cache';
-import { loadMutedPubkeys } from '@/lib/nostr/mute';
+import { loadMutedPubkeys, syncMuteList, onMutesChanged } from '@/lib/nostr/mute';
 import { type ProfileMetadata } from '@/lib/nostr/social';
 import { NoteCard } from '@/popup/components/NoteCard';
 import { NoteThread } from '@/popup/components/NoteThread';
@@ -149,14 +149,17 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
 
   // ─── Mute list ────────────────────────────────────────────────
   useEffect(() => {
-    loadMutedPubkeys()
-      .then((m) => {
-        mutedRef.current = m;
-        // Anything that slipped in before the list arrived
-        setNotes((prev) => prev.filter((n) => !m.has(n.pubkey)));
-      })
-      .catch(() => {});
-  }, []);
+    const apply = (m: Set<string>) => {
+      mutedRef.current = m;
+      // anything already on screen from someone just blocked (or reposts of them) goes now
+      const hide = (n: FeedNote) => m.has(n.pubkey) || ((n.kind === 6 || n.kind === 16) && n.tags.some((t) => t[0] === 'p' && m.has(t[1])));
+      setNotes((prev) => prev.filter((n) => !hide(n)));
+      setPendingNew((prev) => prev.filter((n) => !hide(n)));
+    };
+    loadMutedPubkeys().then(apply).catch(() => {});
+    if (publicKey) syncMuteList(publicKey).catch(() => {});
+    return onMutesChanged(apply);
+  }, [publicKey]);
 
   // ─── Relays ───────────────────────────────────────────────────
   const followsKey = Array.from(followingPubkeys).sort().join(',');

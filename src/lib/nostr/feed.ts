@@ -41,6 +41,11 @@ export interface FeedFilter {
 
 export const KIND_REPOST = 6;
 export const KIND_LONG_FORM = 30023;
+/** NIP-68 picture posts (Olas and friends) and NIP-71 video posts */
+export const KIND_PICTURE = 20;
+export const KIND_VIDEO = 21;
+export const KIND_SHORT_VIDEO = 22;
+export const FOLLOWING_KINDS = [1, KIND_REPOST, 16, KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO, 1111, 9802, KIND_LONG_FORM];
 
 /** Hashtag chips offered on the #Tags tab. */
 export const PRESET_HASHTAGS = ['xbt', 'bitcoin', 'nostr', 'knots'];
@@ -70,10 +75,12 @@ export function buildNostrFilters(filter: FeedFilter): Filter[] {
 
   switch (filter.mode) {
     case 'global':
-      return [{ ...base, kinds: [1], since: filter.since ?? recentSince }];
+      return [{ ...base, kinds: [1, KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO], since: filter.since ?? recentSince }];
     case 'following':
       if (!filter.pubkeys?.length) return [];
-      return [{ ...base, kinds: [1, KIND_REPOST, KIND_LONG_FORM], authors: filter.pubkeys }];
+      // everything people post, not only kind-1 notes: photo and video posts, comments,
+      // generic reposts, highlights and articles, so nobody looks silent
+      return [{ ...base, kinds: FOLLOWING_KINDS, authors: filter.pubkeys }];
     case 'media':
       return [{ ...base, kinds: [1] }];
     case 'onchain':
@@ -84,7 +91,7 @@ export function buildNostrFilters(filter: FeedFilter): Filter[] {
     case 'hashtag': {
       const tag = (filter.hashtag ?? '').toLowerCase().replace(/^#/, '').trim();
       if (!tag) return [];
-      return [{ ...base, kinds: [1, KIND_LONG_FORM], '#t': [tag] }];
+      return [{ ...base, kinds: [1, KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO, KIND_LONG_FORM], '#t': [tag] }];
     }
     case 'kind':
       return [{ ...base, kinds: [filter.kind ?? 1] }];
@@ -194,7 +201,7 @@ export interface RepostInfo {
 }
 
 export function parseRepost(note: FeedNote): RepostInfo | null {
-  if (note.kind !== KIND_REPOST) return null;
+  if (note.kind !== KIND_REPOST && note.kind !== 16) return null;  // 16 = generic repost (NIP-18)
   let inner: FeedNote | null = null;
   const raw = note.content?.trim();
   if (raw && raw.startsWith('{')) {
