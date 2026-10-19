@@ -334,3 +334,46 @@ export async function relaysForAuthors(pubkeys: string[], hints: string[] = []):
     ...viewer.slice(0, 4),
   ], 14);
 }
+
+/**
+ * Outbox: the relays the given people actually post to (their kind-10002 write relays),
+ * picked greedily so a few relays cover as many of them as possible. Cached for an hour.
+ */
+const outboxCache = new Map<string, { at: number; relays: string[] }>();
+export function outboxRelaysFor(pubkeys: string[], max = 6): Promise<string[]> {
+  const key = [...pubkeys].sort().join(',');
+  const hit = outboxCache.get(key);
+  if (hit && Date.now() - hit.at < 3600_000) return Promise.resolve(hit.relays);
+  return new Promise((resolve) => {
+    const latest = new Map<string, NEvent>();
+    streamQuery({
+      relays: [...INDEXER_RELAYS, 'wss://relay.damus.io', 'wss://relay.ditto.pub'],
+      filters: [{ kinds: [10002], authors: pubkeys.slice(0, 500) }],
+      timeoutMs: 6000,
+      onEvent: (e) => { const p = latest.get(e.pubkey); if (!p || p.created_at < e.created_at) latest.set(e.pubkey, e); },
+      onDone: () => {
+        const who = new Map<string, Set<string>>();
+        for (const [pk, e] of latest) {
+          for (const t of e.tags.filter((t) => t[0] === 'r' && t[1] && (!t[2] || t[2] === 'write')).slice(0, 4)) {
+            const u = t[1].trim().replace(/\/$/, '');
+            if (!/^wss:\/\//.test(u) || /primal\.net/i.test(u)) continue;
+            if (!who.has(u)) who.set(u, new Set());
+            who.get(u)!.add(pk);
+          }
+        }
+        const left = new Set(latest.keys());
+        const picked: string[] = [];
+        while (picked.length < max && left.size) {
+          let best = '', n = 0;
+          for (const [u, set] of who) { if (picked.includes(u)) continue; let c = 0; for (const pk of set) if (left.has(pk)) c++; if (c > n) { n = c; best = u; } }
+          if (!best) break;
+          picked.push(best);
+          for (const pk of who.get(best)!) left.delete(pk);
+        }
+        outboxCache.set(key, { at: Date.now(), relays: picked });
+        resolve(picked);
+      },
+    });
+  });
+}
+
