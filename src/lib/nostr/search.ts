@@ -16,7 +16,7 @@ export type SearchTarget =
   | { type: 'text'; text: string };
 
 /** Relays that implement NIP-50 full-text search. Never relay.primal.net. */
-export const SEARCH_RELAYS = ['wss://search.nos.today', 'wss://relay.ditto.pub', 'wss://nostr.wine', 'wss://relay.nostr.band'];
+export const SEARCH_RELAYS = ['wss://relay.ditto.pub', 'wss://search.nos.today', 'wss://relay.noswhere.com', 'wss://relay.nostr.band'];
 
 export function parseSearchQuery(raw: string): SearchTarget | null {
   const q = raw.trim().replace(/^nostr:/i, '');

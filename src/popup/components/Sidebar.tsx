@@ -3,8 +3,7 @@ import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, Edit3, Download, Lock,
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
-  Gamepad2, Hammer, Zap, Clapperboard,
-} from 'lucide-react';
+  Gamepad2, Hammer, Zap, Clapperboard, Search } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
 import { ClickableAvatar } from './ClickableAvatar';
@@ -14,6 +13,7 @@ import { pubkeyToNpub } from '@/lib/nostr/keys';
 const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
   { to: '/feed', icon: Rss, label: 'Feed' },
+  { to: '/find', icon: Search, label: 'Search' },
   { to: '/messages', icon: MessageCircle, label: 'Messages' },
   { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },

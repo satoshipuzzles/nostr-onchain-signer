@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Wallet, Rss, MessageCircle, Menu } from 'lucide-react';
+import { LayoutDashboard, Wallet, Rss, MessageCircle, Menu, Search } from 'lucide-react';
 
 const tabs = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
   { to: '/feed', icon: Rss, label: 'Feed' },
+  { to: '/find', icon: Search, label: 'Search' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
   { to: '/messages', icon: MessageCircle, label: 'Messages' },
   { to: '/more', icon: Menu, label: 'More' },
@@ -21,7 +22,7 @@ export function BottomNav() {
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors ${
+              `flex flex-col items-center justify-center gap-0.5 px-2 py-1.5 min-w-[52px] rounded-lg transition-colors ${
                 isActive
                   ? 'text-white'
                   : 'text-gray-600 hover:text-gray-400'

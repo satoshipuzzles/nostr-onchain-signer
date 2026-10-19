@@ -40,7 +40,8 @@ export const DEFAULT_RELAYS = [
 export const INDEXER_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://relay.nostronchain.com'];
 
 /** NIP-50 search relays for people search. */
-export const PEOPLE_SEARCH_RELAYS = ['wss://relay.nostr.band', 'wss://search.nos.today', 'wss://relay.noswhere.com'];
+// relay.ditto.pub answers in ~0.5 s; nostr.band was down and noswhere empty on 2026-10-19
+export const PEOPLE_SEARCH_RELAYS = ['wss://relay.ditto.pub', 'wss://search.nos.today', 'wss://relay.noswhere.com', 'wss://relay.nostr.band'];
 
 /** Kinds the cloud fallback accepts (mirrors api/nostr-query.js). */
 const CLOUD_KINDS = new Set([0, 1, 3, 6, 7, 1111, 9735, 10002]);

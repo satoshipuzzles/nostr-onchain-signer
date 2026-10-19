@@ -22,6 +22,7 @@ const MultiSigWrapper = lazy(() => import('./pages/MultiSigWrapper').then((m) =>
 const MultisigVaultWrapper = lazy(() => import('./pages/MultisigVaultWrapper').then((m) => ({ default: m.MultisigVaultWrapper })));
 const RequestSignatureWrapper = lazy(() => import('./pages/RequestSignatureWrapper').then((m) => ({ default: m.RequestSignatureWrapper })));
 const WalletViewWrapper = lazy(() => import('./pages/WalletViewWrapper').then((m) => ({ default: m.WalletViewWrapper })));
+const SearchPage = lazy(() => import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })));
 const CelebrationSettings = lazy(() => import('./pages/CelebrationSettings').then((m) => ({ default: m.CelebrationSettings })));
 const RelaySettingsWrapper = lazy(() => import('./pages/RelaySettingsWrapper').then((m) => ({ default: m.RelaySettingsWrapper })));
 const EditProfileWrapper = lazy(() => import('./pages/EditProfileWrapper').then((m) => ({ default: m.EditProfileWrapper })));
@@ -232,6 +233,7 @@ export function App() {
         <Route element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="feed" element={<FeedPage />} />
+          <Route path="find" element={<SearchPage />} />
           <Route path="messages" element={<Messages />} />
           <Route path="leaderboard" element={<Leaderboard />} />
           <Route path="wallets" element={<Wallets />} />

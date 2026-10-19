@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks, RefreshCw, Zap, Users } from 'lucide-react';
+import { Send, Shield, Copy, Check, Wallet, Edit3, Inbox, Fingerprint, Unlock, Blocks, RefreshCw, Zap, Users, Search as SearchIcon } from 'lucide-react';
 import { loadNwcConnection, getNwcBalance, type LightningChain } from '@/lib/nostr/nwc';
 import { streamQuery, relaysForAuthor } from '@/lib/nostr/query';
 import { parseZapReceipt } from '@/lib/nostr/zap';
@@ -370,6 +370,25 @@ export function Home() {
 
       {/* Quick actions */}
       <div className="space-y-2 mt-auto">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const v = new FormData(e.currentTarget).get('q')?.toString().trim();
+            navigate(v ? `/find?q=${encodeURIComponent(v)}` : '/find');
+          }}
+          className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/[0.04] focus-within:border-purple-400/60 px-3"
+        >
+          <SearchIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          <input
+            name="q"
+            placeholder="Search npubs, notes, addresses, txids, invoices…"
+            enterKeyHint="search"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            className="flex-1 min-w-0 bg-transparent py-3 text-sm outline-none placeholder-gray-500"
+          />
+        </form>
         <button
           onClick={() => navigate('/send')}
           className="btn-primary w-full flex items-center justify-center gap-2"

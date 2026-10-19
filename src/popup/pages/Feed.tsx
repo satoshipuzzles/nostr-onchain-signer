@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   subscribeFeed, subscribeEvents, mergeNotes, parseRepost, longFormMeta, isLongForm,
   tallyEngagement, loadFeedTab, saveFeedTab, loadFeedHashtag, saveFeedHashtag,
@@ -99,15 +100,18 @@ function timeAgo(ts: number): string {
 }
 
 export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken }: Props) {
-  const [activeMode, setActiveMode] = useState<FeedMode>(() => loadFeedTab());
+  // /feed?tag=bitcoin opens that hashtag (from Search)
+  const [urlParams] = useSearchParams();
+  const urlTag = (urlParams.get('tag') || '').replace(/^#/, '').toLowerCase();
+  const [activeMode, setActiveMode] = useState<FeedMode>(() => (urlTag ? 'hashtag' : loadFeedTab()));
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [pendingNew, setPendingNew] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState(false);
-  const [hashtag, setHashtag] = useState(() => loadFeedHashtag());
-  const [hashtagSubmitted, setHashtagSubmitted] = useState(() => loadFeedHashtag());
+  const [hashtag, setHashtag] = useState(() => urlTag || loadFeedHashtag());
+  const [hashtagSubmitted, setHashtagSubmitted] = useState(() => urlTag || loadFeedHashtag());
   const [selectedNote, setSelectedNote] = useState<FeedNote | null>(null);
   const [engagement, setEngagement] = useState<Map<string, Engagement>>(new Map());
   const [showComposer, setShowComposer] = useState(false);

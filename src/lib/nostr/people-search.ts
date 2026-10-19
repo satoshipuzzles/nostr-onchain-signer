@@ -22,6 +22,9 @@ export interface PeopleHit {
 
 const HEX64 = /^[0-9a-f]{64}$/i;
 
+/** Accounts never ranked up or suggested unprompted; they still show when searched for by name or key. */
+export const NO_PROMOTE = new Set(['04c915daefee38317fa734444acee390a8269fe5810b2241e5e6dd343dfbecc9']); // odell
+
 /** A pasted key, or null. */
 export function parseKeyQuery(q: string): { pubkey: string; relays: string[] } | null {
   const s = q.trim().replace(/^nostr:/i, '');
@@ -97,7 +100,12 @@ export function searchPeople(query: string, opts: SearchPeopleOptions): () => vo
     const following = opts.following.has(profile.pubkey);
     const m = source === 'direct' || source === 'nip05' ? 400 : matchScore(profile, q);
     if (!m && source !== 'search') return;
-    const score = base + m + (following ? 1000 : 0) + quality(profile) + (source === 'search' ? 5 : 0);
+    let score = base + m + (following ? 1000 : 0) + quality(profile) + (source === 'search' ? 5 : 0);
+    if (NO_PROMOTE.has(profile.pubkey) && source !== 'direct' && source !== 'nip05') {
+      const named = q.trim().length >= 3 && [profile.name, profile.displayName, profile.nip05].some((x) => (x || '').toLowerCase().includes(q.trim().toLowerCase().replace(/^@/, '')));
+      if (!named) return;
+      score = m + quality(profile);  // no follow boost
+    }
     const prev = hits.get(profile.pubkey);
     if (prev && prev.score >= score && (prev.profile.name || prev.profile.displayName)) return;
     hits.set(profile.pubkey, { profile: prev && !profile.name && !profile.displayName ? prev.profile : profile, following, source, score });
