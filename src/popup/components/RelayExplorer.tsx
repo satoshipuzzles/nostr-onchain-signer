@@ -31,7 +31,7 @@ const PROFILE_RELAYS = ['wss://purplepag.es'];
 // certificate), several hosts that no longer resolve. purplepag.es only serves listed kinds
 // and search.nos.today only searches; both are handled, so they stay.
 const SUGGESTED = [
-  'wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.nostronchain.com', 'wss://relay.snort.social',
+  'wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social',
   'wss://relay.ditto.pub', 'wss://offchain.pub', 'wss://nostr.bitcoiner.social', 'wss://relay.nos.social',
   'wss://nostr-pub.wellorder.net', 'wss://relay.coinos.io', 'wss://nostr21.com', 'wss://relay.nostrplebs.com',
   'wss://nostr.einundzwanzig.space', 'wss://nostr.mom', 'wss://purplepag.es', 'wss://search.nos.today',

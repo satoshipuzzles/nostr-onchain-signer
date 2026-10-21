@@ -24,7 +24,7 @@ export interface SavedList {
 /** Relays a new user starts with in the explorer: answer without auth and serve all kinds (checked 2026-10-19). */
 export const STARTER_RELAYS = [
   'wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.snort.social', 'wss://relay.ditto.pub',
-  'wss://relay.nostronchain.com', 'wss://offchain.pub', 'wss://nostr.bitcoiner.social', 'wss://relay.nos.social',
+  'wss://offchain.pub', 'wss://nostr.bitcoiner.social', 'wss://relay.nos.social',
 ];
 
 const KEY = (k: ListKind, pk: string) => `nostronchain_saved_${k}_${pk || 'guest'}`;

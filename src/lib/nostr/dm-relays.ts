@@ -16,16 +16,15 @@ import { signEventWithFallback } from './sign-event';
 export const DEFAULT_DM_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostronchain.com',
   'wss://relay.0xchat.com',
+  'wss://relay.ditto.pub',
 ];
 
 const DISCOVERY_RELAYS = [
   'wss://purplepag.es',
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
-  'wss://relay.nostronchain.com',
+  'wss://relay.ditto.pub',
 ];
 
 let pool: SimplePool | null = null;

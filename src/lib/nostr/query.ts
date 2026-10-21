@@ -33,11 +33,10 @@ export const DEFAULT_RELAYS = [
   'wss://nos.lol',
   'wss://relay.snort.social',
   'wss://nostr.mom',
-  'wss://relay.nostronchain.com',
 ];
 
 /** Relays that index kind 0 / kind 10002 widely. */
-export const INDEXER_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io', 'wss://relay.nostronchain.com'];
+export const INDEXER_RELAYS = ['wss://purplepag.es', 'wss://relay.damus.io'];
 
 /** NIP-50 search relays for people search. */
 // relay.ditto.pub answers in ~0.5 s; nostr.band was down and noswhere empty on 2026-10-19

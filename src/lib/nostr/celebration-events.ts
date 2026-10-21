@@ -17,7 +17,7 @@ import { streamQuery, DEFAULT_RELAYS, type NEvent } from './query';
 import { CUSTOM_LIMITS, type CustomFile, type CustomMode } from '@/lib/ui/celebrations';
 
 export const CELEBRATION_KIND = 31616;
-export const STORE_RELAYS = [...new Set([...DEFAULT_RELAYS, 'wss://relay.ditto.pub', 'wss://relay.nostronchain.com', 'wss://nos.lol', 'wss://relay.damus.io'])];
+export const STORE_RELAYS = [...new Set([...DEFAULT_RELAYS, 'wss://relay.ditto.pub', 'wss://nos.lol', 'wss://relay.damus.io'])];
 
 export interface SharedCelebration {
   id: string;
