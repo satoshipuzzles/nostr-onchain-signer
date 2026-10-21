@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Sparkles, SlidersHorizontal, ThumbsDown, Loader2, RefreshCw, X, Zap, Heart, Repeat2, MessageCircle, Users, Bitcoin, Compass, Hash } from 'lucide-react';
 import { toast } from 'sonner';
 import { NoteCard } from '@/popup/components/NoteCard';
@@ -117,13 +118,16 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
 
   const updateTune = (t: Partial<AlgoTune>) => setTune(saveTune(t)); // re-ranks the cached pool, no refetch
   const firstLoad = !ranked.length && !done;
+  // a guest (or an account that follows nobody yet) is read from a starter graph of Bitcoiners;
+  // tune and "show less" stay on this device and nothing is signed
+  const seeded = !publicKey || followingPubkeys.size === 0;
 
   return (
     <div onClick={() => setMenuFor(null)}>
       <div className="px-4 pt-3 pb-1 flex items-center gap-2">
         <Sparkles className="w-4 h-4 text-purple-300" />
         <p className="text-[12px] text-gray-400 flex-1">
-          <b className="text-gray-200">Nostr Onchain algorithm</b> · picked from your network{!done && ranked.length ? ' · still tuning…' : ''}
+          <b className="text-gray-200">Nostr Onchain algorithm</b> · {seeded ? 'picked from what Bitcoiners on Nostr are sharing' : 'picked from your network'}{!done && ranked.length ? ' · still tuning…' : ''}
         </p>
         <button onClick={(e) => { e.stopPropagation(); clearAlgoCache(); setRun((n) => n + 1); }} className="p-2 rounded-lg hover:bg-white/10 text-gray-400" aria-label="Refresh" title="Refresh">
           <RefreshCw className={`w-4 h-4 ${!done ? 'animate-spin' : ''}`} />
@@ -133,10 +137,15 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
         </button>
       </div>
 
+      {!publicKey && (
+        <p className="mx-4 mt-1 mb-1 text-[12px] rounded-xl border border-sky-400/20 bg-sky-500/10 text-sky-100 px-3 py-2" data-testid="guest-note">
+          Browsing as a guest. <Link to="/" className="underline">Sign in</Link> and this feed follows your own network. Tune and "show less" are saved on this device.
+        </p>
+      )}
       {firstLoad && (
         <div className="flex flex-col items-center py-14 text-gray-500">
           <Loader2 className="w-6 h-6 animate-spin mb-2" />
-          <p className="text-sm">Reading your network…</p>
+          <p className="text-sm">{seeded ? 'Reading what Bitcoiners are sharing…' : 'Reading your network…'}</p>
         </div>
       )}
       {done && !visible.length && (
@@ -178,7 +187,7 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
               <span className="text-sm font-semibold">Tune your feed</span>
               <button onClick={() => setTuneOpen(false)} className="p-2 -mr-2 text-gray-400" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
-            <label className="block text-xs text-gray-400 mb-1">Discovery: {tune.discovery < 0.1 ? 'only people you follow' : tune.discovery < 0.3 ? 'a few new voices' : tune.discovery < 0.45 ? 'plenty of new voices' : 'mostly new voices'}</label>
+            <label className="block text-xs text-gray-400 mb-1">Discovery: {tune.discovery < 0.1 ? (seeded ? 'only the starter set' : 'only people you follow') : tune.discovery < 0.3 ? 'a few new voices' : tune.discovery < 0.45 ? 'plenty of new voices' : 'mostly new voices'}</label>
             <input type="range" min={0} max={0.6} step={0.05} value={tune.discovery} onChange={(e) => updateTune({ discovery: Number(e.target.value) })} className="w-full mb-4 accent-purple-500" aria-label="Discovery" />
             <label className="block text-xs text-gray-400 mb-1">Media: {tune.media < -0.3 ? 'more text' : tune.media > 0.3 ? 'more pictures and video' : 'balanced'}</label>
             <input type="range" min={-1} max={1} step={0.25} value={tune.media} onChange={(e) => updateTune({ media: Number(e.target.value) })} className="w-full mb-4 accent-purple-500" aria-label="Media" />

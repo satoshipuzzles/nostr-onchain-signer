@@ -3,11 +3,20 @@
  *   /p/:id      profile (npub, nprofile, hex or name@domain)
  *   /e/:id      a note and its thread (note, nevent or hex id)
  *   /search?q=  people search
+ *   /explore    the feed as a guest: For you from a Bitcoin starter graph, Global, On-chain, tags,
+ *               relays and any feeds added from the store (kept on the device)
+ *   /explore/feeds  the feed store
+ * The two feed pages send someone whose vault is unlocked to the app's own /feed and /feeds/store.
  */
 import { useEffect, useState, useRef, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { nip19 } from 'nostr-tools';
-import { Search, Loader2, BadgeCheck, ArrowRight } from 'lucide-react';
+import { Search, Loader2, BadgeCheck, ArrowRight, Newspaper } from 'lucide-react';
+import { Navigate } from 'react-router-dom';
+import { Feed } from './Feed';
+import { FeedStore } from './FeedStore';
+import { createMessageId } from '@/shared/messages';
+import type { ExtensionMessage, VaultStatusResponse } from '@/shared/messages';
 import { ProfileView } from './ProfileView';
 import { NoteThread } from '@/popup/components/NoteThread';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
@@ -17,16 +26,19 @@ import { useNostrEvent, useProfile } from '@/popup/hooks/useNostr';
 import type { EventPointer } from '@/lib/nostr/nostr-store';
 import type { FeedNote } from '@/lib/nostr/feed';
 
-function Shell({ children }: { children: ReactNode }) {
+export function Shell({ children, wide, staticHeader }: { children: ReactNode; wide?: boolean; staticHeader?: boolean }) {
   return (
     <div className="h-full overflow-y-auto bg-surface-900 text-white">
-      <header className="sticky top-0 z-40 bg-black/90 backdrop-blur border-b border-white/10">
+      <header className={`${staticHeader ? '' : 'sticky top-0 z-40'} bg-black/90 backdrop-blur border-b border-white/10`}>
         <div className="max-w-lg mx-auto flex items-center gap-3 px-4 h-12">
           <Link to="/search" className="flex items-center gap-2 min-w-0">
             <img src="/logo.png" alt="" className="w-7 h-7 rounded-lg" />
             <span className="text-sm font-bold truncate">Nostr Onchain</span>
           </Link>
-          <Link to="/search" className="ml-auto p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5" title="Search people">
+          <Link to="/explore" className="ml-auto p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5" title="Browse the feed">
+            <Newspaper className="w-4 h-4" />
+          </Link>
+          <Link to="/search" className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-white/5" title="Search people">
             <Search className="w-4 h-4" />
           </Link>
           <Link to="/" className="text-xs px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 flex items-center gap-1">
@@ -34,7 +46,7 @@ function Shell({ children }: { children: ReactNode }) {
           </Link>
         </div>
       </header>
-      <main className="max-w-lg mx-auto">{children}</main>
+      <main className={`${wide ? 'max-w-2xl' : 'max-w-lg'} mx-auto`}>{children}</main>
     </div>
   );
 }
@@ -209,4 +221,44 @@ export function PublicSearch() {
       </div>
     </Shell>
   );
+}
+
+/** 'checking' until the vault answers; 'unlocked' sends the feed pages into the app. */
+function useVaultUnlocked(): 'checking' | 'unlocked' | 'guest' {
+  const [state, setState] = useState<'checking' | 'unlocked' | 'guest'>('checking');
+  useEffect(() => {
+    let live = true;
+    chrome.runtime.sendMessage({ type: 'vault:status', id: createMessageId() } as ExtensionMessage)
+      .then((r: { result?: VaultStatusResponse; error?: string } | undefined) => {
+        if (live) setState(r?.result?.unlocked && r.result.publicKey ? 'unlocked' : 'guest');
+      })
+      .catch(() => { if (live) setState('guest'); });
+    return () => { live = false; };
+  }, []);
+  return state;
+}
+
+const NO_FOLLOWS = new Set<string>();
+
+/** The feed with no account. Nothing here signs or publishes. */
+export function PublicFeed() {
+  const navigate = useNavigate();
+  const vault = useVaultUnlocked();
+  if (vault === 'unlocked') return <Navigate to="/feed" replace />;
+  if (vault === 'checking') return <Shell><Centered><Loader2 className="w-5 h-5 animate-spin" /></Centered></Shell>;
+  return (
+    <Shell wide staticHeader>
+      <div className="pb-24" data-testid="public-feed">
+        <Feed publicKey="" followingPubkeys={NO_FOLLOWS} onViewProfile={(pk) => navigate(`/p/${nip19.npubEncode(pk)}`)} />
+      </div>
+    </Shell>
+  );
+}
+
+/** The feed store with no account: browse, preview and add (on this device). */
+export function PublicFeedStore() {
+  const vault = useVaultUnlocked();
+  if (vault === 'unlocked') return <Navigate to="/feeds/store" replace />;
+  if (vault === 'checking') return <Shell><Centered><Loader2 className="w-5 h-5 animate-spin" /></Centered></Shell>;
+  return <Shell wide><FeedStore /></Shell>;
 }

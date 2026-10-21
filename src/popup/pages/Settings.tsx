@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server, Blocks, PartyPopper } from 'lucide-react';
+import { Radio, Edit3, Download, Upload, Lock, Zap, Check, X, Eye, EyeOff, Key, Copy, CheckCircle2, Globe, FileText, Server, Blocks, PartyPopper, Store } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from '../components/AccountSwitcher';
 import { createMessageId } from '@/shared/messages';
@@ -368,6 +368,18 @@ export function Settings() {
           <div className="flex-1 text-left">
             <p className="text-sm font-medium">Celebrations</p>
             <p className="text-xs text-gray-500">The animation when a note goes out: 12 to pick from, or your own</p>
+          </div>
+        </button>
+
+        <button
+          onClick={() => navigate('/feeds/store')}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-surface-700 transition-colors"
+          data-testid="settings-feed-store"
+        >
+          <Store className="w-5 h-5 text-gray-400" />
+          <div className="flex-1 text-left">
+            <p className="text-sm font-medium">Feed store</p>
+            <p className="text-xs text-gray-500">Add feeds people made, make and publish your own, reorder your Feed tabs</p>
           </div>
         </button>
 

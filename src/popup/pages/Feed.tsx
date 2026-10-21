@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import {
   subscribeFeed, subscribeEvents, mergeNotes, parseRepost, longFormMeta, isLongForm,
-  tallyEngagement, loadFeedTab, saveFeedTab, loadFeedHashtag, saveFeedHashtag,
+  tallyEngagement, loadFeedTab, saveFeedTab, loadFeedHashtag, saveFeedHashtag, loadCustomTab, saveCustomTab,
   FEED_MAX_NOTES, FEED_PAGE_SIZE, KIND_REPOST, EMPTY_ENGAGEMENT,
   type FeedNote, type FeedMode, type FeedFilter, type Engagement,
 } from '@/lib/nostr/feed';
@@ -17,7 +17,7 @@ import { NoteThread } from '@/popup/components/NoteThread';
 import { ComposeNote } from '@/popup/components/ComposeNote';
 import { ClickableAvatar } from '@/popup/components/ClickableAvatar';
 import { SkeletonFeed } from '@/popup/components/Skeleton';
-import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X, Server, Sparkles } from 'lucide-react';
+import { Globe, Users, Bitcoin, Hash, Loader2, Inbox, Repeat2, ArrowUp, RefreshCw, PenLine, BookOpen, Radio, Plus, X, Server, Sparkles, Store, ListFilter, Bot } from 'lucide-react';
 import { useEmbedPlayer } from '@/popup/context/EmbedPlayerContext';
 import { RelayExplorer } from '@/popup/components/RelayExplorer';
 import { ForYouFeed } from '@/popup/components/ForYouFeed';
@@ -25,6 +25,10 @@ import { SavedChips } from '@/popup/components/SavedChips';
 import { FeedFilterPanel } from '@/popup/components/FeedFilterPanel';
 import { useFeedFilters, passesFilters, activeFilterCount, useReplyMode } from '@/lib/nostr/feed-filters';
 import { RepliesSwitch } from '@/popup/components/RepliesSwitch';
+import { CustomFeedView } from '@/popup/components/CustomFeedView';
+import { useAddedFeeds, pullAddedFeeds } from '@/lib/nostr/feed-store';
+
+const pulledFeeds = new Set<string>();
 
 interface Props {
   publicKey: string;
@@ -110,7 +114,23 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   // /feed?tag=bitcoin opens that hashtag (from Search)
   const [urlParams] = useSearchParams();
   const urlTag = (urlParams.get('tag') || '').replace(/^#/, '').toLowerCase();
-  const [activeMode, setActiveMode] = useState<FeedMode>(() => (urlTag ? 'hashtag' : loadFeedTab()));
+  // no account (the public /explore page): For you from a Bitcoin starter graph, no Following tab
+  const guest = !publicKey;
+  const [activeMode, setActiveMode] = useState<FeedMode>(() => (urlTag ? 'hashtag' : loadFeedTab(guest)));
+  // feeds added from the feed store show as tabs after the built-in ones
+  const added = useAddedFeeds(publicKey);
+  const [customAddr, setCustomAddr] = useState(() => loadCustomTab());
+  const customDef = activeMode === 'custom' ? added.items.find((x) => x.addr === customAddr) ?? null : null;
+  useEffect(() => {
+    if (!publicKey || pulledFeeds.has(publicKey)) return;
+    pulledFeeds.add(publicKey);
+    pullAddedFeeds(publicKey).catch(() => {});
+  }, [publicKey]);
+  // a removed feed's tab falls back to For you
+  useEffect(() => {
+    if (activeMode === 'custom' && !customDef) setActiveMode('foryou');
+  }, [activeMode, customDef]);
+  const tabs = guest ? TABS.filter((t) => t.mode !== 'following') : TABS;
   const [notes, setNotes] = useState<FeedNote[]>([]);
   const [pendingNew, setPendingNew] = useState<FeedNote[]>([]);
   const [profiles, setProfiles] = useState<Map<string, ProfileMetadata>>(new Map());
@@ -260,7 +280,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const followingKey = Array.from(followingPubkeys).sort().join(',');
 
   const buildFilter = useCallback((mode: FeedMode): FeedFilter | null => {
-    if (mode === 'relay' || mode === 'foryou') return null;  // the relay explorer and the algorithm run their own queries
+    if (mode === 'relay' || mode === 'foryou' || mode === 'custom') return null;  // the relay explorer, the algorithm and store feeds run their own queries
     const filter: FeedFilter = { mode, limit: FEED_PAGE_SIZE };
     if (mode === 'following') {
       if (followingPubkeys.size === 0) return null;
@@ -480,10 +500,11 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   }, []);
 
   // ─── Tab handling ─────────────────────────────────────────────
-  function handleTabChange(mode: FeedMode) {
-    if (mode === activeMode) return;
+  function handleTabChange(mode: FeedMode, addr?: string) {
+    if (mode === activeMode && (mode !== 'custom' || addr === customAddr)) return;
+    if (mode === 'custom' && addr) { setCustomAddr(addr); saveCustomTab(addr); }
     setActiveMode(mode);
-    saveFeedTab(mode);
+    saveFeedTab(mode, guest);
     setShowComposer(false);
     listTopRef.current?.scrollIntoView({ block: 'start' });
   }
@@ -504,9 +525,9 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const needsHashtag = activeMode === 'hashtag' && !hashtagSubmitted;
   const noFollows = activeMode === 'following' && followingPubkeys.size === 0;
   // the relay explorer and the For you algorithm render their own lists
-  const exploring = activeMode === 'relay' || activeMode === 'foryou';
+  const exploring = activeMode === 'relay' || activeMode === 'foryou' || activeMode === 'custom';
   const showEmptyState = !exploring && !loading && notes.length === 0 && !needsHashtag && !noFollows;
-  const canCompose = activeMode === 'following' || activeMode === 'global';
+  const canCompose = !guest && (activeMode === 'following' || activeMode === 'global');
 
   const visibleNotes = useMemo(() => (filtering
     ? notes.filter((n) => passesFilters(n, effectivePrefs, { inner: parseRepost(n)?.inner, profile: profiles.get(n.pubkey) }))
@@ -568,7 +589,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
       <div className="sticky top-0 z-20 bg-black/90 backdrop-blur-md border-b border-white/5">
         <div className="flex items-center gap-1 px-3 py-2">
           <div className="flex gap-1 overflow-x-auto scrollbar-none flex-1">
-            {TABS.map(({ mode, label, icon: Icon }) => (
+            {tabs.map(({ mode, label, icon: Icon }) => (
               <button
                 key={mode}
                 data-mode={mode}
@@ -586,9 +607,38 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
                 <span className={activeMode === mode ? '' : 'hidden sm:inline'}>{label}</span>
               </button>
             ))}
+            {added.items.map((def) => {
+              const on = activeMode === 'custom' && customAddr === def.addr;
+              const Icon = def.type === 'dvm' ? Bot : ListFilter;
+              return (
+                <button
+                  key={def.addr}
+                  data-mode="custom"
+                  data-feed={def.addr}
+                  onClick={() => handleTabChange('custom', def.addr)}
+                  title={def.title}
+                  className={`flex items-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-full text-[13px] font-medium whitespace-nowrap transition-all ${
+                    on ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-gray-400 hover:text-white hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  {def.image ? <img src={def.image} alt="" className="w-4 h-4 sm:w-3.5 sm:h-3.5 rounded object-cover" /> : <Icon className="w-4 h-4 sm:w-3.5 sm:h-3.5" />}
+                  <span className={on ? 'max-w-[9rem] truncate' : 'hidden sm:inline max-w-[9rem] truncate'}>{def.title}</span>
+                </button>
+              );
+            })}
+            <Link
+              to={guest ? '/explore/feeds' : '/feeds/store'}
+              data-testid="feed-store-link"
+              title="Feed store: add feeds people made"
+              aria-label="Feed store"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-full text-[13px] font-medium whitespace-nowrap text-gray-400 hover:text-white hover:bg-white/5 border border-dashed border-white/15"
+            >
+              <Store className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+              <span className="hidden sm:inline">Store</span>
+            </Link>
           </div>
-          {/* counts the regular feed's sockets; For you runs its own queries, so it would read 0 there */}
-          {activeMode !== 'foryou' && (
+          {/* counts the regular feed's sockets; For you and store feeds run their own queries, so it would read 0 there */}
+          {activeMode !== 'foryou' && activeMode !== 'custom' && (
             <span
               className={`flex items-center gap-1 text-[11px] whitespace-nowrap pl-2 ${
                 relayStatus.total === 0 ? 'text-gray-600' : relayStatus.up === 0 ? 'text-red-400' : 'text-gray-500'
@@ -601,9 +651,11 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           )}
         </div>
 
-        <div className="px-3 pb-2 flex justify-center">
-          <RepliesSwitch feed={activeMode} />
-        </div>
+        {activeMode !== 'custom' && (
+          <div className="px-3 pb-2 flex justify-center">
+            <RepliesSwitch feed={activeMode} />
+          </div>
+        )}
 
         {/* Hashtag chips + box */}
         {activeMode === 'hashtag' && (
@@ -634,6 +686,12 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
         <>
           <div className="px-4 pt-2"><FeedFilterPanel /></div>
           <ForYouFeed publicKey={publicKey} followingPubkeys={followingPubkeys} onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />
+        </>
+      )}
+      {activeMode === 'custom' && customDef && (
+        <>
+          <div className="px-4 pt-2"><FeedFilterPanel /></div>
+          <CustomFeedView key={customDef.addr} def={customDef} publicKey={publicKey} followingPubkeys={followingPubkeys} onSelectNote={setSelectedNote} onViewProfile={onViewProfile} />
         </>
       )}
 

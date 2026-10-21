@@ -90,6 +90,13 @@ export function Landing({ onGetStarted }: Props) {
             </button>
           </div>
           <a
+            href="/explore"
+            data-testid="landing-explore"
+            className="inline-flex items-center gap-1.5 mt-5 text-sm text-purple-200 hover:text-white transition-colors"
+          >
+            <Rss className="w-4 h-4" /> Read the feed first, no account needed <ArrowRight className="w-3.5 h-3.5" />
+          </a>
+          <a
             href={GITHUB}
             target="_blank"
             rel="noopener noreferrer"

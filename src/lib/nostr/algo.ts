@@ -59,13 +59,25 @@ export function saveLess(l: ShowLess): ShowLess {
 
 // ─── constants ──────────────────────────────────────────────────
 
-/** Never promoted: may appear only when followed, and then with no boost. */
-const NO_PROMOTE = new Set(['04c915daefee38317fa734444acee390a8269fe5810b2241e5e6dd343dfbecc9']);
-/** For guests: start from the follow lists of the suite's own accounts. */
-const SEED_ACCOUNTS = [
-  '50de492cfe5472450df1a0176fdf6d915e97cb5d9f8d3eccef7d25ff0a8871de', // Bigfoot
+/** Never promoted: may appear only when followed, and then with no boost. Never in discovery picks or the feed store. */
+export const NO_PROMOTE = new Set(['04c915daefee38317fa734444acee390a8269fe5810b2241e5e6dd343dfbecc9']);
+/**
+ * For guests (and accounts that follow nobody yet): a starter graph built from the follow
+ * lists of a few well-connected Bitcoin / Nostr accounts. The people several of them follow
+ * become the "follows", and what those people like, zap and repost decides the ranking.
+ * Checked on relay.damus.io 2026-10-21 (all have kind 0 and a kind 3 list).
+ */
+export const SEED_ACCOUNTS = [
+  '50de492cfe5472450df1a0176fdf6d915e97cb5d9f8d3eccef7d25ff0a8871de', // ₿igfoot
   '3d1d35447ec2832ac40c2aae56a74ec4998cce528526da6569f076591cf1c932', // Puzzles_Onchain
-];
+  '6e468422dfb74a5738702a8823b9b28168abab8655faacb6853cd0ee15deee93', // Gigi
+  '32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245', // jb55
+  '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d', // fiatjaf
+  '97c70a44366a6535c145b333f973ea86dfdc2d7a99da618c40c64705ad98e322', // hodlbod
+  '3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24', // Derek Ross
+].filter((pk) => !NO_PROMOTE.has(pk));
+/** How many of the seeds' follows make up a guest's starter graph (the most-followed first). */
+const SEED_GRAPH_MAX = 400;
 const ONCHAIN_TAGS = ['xbt', 'onchain', 'bip110', 'nostronchain', 'bitcoinnotbtc', 'knots', 'blake2b'];
 const SPAM_HOSTS = /(surge\.sh|originality|\.sell\.app|gumroad\.com\/l\/|bit\.ly\/|tinyurl\.com|t\.me\/joinchat)/i;
 const HOUR = 3600;
@@ -163,10 +175,19 @@ async function webOfTrust(me: string, follows: Set<string>, relays: string[]): P
   if (hit && Date.now() - hit.at < 15 * 60_000 && (me ? hit.follows.size === follows.size : true)) return hit;
   let base = follows;
   if (!me || base.size === 0) {
-    base = new Set<string>();
+    // the people most of the seed accounts follow (newest list per seed), capped so the
+    // second hop stays a handful of queries
     const lists = await queryOnce(relays, [{ kinds: [3], authors: SEED_ACCOUNTS }], 5000);
-    for (const e of lists) for (const t of e.tags) if (t[0] === 'p' && /^[0-9a-f]{64}$/.test(t[1] || '')) base.add(t[1]);
-    for (const s of SEED_ACCOUNTS) base.add(s);
+    const newest = new Map<string, NEvent>();
+    for (const e of lists) { const p = newest.get(e.pubkey); if (!p || p.created_at < e.created_at) newest.set(e.pubkey, e); }
+    const hits = new Map<string, number>();
+    for (const e of newest.values()) {
+      for (const pk of new Set(e.tags.filter((t) => t[0] === 'p' && /^[0-9a-f]{64}$/.test(t[1] || '')).map((t) => t[1]))) {
+        if (!NO_PROMOTE.has(pk)) hits.set(pk, (hits.get(pk) ?? 0) + 1);
+      }
+    }
+    const ranked = [...hits.entries()].sort((a, b) => b[1] - a[1]).map(([pk]) => pk);
+    base = new Set([...SEED_ACCOUNTS, ...ranked.slice(0, SEED_GRAPH_MAX)]);
   }
   const counts = new Map<string, number>();
   const lists = (await Promise.all(chunk([...base], 150).map((authors) => queryOnce(relays, [{ kinds: [3], authors }], 6000)))).flat();
@@ -402,17 +423,18 @@ function rank(pool: Pool, input: AlgoInput): Ranked[] {
 
     // why
     const why: Why[] = [];
-    if (netZappers) why.push({ kind: 'zapped', text: pool.seeded ? `Zapped ${(s?.zapSats ?? 0).toLocaleString()} sats` : netZappers === 1 ? `Zapped ${netZapSats.toLocaleString()} sats by someone you follow` : `Zapped by ${netZappers} people you follow` });
+    const G = pool.seeded; // guest: the "network" is the Bitcoin starter graph, not people you follow
+    if (netZappers) why.push({ kind: 'zapped', text: G ? `Zapped ${(s?.zapSats ?? 0).toLocaleString()} sats by Bitcoiners` : netZappers === 1 ? `Zapped ${netZapSats.toLocaleString()} sats by someone you follow` : `Zapped by ${netZappers} people you follow` });
     else if (s && s.zapSats >= 1000) why.push({ kind: 'zapped', text: `${s.zapSats.toLocaleString()} sats in zaps` });
-    if (netReposts) why.push({ kind: 'reposted', text: pool.seeded ? 'Reposted by the network' : netReposts === 1 ? 'Reposted by someone you follow' : `Reposted by ${netReposts} you follow` });
-    if (netLikes >= 2) why.push({ kind: 'liked', text: pool.seeded ? `Liked by ${netLikes} in the network` : `Liked by ${netLikes} people you follow` });
-    if (netReplies >= 2) why.push({ kind: 'replied', text: pool.seeded ? `${netReplies} replies from the network` : `${netReplies} people you follow replied` });
-    if (!why.length && E >= 6 && !netLikes) why.push({ kind: followed || wotCount ? 'network' : 'trending', text: followed || wotCount ? 'Popular with your network' : 'Trending' });
-    if (!followed && wotCount) why.push({ kind: 'fof', text: pool.seeded ? 'From the wider network' : wotCount === 1 ? 'Followed by someone you follow' : `Followed by ${wotCount} people you follow` });
+    if (netReposts) why.push({ kind: 'reposted', text: G ? (netReposts === 1 ? 'Reposted by a Bitcoiner' : `Reposted by ${netReposts} Bitcoiners`) : netReposts === 1 ? 'Reposted by someone you follow' : `Reposted by ${netReposts} you follow` });
+    if (netLikes >= 2) why.push({ kind: 'liked', text: G ? `Liked by ${netLikes} Bitcoiners` : `Liked by ${netLikes} people you follow` });
+    if (netReplies >= 2) why.push({ kind: 'replied', text: G ? `${netReplies} Bitcoiners replied` : `${netReplies} people you follow replied` });
+    if (!why.length && E >= 6 && !netLikes) why.push({ kind: followed || wotCount ? 'network' : 'trending', text: followed || wotCount ? (G ? 'Popular with Bitcoiners' : 'Popular with your network') : 'Trending' });
+    if (!followed && wotCount) why.push({ kind: 'fof', text: G ? (wotCount === 1 ? 'Followed by a Bitcoiner' : `Followed by ${wotCount} Bitcoiners`) : wotCount === 1 ? 'Followed by someone you follow' : `Followed by ${wotCount} people you follow` });
     if (!followed && !wotCount && !why.some((w) => w.kind === 'trending')) why.push({ kind: 'new', text: 'New voice' });
     if (onchain) why.push({ kind: 'onchain', text: 'On-chain' });
     else if (boosted) why.push({ kind: 'topic', text: `#${boosted}` });
-    if (followed && why.length === 0) why.push({ kind: 'follow', text: pool.seeded ? 'Nostr Onchain pick' : 'From someone you follow' });
+    if (followed && why.length === 0) why.push({ kind: 'follow', text: G ? 'Popular with Bitcoiners' : 'From someone you follow' });
 
     scored.push({ note: n, score, why: why.slice(0, 2), discovery: !followed, topic: tags[0] });
   }

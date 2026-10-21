@@ -8,7 +8,8 @@ import { subscribeRelays } from './relay-subscribe';
 import { parseZapReceipt } from './zap';
 import type { Filter } from 'nostr-tools/filter';
 
-export type FeedMode = 'global' | 'following' | 'foryou' | 'media' | 'onchain' | 'hashtag' | 'kind' | 'relay';
+/** 'custom' = one of the feeds the user added from the feed store (which one is kept separately). */
+export type FeedMode = 'global' | 'following' | 'foryou' | 'media' | 'onchain' | 'hashtag' | 'kind' | 'relay' | 'custom';
 
 export interface NostrEvent {
   id: string;
@@ -318,18 +319,30 @@ export function tallyEngagement(event: NostrEvent, into: Map<string, Engagement>
 // ─── Feed tab memory ─────────────────────────────────────────────
 
 const TAB_KEY = 'feed_tab_v2';
+const GUEST_TAB_KEY = 'feed_tab_guest_v1';
+const CUSTOM_TAB_KEY = 'feed_tab_custom_v1';
 const HASHTAG_KEY = 'feed_hashtag_v2';
 
-export function loadFeedTab(): FeedMode {
+/** The tab to open. Guests (no account) start on For you and never on Following. */
+export function loadFeedTab(guest = false): FeedMode {
   try {
-    const v = localStorage.getItem(TAB_KEY);
-    if (v === 'following' || v === 'foryou' || v === 'global' || v === 'onchain' || v === 'hashtag' || v === 'relay') return v;
+    const v = localStorage.getItem(guest ? GUEST_TAB_KEY : TAB_KEY);
+    if (v === 'following' && guest) return 'foryou';
+    if (v === 'following' || v === 'foryou' || v === 'global' || v === 'onchain' || v === 'hashtag' || v === 'relay' || v === 'custom') return v;
   } catch { /* storage unavailable */ }
-  return 'following';
+  return guest ? 'foryou' : 'following';
 }
 
-export function saveFeedTab(mode: FeedMode): void {
-  try { localStorage.setItem(TAB_KEY, mode); } catch { /* ignore */ }
+export function saveFeedTab(mode: FeedMode, guest = false): void {
+  try { localStorage.setItem(guest ? GUEST_TAB_KEY : TAB_KEY, mode); } catch { /* ignore */ }
+}
+
+/** Which added feed (its address) the 'custom' tab shows. */
+export function loadCustomTab(): string {
+  try { return localStorage.getItem(CUSTOM_TAB_KEY) ?? ''; } catch { return ''; }
+}
+export function saveCustomTab(addr: string): void {
+  try { localStorage.setItem(CUSTOM_TAB_KEY, addr); } catch { /* ignore */ }
 }
 
 export function loadFeedHashtag(): string {

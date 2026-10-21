@@ -1,5 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
-import { Routes, Route, Navigate, Outlet, useSearchParams } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useSearchParams, useLocation } from 'react-router-dom';
 import { Landing } from './pages/Landing';
 import { Unlock } from './pages/Unlock';
 import { Setup } from './pages/Setup';
@@ -45,6 +45,9 @@ const VidstrPage = lazy(() => import('./pages/VidstrPage'));
 const PublicProfile = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicProfile })));
 const PublicNote = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicNote })));
 const PublicSearch = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicSearch })));
+const PublicFeed = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicFeed })));
+const PublicFeedStore = lazy(() => import('./pages/PublicViewer').then((m) => ({ default: m.PublicFeedStore })));
+const FeedStore = lazy(() => import('./pages/FeedStore').then((m) => ({ default: m.FeedStore })));
 const LightningWallet = lazy(() => import('./pages/LightningWallet').then((m) => ({ default: m.LightningWallet })));
 
 function PageFallback() {
@@ -79,6 +82,7 @@ interface AuthGateProps {
 
 /** Blocks child routes until vault is ready; renders Outlet when authenticated. */
 function AuthGate({ status, credentials, onGetStarted, onUnlocked, onCreated, onReset }: AuthGateProps) {
+  const location = useLocation();
   if (status === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface-900">
@@ -88,6 +92,9 @@ function AuthGate({ status, credentials, onGetStarted, onUnlocked, onCreated, on
   }
 
   if (status === 'landing') {
+    // no account yet: the feed and the feed store still open, as a guest
+    if (location.pathname === '/feed') return <Navigate to={`/explore${location.search}`} replace />;
+    if (location.pathname === '/feeds/store') return <Navigate to="/explore/feeds" replace />;
     return <Landing onGetStarted={onGetStarted} />;
   }
 
@@ -218,13 +225,15 @@ export function App() {
       />
 
       {/* Read-only profile / note / people search pages: no account needed */}
-      {([['/p/:id', PublicProfile], ['/e/:id', PublicNote], ['/search', PublicSearch]] as const).map(([path, Page]) => (
+      {([['/p/:id', PublicProfile], ['/e/:id', PublicNote], ['/search', PublicSearch], ['/explore', PublicFeed], ['/explore/feeds', PublicFeedStore]] as const).map(([path, Page]) => (
         <Route
           key={path}
           path={path}
           element={
             <ProfilePopupProvider>
-              <Suspense fallback={<PageFallback />}><Page /></Suspense>
+              <EmbedPlayerProvider>
+                <Suspense fallback={<PageFallback />}><Page /></Suspense>
+              </EmbedPlayerProvider>
             </ProfilePopupProvider>
           }
         />
@@ -235,6 +244,7 @@ export function App() {
         <Route element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="feed" element={<FeedPage />} />
+          <Route path="feeds/store" element={<FeedStore />} />
           <Route path="find" element={<SearchPage />} />
           <Route path="zaps" element={<ZapsPage />} />
           <Route path="messages" element={<Messages />} />
