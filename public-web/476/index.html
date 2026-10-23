@@ -15,8 +15,8 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
-<meta property="og:video" content="https://nostronchain.com/476/pr476-v2.mp4">
-<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v2.mp4">
+<meta property="og:video" content="https://nostronchain.com/476/pr476-v3.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v3.mp4">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="1920">
 <meta property="og:video:height" content="1080">
@@ -69,10 +69,10 @@
   <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
 
   <video controls playsinline preload="metadata" poster="/476/poster-v2.jpg">
-    <source src="/476/pr476-v2.mp4" type="video/mp4">
-    Your browser can't play this video. <a href="/476/pr476-v2.mp4">Download it</a>.
+    <source src="/476/pr476-v3.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476-v3.mp4">Download it</a>.
   </video>
-  <p class="meta">5 min 9 s · captions burned in · review status as of October 23, 2026</p>
+  <p class="meta">5 min 23 s · captions burned in · review status as of October 23, 2026</p>
 
   <div class="grid">
     <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
@@ -96,6 +96,7 @@
     <ul>
       <li>Two community test builds came out today: <b>rc3</b> swapped #468 for #429, then <b>rc4</b> swapped it back to #468. Neither is an official release, and neither carries #476.</li>
       <li>If #476 misses block 979,920, a fallback takes over. MarcanoFilms has built it and offered to bring it into this PR: rewards from block <b>979,919</b>, the same rolling 52,560-block year, switched on before block <b>1,005,839</b>, so nothing that has become spendable is ever re-locked. It is designed to work on top of either #468 or #429.</li>
+      <li>Marcano also proposed an end point: the lock would cover every reward mined until block <b>6,930,000</b>, the first block with no new coins (around 2140). The last covered reward still waits its full year, so the final unlock comes about a year after that, one reward per block, with no cliff. Fee-only rewards after that go back to the normal 100 blocks.</li>
       <li>The fallback will be reviewed and tested before anything changes in #476.</li>
     </ul>
   </div>
@@ -127,7 +128,7 @@
 
   <div class="cta">
     <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
-    <a class="btn" href="/476/pr476-v2.mp4" download>Download the video</a>
+    <a class="btn" href="/476/pr476-v3.mp4" download>Download the video</a>
   </div>
 
   <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
