@@ -4,30 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Knots PR #476: 1-year rolling coinbase maturity, no cliff</title>
-<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, permanently, separate from RDTS. A 4½-minute explainer of the PR and its first day of review.">
+<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, permanently, separate from RDTS. Explainer video, what it improves, the review so far, and the fallback plan.">
 <link rel="canonical" href="https://nostronchain.com/476">
 <meta property="og:type" content="video.other">
 <meta property="og:site_name" content="Nostr Onchain">
 <meta property="og:url" content="https://nostronchain.com/476">
 <meta property="og:title" content="Knots PR #476: 1 year, no cliff">
-<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS. What it does, the review so far, and the 979,920 deadline.">
-<meta property="og:image" content="https://nostronchain.com/476/og.jpg">
+<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS. What it improves, the review so far, and the plan if it misses block 979,920.">
+<meta property="og:image" content="https://nostronchain.com/476/og-v2.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
-<meta property="og:video" content="https://nostronchain.com/476/pr476.mp4">
-<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476.mp4">
+<meta property="og:video" content="https://nostronchain.com/476/pr476-v2.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v2.mp4">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="1920">
 <meta property="og:video:height" content="1080">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Knots PR #476: 1 year, no cliff">
 <meta name="twitter:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS.">
-<meta name="twitter:image" content="https://nostronchain.com/476/og.jpg">
+<meta name="twitter:image" content="https://nostronchain.com/476/og-v2.jpg">
 <meta name="theme-color" content="#0D0D0D">
 <link rel="icon" href="/logo.png">
 <style>
-  :root { --bg: #0D0D0D; --card: #1A1A19; --line: #2C2C2A; --gold: #F0B938; --ack: #3FB950; --nack: #F85149; --ink: #F0EFEC; --muted: #8F8D87; }
+  :root { --bg: #0D0D0D; --card: #1A1A19; --line: #2C2C2A; --gold: #F0B938; --ack: #3FB950; --nack: #F85149; --blue: #58A6FF; --ink: #F0EFEC; --muted: #8F8D87; }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--ink); }
   body { font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
@@ -35,16 +35,21 @@
   .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .pill { background: var(--ack); color: var(--bg); font-weight: 800; border-radius: 99px; padding: 3px 14px; font-size: 15px; }
   .num { font-weight: 800; font-size: 22px; }
+  .upd { color: var(--muted); font-size: 14px; }
   h1 { font-size: clamp(30px, 6vw, 52px); line-height: 1.05; letter-spacing: -1.5px; margin: 14px 0 8px; }
   h1 span { color: var(--gold); }
   .lede { color: #CFCDC8; margin: 0 0 22px; font-size: 18px; }
   video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; border-radius: 14px; border: 1px solid var(--line); }
   .meta { color: var(--muted); font-size: 14px; margin: 10px 2px 0; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 28px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 28px 0; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
-  .card b { display: block; font-size: 15px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 4px; }
-  .card div { font-size: 22px; font-weight: 800; }
-  h2 { font-size: 22px; margin: 34px 0 10px; }
+  .card b { display: block; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 4px; }
+  .card div { font-size: 21px; font-weight: 800; }
+  .card p { margin: 6px 0 0; color: #CFCDC8; font-size: 16px; }
+  .better { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .better .card div { font-size: 19px; color: var(--gold); }
+  .latest { border-color: var(--gold); }
+  h2 { font-size: 22px; margin: 36px 0 10px; }
   ul { padding-left: 20px; margin: 0; }
   li { margin: 6px 0; }
   .ack { color: var(--ack); font-weight: 700; } .nack { color: var(--nack); font-weight: 700; }
@@ -52,20 +57,22 @@
   .btn { display: inline-block; text-decoration: none; font-weight: 800; border-radius: 99px; padding: 12px 22px; border: 2px solid var(--gold); color: var(--gold); }
   .btn.solid { background: var(--gold); color: var(--bg); }
   a { color: var(--gold); }
+  .links li { margin: 8px 0; }
+  .links span { color: var(--muted); }
   footer { margin-top: 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
 </style>
 </head>
 <body>
 <main>
-  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span></div>
+  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span><span class="upd">· updated October 23, 2026</span></div>
   <h1>1-year rolling coinbase maturity. <span>No cliff.</span></h1>
   <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
 
-  <video controls playsinline preload="metadata" poster="/476/poster.jpg">
-    <source src="/476/pr476.mp4" type="video/mp4">
-    Your browser can't play this video. <a href="/476/pr476.mp4">Download it</a>.
+  <video controls playsinline preload="metadata" poster="/476/poster-v2.jpg">
+    <source src="/476/pr476-v2.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476-v2.mp4">Download it</a>.
   </video>
-  <p class="meta">4 min 32 s · captions burned in · review status as of October 23, 2026</p>
+  <p class="meta">5 min 9 s · captions burned in · review status as of October 23, 2026</p>
 
   <div class="grid">
     <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
@@ -74,23 +81,53 @@
     <div class="card"><b>Deadline</b><div>Block 979,920</div></div>
   </div>
 
-  <h2>What it does</h2>
-  <ul>
-    <li>From block 979,920, every reward mined at 973,440 or later waits 52,560 blocks (one year at 144 blocks a day), counted from its own block.</li>
-    <li>Rewards unlock one per block, the first at 1,026,000. The rewards #419 would release together at 979,920 never release together.</li>
-    <li>It reads block heights only, so the year holds whether RDTS is extended or lapses in September 2027.</li>
-    <li>It is a soft fork: it only rejects spends the old rules allowed. Shortening it later would take a hard fork, which is deliberate.</li>
-  </ul>
+  <h2>What improves</h2>
+  <div class="better">
+    <div class="card"><div>No supply cliff</div><p>No block where thousands of rewards unlock at once. Newly mined coins reach the market at a steady one reward per block, so there's no single moment to dump into.</p></div>
+    <div class="card"><div>Hit-and-run hashing costs more</div><p>Hashrate rented to grab rewards and sell has to wait a year to get paid. The chain has a year to respond, and miners stay tied to its long-term health.</p></div>
+    <div class="card"><div>Predictable for every miner</div><p>Each reward unlocks at its own block + 52,560. No expiry dates, no dependence on future votes, nothing to guess.</p></div>
+    <div class="card"><div>Separate from RDTS</div><p>Debates about extending or ending RDTS no longer move miner payouts. The lock reads block heights only.</p></div>
+    <div class="card"><div>One rule for every reward</div><p>Every reward from 973,440 waits the same year from its own block, with no shorter lock for early miners.</p></div>
+    <div class="card"><div>A soft fork</div><p>It only rejects spends the old rules allowed, so non-upgraded nodes stay on the same chain. Weakening it later would take a hard fork, which is deliberate.</p></div>
+  </div>
+
+  <h2>The latest</h2>
+  <div class="card latest">
+    <ul>
+      <li>Two community test builds came out today: <b>rc3</b> swapped #468 for #429, then <b>rc4</b> swapped it back to #468. Neither is an official release, and neither carries #476.</li>
+      <li>If #476 misses block 979,920, a fallback takes over. MarcanoFilms has built it and offered to bring it into this PR: rewards from block <b>979,919</b>, the same rolling 52,560-block year, switched on before block <b>1,005,839</b>, so nothing that has become spendable is ever re-locked. It is designed to work on top of either #468 or #429.</li>
+      <li>The fallback will be reviewed and tested before anything changes in #476.</li>
+    </ul>
+  </div>
 
   <h2>Review so far</h2>
   <ul>
-    <li><span class="ack">4 ACK</span>: Kilombino (tested), Daamir-Al-Adel, MarcanoFilms, papier-krieger.</li>
-    <li><span class="nack">2 NACK</span>: SeventyEi8ht, mynpub.</li>
+    <li><span class="ack">4 ACK</span>: Kilombino (tested on regtest and a pruned mainnet node), Daamir-Al-Adel, MarcanoFilms, papier-krieger.</li>
+    <li><span class="nack">2 NACK</span>: SeventyEi8ht (objects to re-locking rewards already mined in the 45-day window), mynpub.</li>
+    <li>FlyTheElephant1 pointed out that shortening a permanent lock later would be a hard fork. Agreed: that's the trade-off, and it's deliberate.</li>
+  </ul>
+
+  <h2>Notes</h2>
+  <ul>
+    <li>The 29.4.2 release that shipped the 45-day lock said maturity could go “up to 350 days” and put miners on notice they may need to wait much longer.</li>
+    <li>Default relay policy already makes each reward wait 6,480 confirmations from its own block, so today's cliff is only reachable by a miner including the spends in its own block. #476 closes that in consensus.</li>
+    <li>52,560 blocks is a year at the 10-minute target; at the recent pace of about 9.3 minutes per block it's closer to 339 days.</li>
+    <li>Release candidates are community test builds. The final release contents are up to the Knots maintainers.</li>
+  </ul>
+
+  <h2>Links</h2>
+  <ul class="links">
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476">PR #476 on GitHub</a> <span>· code, description, full discussion</span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371103283">Reply on the hard-fork question</a> <span>· why the year is permanent</span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6370924020">MarcanoFilms' fallback proposal</a> <span>· and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371249203">the reply</a></span></li>
+    <li><a href="https://github.com/knots-dev/bitcoin/releases/tag/v29.4.3.knots20260508rc4">29.4.3rc4 test build</a> <span>· carries #468</span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/468">#468</a> <span>· 180-day rolling, ends with RDTS</span> · <a href="https://github.com/bitcoinknots/bitcoin/pull/429">#429</a> <span>· locked until RDTS expiry</span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/419">#419</a> <span>· the 45-day lock that ends at 979,920</span></li>
   </ul>
 
   <div class="cta">
     <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
-    <a class="btn" href="/476/pr476.mp4" download>Download the video</a>
+    <a class="btn" href="/476/pr476-v2.mp4" download>Download the video</a>
   </div>
 
   <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
