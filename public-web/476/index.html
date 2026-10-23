@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knots PR #476: 1-year rolling coinbase maturity, no cliff</title>
+<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, permanently, separate from RDTS. A 4½-minute explainer of the PR and its first day of review.">
+<link rel="canonical" href="https://nostronchain.com/476">
+<meta property="og:type" content="video.other">
+<meta property="og:site_name" content="Nostr Onchain">
+<meta property="og:url" content="https://nostronchain.com/476">
+<meta property="og:title" content="Knots PR #476: 1 year, no cliff">
+<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS. What it does, the review so far, and the 979,920 deadline.">
+<meta property="og:image" content="https://nostronchain.com/476/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
+<meta property="og:video" content="https://nostronchain.com/476/pr476.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476.mp4">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="1920">
+<meta property="og:video:height" content="1080">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Knots PR #476: 1 year, no cliff">
+<meta name="twitter:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS.">
+<meta name="twitter:image" content="https://nostronchain.com/476/og.jpg">
+<meta name="theme-color" content="#0D0D0D">
+<link rel="icon" href="/logo.png">
+<style>
+  :root { --bg: #0D0D0D; --card: #1A1A19; --line: #2C2C2A; --gold: #F0B938; --ack: #3FB950; --nack: #F85149; --ink: #F0EFEC; --muted: #8F8D87; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body { font: 17px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 16px 64px; }
+  .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pill { background: var(--ack); color: var(--bg); font-weight: 800; border-radius: 99px; padding: 3px 14px; font-size: 15px; }
+  .num { font-weight: 800; font-size: 22px; }
+  h1 { font-size: clamp(30px, 6vw, 52px); line-height: 1.05; letter-spacing: -1.5px; margin: 14px 0 8px; }
+  h1 span { color: var(--gold); }
+  .lede { color: #CFCDC8; margin: 0 0 22px; font-size: 18px; }
+  video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; border-radius: 14px; border: 1px solid var(--line); }
+  .meta { color: var(--muted); font-size: 14px; margin: 10px 2px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 28px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+  .card b { display: block; font-size: 15px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 4px; }
+  .card div { font-size: 22px; font-weight: 800; }
+  h2 { font-size: 22px; margin: 34px 0 10px; }
+  ul { padding-left: 20px; margin: 0; }
+  li { margin: 6px 0; }
+  .ack { color: var(--ack); font-weight: 700; } .nack { color: var(--nack); font-weight: 700; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 30px; }
+  .btn { display: inline-block; text-decoration: none; font-weight: 800; border-radius: 99px; padding: 12px 22px; border: 2px solid var(--gold); color: var(--gold); }
+  .btn.solid { background: var(--gold); color: var(--bg); }
+  a { color: var(--gold); }
+  footer { margin-top: 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span></div>
+  <h1>1-year rolling coinbase maturity. <span>No cliff.</span></h1>
+  <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
+
+  <video controls playsinline preload="metadata" poster="/476/poster.jpg">
+    <source src="/476/pr476.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476.mp4">Download it</a>.
+  </video>
+  <p class="meta">4 min 32 s · captions burned in · review status as of October 23, 2026</p>
+
+  <div class="grid">
+    <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
+    <div class="card"><b>Unlocks</b><div>One per block</div></div>
+    <div class="card"><b>Ends</b><div>Never · RDTS untouched</div></div>
+    <div class="card"><b>Deadline</b><div>Block 979,920</div></div>
+  </div>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>From block 979,920, every reward mined at 973,440 or later waits 52,560 blocks (one year at 144 blocks a day), counted from its own block.</li>
+    <li>Rewards unlock one per block, the first at 1,026,000. The rewards #419 would release together at 979,920 never release together.</li>
+    <li>It reads block heights only, so the year holds whether RDTS is extended or lapses in September 2027.</li>
+    <li>It is a soft fork: it only rejects spends the old rules allowed. Shortening it later would take a hard fork, which is deliberate.</li>
+  </ul>
+
+  <h2>Review so far</h2>
+  <ul>
+    <li><span class="ack">4 ACK</span>: Kilombino (tested), Daamir-Al-Adel, MarcanoFilms, papier-krieger.</li>
+    <li><span class="nack">2 NACK</span>: SeventyEi8ht, mynpub.</li>
+  </ul>
+
+  <div class="cta">
+    <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
+    <a class="btn" href="/476/pr476.mp4" download>Download the video</a>
+  </div>
+
+  <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
+</main>
+</body>
+</html>
