@@ -23,6 +23,7 @@ const MultisigVaultWrapper = lazy(() => import('./pages/MultisigVaultWrapper').t
 const RequestSignatureWrapper = lazy(() => import('./pages/RequestSignatureWrapper').then((m) => ({ default: m.RequestSignatureWrapper })));
 const WalletViewWrapper = lazy(() => import('./pages/WalletViewWrapper').then((m) => ({ default: m.WalletViewWrapper })));
 const ZapsPage = lazy(() => import('./pages/ZapsPage').then((m) => ({ default: m.ZapsPage })));
+const Notifications = lazy(() => import('./pages/Notifications').then((m) => ({ default: m.Notifications })));
 const SearchPage = lazy(() => import('./pages/SearchPage').then((m) => ({ default: m.SearchPage })));
 const CelebrationStore = lazy(() => import('./pages/CelebrationStore').then((m) => ({ default: m.CelebrationStore })));
 const CelebrationSettings = lazy(() => import('./pages/CelebrationSettings').then((m) => ({ default: m.CelebrationSettings })));
@@ -247,6 +248,7 @@ export function App() {
           <Route path="feeds/store" element={<FeedStore />} />
           <Route path="find" element={<SearchPage />} />
           <Route path="zaps" element={<ZapsPage />} />
+          <Route path="notifications" element={<Notifications />} />
           <Route path="messages" element={<Messages />} />
           <Route path="leaderboard" element={<Leaderboard />} />
           <Route path="wallets" element={<Wallets />} />

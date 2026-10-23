@@ -3,8 +3,12 @@ import { Outlet } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
 import { StatusBar } from './components/StatusBar';
+import { useAuth } from './context/AuthContext';
+import { useUnreadNotifications } from '@/lib/nostr/notifications';
 
 export function Layout() {
+  const { publicKey } = useAuth();
+  const unread = useUnreadNotifications(publicKey);
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <StatusBar />
@@ -12,7 +16,7 @@ export function Layout() {
       <div className="flex-1 flex min-h-0">
         {/* Desktop sidebar */}
         <aside className="hidden md:flex md:w-60 md:flex-shrink-0">
-          <Sidebar />
+          <Sidebar unread={unread} />
         </aside>
 
         {/* Main content — single scroll container. Suspense here keeps the
@@ -31,7 +35,7 @@ export function Layout() {
 
         {/* Mobile bottom nav */}
         <div className="md:hidden">
-          <BottomNav />
+          <BottomNav unread={unread} />
         </div>
       </div>
     </div>

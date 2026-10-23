@@ -3,7 +3,7 @@ import {
   useLayoutEffect, type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Gamepad2, Clapperboard, X, Maximize2, Loader2 } from 'lucide-react';
+import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, X, Maximize2, Loader2 } from 'lucide-react';
 import { useIframeNostrBridge } from '@/lib/nostr/iframe-bridge';
 
 export interface EmbedApp {
@@ -11,7 +11,7 @@ export interface EmbedApp {
   name: string;
   url: string;
   description: string;
-  kind: 'audio' | 'game' | 'video';
+  kind: 'audio' | 'game' | 'video' | 'food';
   /** Square logo for the app card. */
   logo?: string;
   /** The app's Nostr account. */
@@ -171,7 +171,9 @@ export function EmbedPlayerProvider({ children }: { children: ReactNode }) {
                 ? <Radio className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
                 : app.kind === 'video'
                   ? <Clapperboard className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
-                  : <Gamepad2 className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
+                  : app.kind === 'food'
+                    ? <UtensilsCrossed className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
+                    : <Gamepad2 className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
               <span className="text-xs font-medium text-white max-w-[120px] truncate">{app.name}</span>
               <button
                 onClick={() => { focus(app.id); navigate(app.route ?? '/other'); }}

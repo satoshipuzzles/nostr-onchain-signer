@@ -1,30 +1,43 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Radio, Gamepad2, Clapperboard, ExternalLink, StopCircle } from 'lucide-react';
+import { useState, useEffect, useCallback, useContext } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, ExternalLink, StopCircle, ListFilter } from 'lucide-react';
 import { useEmbedPlayer, type EmbedApp } from '../context/EmbedPlayerContext';
-import { AUDIO_APPS, GAME_APPS, VIDEO_APPS, ALL_APPS } from '../apps';
+import { AuthContext } from '../context/AuthContext';
+import { AUDIO_APPS, GAME_APPS, FOOD_APPS, VIDEO_APPS, ALL_APPS } from '../apps';
 import { AppCard } from '../components/AppCard';
+import { CustomFeedView } from '../components/CustomFeedView';
+import { NoteThread } from '../components/NoteThread';
+import { FOOD_DEF } from '@/lib/nostr/feed-store';
+import type { FeedNote } from '@/lib/nostr/feed';
 
-type Tab = 'audio' | 'games' | 'video';
+type Tab = 'audio' | 'games' | 'food' | 'video';
 
-const TAB_KIND: Record<Tab, EmbedApp['kind']> = { audio: 'audio', games: 'game', video: 'video' };
-const TAB_APPS: Record<Tab, EmbedApp[]> = { audio: AUDIO_APPS, games: GAME_APPS, video: VIDEO_APPS };
+const TAB_KIND: Record<Tab, EmbedApp['kind']> = { audio: 'audio', games: 'game', food: 'food', video: 'video' };
+const TAB_APPS: Record<Tab, EmbedApp[]> = { audio: AUDIO_APPS, games: GAME_APPS, food: FOOD_APPS, video: VIDEO_APPS };
 
 function tabFor(kind?: EmbedApp['kind']): Tab {
-  return kind === 'game' ? 'games' : kind === 'video' ? 'video' : 'audio';
+  return kind === 'game' ? 'games' : kind === 'video' ? 'video' : kind === 'food' ? 'food' : 'audio';
 }
 
 export default function OtherStuff() {
   const { embeds, activeId, open, focus, close, registerDock } = useEmbedPlayer();
+  const auth = useContext(AuthContext);
+  const [params] = useSearchParams();
   const active = ALL_APPS.find((a) => a.id === activeId) ?? null;
-  const [tab, setTab] = useState<Tab>(tabFor(active?.kind));
+  const asked = params.get('tab') as Tab | null;
+  const [tab, setTab] = useState<Tab>(asked && asked in TAB_APPS ? asked : tabFor(active?.kind));
+  // the Food tab can show the Food feed (native) instead of an embedded app
+  const [foodFeed, setFoodFeed] = useState(false);
+  const [thread, setThread] = useState<FeedNote | null>(null);
   const apps = TAB_APPS[tab];
   const shownApp = active && active.kind === TAB_KIND[tab]
     ? active
     : apps.find((a) => embeds.some((e) => e.id === a.id)) ?? apps[0];
 
-  // Auto-start the default audio app on first visit
+  // Auto-start the default app of the tab on first visit
   useEffect(() => {
-    if (embeds.length === 0) open(AUDIO_APPS[0]);
+    if (embeds.length === 0) open(TAB_APPS[tab][0]);
+    else if (asked && asked in TAB_APPS) switchTab(asked);
   }, []);
 
   const dockRef = useCallback((el: HTMLDivElement | null) => {
@@ -35,6 +48,7 @@ export default function OtherStuff() {
 
   function switchTab(next: Tab) {
     setTab(next);
+    setFoodFeed(false);
     // Focus an already-open embed of that kind (keeps the other one running),
     // otherwise open the first app of the tab
     const openOfKind = embeds.find((e) => e.kind === TAB_KIND[next]);
@@ -48,7 +62,7 @@ export default function OtherStuff() {
     <button
       key={t}
       onClick={() => switchTab(t)}
-      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium transition-colors ${
+      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-medium whitespace-nowrap flex-shrink-0 transition-colors ${
         tab === t ? 'bg-purple-600/20 text-purple-300' : 'text-gray-400 hover:bg-white/5'
       }`}
     >
@@ -65,6 +79,7 @@ export default function OtherStuff() {
       <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-white/10 flex-shrink-0 overflow-x-auto">
         {tabBtn('audio', Radio, 'Nostr Audio')}
         {tabBtn('games', Gamepad2, 'Games')}
+        {tabBtn('food', UtensilsCrossed, 'Food')}
         {tabBtn('video', Clapperboard, 'Video')}
       </div>
 
@@ -74,15 +89,35 @@ export default function OtherStuff() {
           <AppCard
             key={app.id}
             app={app}
-            active={activeId === app.id}
+            active={activeId === app.id && !foodFeed}
             running={isOpen(app.id)}
-            onOpen={() => open(app)}
+            onOpen={() => { setFoodFeed(false); open(app); }}
           />
         ))}
+        {tab === 'food' && (
+          <button
+            onClick={() => setFoodFeed(true)}
+            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left min-w-[200px] transition-colors ${foodFeed ? 'border-purple-400/50 bg-purple-500/15' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'}`}
+            data-testid="food-feed-card"
+          >
+            <span className="w-9 h-9 rounded-xl bg-purple-500/15 border border-purple-400/20 flex items-center justify-center flex-shrink-0"><ListFilter className="w-4 h-4 text-purple-300" /></span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-white">Food feed</span>
+              <span className="block text-[11px] text-gray-400 truncate">Recipes + #foodstr, right here</span>
+            </span>
+          </button>
+        )}
       </div>
 
+      {tab === 'food' && foodFeed && (
+        <div className="flex-1 min-h-0 overflow-y-auto" data-testid="food-feed">
+          <CustomFeedView def={FOOD_DEF} publicKey={auth?.publicKey || ''} followingPubkeys={auth?.following ?? new Set()} onSelectNote={setThread} />
+          {thread && <NoteThread note={thread} profiles={new Map()} onClose={() => setThread(null)} />}
+        </div>
+      )}
+
       {/* Active app header */}
-      {shownApp && (
+      {shownApp && !(tab === 'food' && foodFeed) && (
         <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 flex-shrink-0">
           <div className="min-w-0">
             <p className="text-sm font-semibold truncate">{shownApp.name}</p>
@@ -113,7 +148,7 @@ export default function OtherStuff() {
       )}
 
       {/* Dock — the persistent active iframe overlays this container */}
-      <div ref={dockRef} className="flex-1 relative min-h-[500px] bg-black" />
+      {!(tab === 'food' && foodFeed) && <div ref={dockRef} className="flex-1 relative min-h-[500px] bg-black" />}
     </div>
   );
 }

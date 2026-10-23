@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Radio, Gamepad2, Clapperboard } from 'lucide-react';
+import { Radio, Gamepad2, Clapperboard, UtensilsCrossed } from 'lucide-react';
 import type { EmbedApp } from '../context/EmbedPlayerContext';
 
-const KIND_ICON = { audio: Radio, game: Gamepad2, video: Clapperboard } as const;
+const KIND_ICON = { audio: Radio, game: Gamepad2, video: Clapperboard, food: UtensilsCrossed } as const;
 
 /** A card for one embedded Nostr app: logo, name, one line, its Nostr address. */
 export function AppCard({ app, active, running, onOpen }: { app: EmbedApp; active: boolean; running: boolean; onOpen: () => void }) {

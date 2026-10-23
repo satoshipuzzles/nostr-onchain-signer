@@ -16,7 +16,7 @@ import { saveFeedTab, saveCustomTab, type FeedNote } from '@/lib/nostr/feed';
 import {
   streamStore, sortStore, matchesSearch, useAddedFeeds, addFeed, removeFeed, moveFeed, isAddedDirty,
   addedListTemplate, markAddedSynced, pullAddedFeeds, pendingGuestFeeds, mergeGuestFeeds, dismissGuestFeeds,
-  FORYOU_DEF, KIND_FEED_RECIPE, type FeedDef, type StoreState,
+  FORYOU_DEF, FOOD_DEF, KIND_FEED_RECIPE, type FeedDef, type StoreState,
 } from '@/lib/nostr/feed-store';
 
 const pulled = new Set<string>();
@@ -30,7 +30,7 @@ function FeedImage({ def, size = 'w-12 h-12' }: { def: FeedDef; size?: string })
 }
 
 function TypeChip({ def }: { def: FeedDef }) {
-  const label = def.type === 'builtin' ? 'Nostr Onchain' : def.type === 'dvm' ? 'Algorithm · NIP-90' : def.addr.startsWith('local:') ? 'On this device' : 'Recipe';
+  const label = def.type === 'builtin' || def.addr.startsWith('builtin:') ? 'Nostr Onchain' : def.type === 'dvm' ? 'Algorithm · NIP-90' : def.addr.startsWith('local:') ? 'On this device' : 'Recipe';
   return (
     <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/5 border border-white/10 text-gray-400 whitespace-nowrap">
       {label}{def.paid ? ' · asks for sats' : ''}
@@ -57,12 +57,12 @@ function StoreCard({ def, count, added, onAdd, onRemove, onPreview, onFilterName
         <div className="flex items-center gap-1.5 flex-wrap">
           <button onClick={onPreview} className="text-sm font-semibold text-white text-left truncate max-w-full">{def.title}</button>
           <TypeChip def={def} />
-          {live && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-400/20 text-emerald-200 whitespace-nowrap" title="Published public picks in the last day">fresh picks</span>}
+          {live && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-400/20 text-emerald-200 whitespace-nowrap" title="Posted public picks in the last 3 days">working</span>}
         </div>
         <FeedAuthor pubkey={def.pubkey} />
         {def.description && <p className="text-[12px] text-gray-400 leading-snug mt-0.5 line-clamp-2">{def.description}</p>}
         <div className="flex items-center gap-2 mt-2">
-          {def.type === 'builtin'
+          {def.type === 'builtin' || def.addr.startsWith('builtin:')
             ? <span className="mr-auto" />
             : <span className="text-[11px] text-gray-500 flex items-center gap-1 mr-auto" title="People who added it"><Users className="w-3 h-3" /> {count}</span>}
           <button onClick={onPreview} className="text-[12px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 flex items-center gap-1"><Eye className="w-3.5 h-3.5" /> Preview</button>
@@ -89,7 +89,7 @@ export function FeedStore() {
   const following = auth?.following ?? new Set<string>();
   const guest = !publicKey;
   const added = useAddedFeeds(publicKey);
-  const [store, setStore] = useState<StoreState>({ feeds: [], counts: new Map(), active: new Set(), done: false });
+  const [store, setStore] = useState<StoreState>({ feeds: [], counts: new Map(), active: new Set(), checked: false, done: false });
   const [q, setQ] = useState('');
   const [names, setNames] = useState<Map<string, string>>(new Map());
   const [preview, setPreview] = useState<FeedDef | null>(null);
@@ -99,6 +99,7 @@ export function FeedStore() {
   const [pending, setPending] = useState<FeedDef[]>(() => pendingGuestFeeds(publicKey));
   const [run, setRun] = useState(0);
   const [limit, setLimit] = useState({ recipes: 30, dvms: 30 });
+  const [showQuiet, setShowQuiet] = useState(false);
 
   useEffect(() => streamStore(setStore), [run]);
   useEffect(() => {
@@ -117,7 +118,9 @@ export function FeedStore() {
   }, [store, q, names, added.items, publicKey]);
   const mine = feeds.filter((f) => f.pubkey === publicKey && f.type === 'recipe');
   const recipes = feeds.filter((f) => f.type === 'recipe');
-  const dvms = feeds.filter((f) => f.type === 'dvm');
+  // providers that answered lately first; the rest (most announcements on relays) go in a folded list
+  const dvms = feeds.filter((f) => f.type === 'dvm' && (!store.checked || store.active.has(f.pubkey)));
+  const quiet = store.checked ? feeds.filter((f) => f.type === 'dvm' && !store.active.has(f.pubkey)) : [];
   const setName = (pk: string) => (n: string) => { if (n && names.get(pk) !== n) setNames((m) => new Map(m).set(pk, n)); };
 
   const feedPath = guest ? '/explore' : '/feed';
@@ -235,6 +238,9 @@ export function FeedStore() {
       <p className="text-[10px] text-gray-500 uppercase tracking-wider px-1 mb-2">Featured</p>
       <div className="mb-5">
         <StoreCard def={FORYOU_DEF} count={0} added onAdd={() => {}} onRemove={() => {}} onPreview={() => openTab(FORYOU_DEF)} />
+        <div className="mt-2">
+          <StoreCard def={FOOD_DEF} count={0} added={addedSet.has(FOOD_DEF.addr)} onAdd={() => add(FOOD_DEF)} onRemove={() => remove(FOOD_DEF)} onPreview={() => setPreview(FOOD_DEF)} />
+        </div>
       </div>
 
       {mine.length > 0 && (
@@ -272,14 +278,28 @@ export function FeedStore() {
       <p className="text-[10px] text-gray-500 uppercase tracking-wider px-1 mb-2 flex items-center gap-1.5">
         <Bot className="w-3 h-3" /> Algorithm feeds from other providers {!store.done && <Loader2 className="w-3 h-3 animate-spin" />}
       </p>
+      {store.checked && <p className="text-[11px] text-gray-500 px-1 -mt-1 mb-2">Working now: these posted picks in the last 3 days.</p>}
       <div className="space-y-2 mb-8" data-testid="store-dvms">
         {dvms.slice(0, limit.dvms).map((def) => (
-          <StoreCard key={def.addr} def={def} live={store.active.has(def.pubkey)} count={store.counts.get(def.addr) ?? 0} added={addedSet.has(def.addr)} onAdd={() => add(def)} onRemove={() => remove(def)} onPreview={() => setPreview(def)} onFilterName={setName(def.pubkey)} />
+          <StoreCard key={def.addr} def={def} live={store.checked && store.active.has(def.pubkey)} count={store.counts.get(def.addr) ?? 0} added={addedSet.has(def.addr)} onAdd={() => add(def)} onRemove={() => remove(def)} onPreview={() => setPreview(def)} onFilterName={setName(def.pubkey)} />
         ))}
         {dvms.length > limit.dvms && (
           <button onClick={() => setLimit((l) => ({ ...l, dvms: l.dvms + 30 }))} className="w-full py-2 rounded-xl bg-white/5 text-sm text-gray-300" data-testid="store-more-dvms">Show more ({dvms.length - limit.dvms})</button>
         )}
         {store.done && !dvms.length && <p className="text-xs text-gray-500 rounded-2xl border border-white/10 p-3">{q ? 'No providers match.' : 'No providers answered.'} <button onClick={() => setRun((n) => n + 1)} className="underline">Try again</button></p>}
+        {quiet.length > 0 && (
+          <button onClick={() => setShowQuiet((v) => !v)} className="w-full py-2 rounded-xl bg-white/[0.03] border border-white/5 text-[12px] text-gray-400 flex items-center justify-center gap-1" data-testid="store-quiet-toggle">
+            {showQuiet ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />} {showQuiet ? 'Hide' : 'Show'} {quiet.length} that haven't posted picks lately
+          </button>
+        )}
+        {showQuiet && quiet.length > 0 && (
+          <>
+            <p className="text-[11px] text-gray-500 px-1">These only answer when asked, want sats, or have stopped. Opening one asks it with a throwaway key; many never reply.</p>
+            {quiet.slice(0, 60).map((def) => (
+              <StoreCard key={def.addr} def={def} count={store.counts.get(def.addr) ?? 0} added={addedSet.has(def.addr)} onAdd={() => add(def)} onRemove={() => remove(def)} onPreview={() => setPreview(def)} onFilterName={setName(def.pubkey)} />
+            ))}
+          </>
+        )}
       </div>
 
       {preview && (

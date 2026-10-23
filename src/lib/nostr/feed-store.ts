@@ -51,6 +51,8 @@
  */
 import { useEffect, useState } from 'react';
 import { nip19 } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
+import { publishEvent } from './publish';
 import { streamQuery, getViewerReadRelays, outboxRelaysFor, normalizeRelay, DEFAULT_RELAYS, type NEvent } from './query';
 import { passesFilters, isReply, DEFAULT_FILTERS, type ShowOnly, type FeedFilterPrefs } from './feed-filters';
 import { mutedNow } from './mute';
@@ -132,12 +134,32 @@ export const FORYOU_DEF: FeedDef = {
   image: '/logo.png', hashtags: ['xbt', 'onchain', 'bip110'], createdAt: 0,
 };
 
+/**
+ * Food on Nostr, built in: Zap Cooking recipes (long-form, tagged zapcooking / nostrcooking)
+ * and #foodstr posts. A recipe feed like any other, just not published.
+ */
+export const FOOD_HASHTAGS = ['foodstr', 'zapcooking', 'nostrcooking', 'cookstr', 'food', 'cooking', 'recipe', 'recipes'];
+export const BUILTIN_FOOD = 'builtin:food';
+export const FOOD_DEF: FeedDef = {
+  addr: BUILTIN_FOOD, type: 'recipe', pubkey: '', d: 'food',
+  title: 'Food & recipes',
+  description: 'Recipes from Zap Cooking and everything posted to #foodstr, #cookstr and #food: dishes, photos and cooking talk, newest first.',
+  image: 'https://zap.cooking/favicon.svg', hashtags: FOOD_HASHTAGS, createdAt: 0,
+  recipe: {
+    v: 1,
+    sources: { follows: false, authors: [], followSets: [], hashtags: FOOD_HASHTAGS, relays: [], kinds: [1, KIND_PICTURE, KIND_VIDEO, KIND_SHORT_VIDEO, 30023], match: 'any' },
+    filters: { only: 'all', noReplies: true, noReposts: true, noHashtags: false, minEngagement: 0, mutedWords: [] },
+    ranking: 'chronological',
+  },
+};
+
 const isHex = (s: string) => /^[0-9a-f]{64}$/.test(s);
+const chunk = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
 const now = () => Math.floor(Date.now() / 1000);
 const HOUR = 3600;
 
 export function naddrOf(def: FeedDef): string | null {
-  if (def.type === 'builtin' || def.addr.startsWith('local:')) return null;
+  if (def.type === 'builtin' || def.addr.startsWith('local:') || def.addr.startsWith('builtin:')) return null;
   const kind = def.type === 'dvm' ? KIND_DVM_HANDLER : KIND_FEED_RECIPE;
   try { return nip19.naddrEncode({ kind, pubkey: def.pubkey, identifier: def.d }); } catch { return null; }
 }
@@ -289,7 +311,7 @@ export function addedListTemplate(items: FeedDef[]) {
     kind: KIND_ADDED_FEEDS,
     created_at: now(),
     content: '',
-    tags: items.filter((x) => !x.addr.startsWith('local:') && x.type !== 'builtin').map((x) => ['a', x.addr]),
+    tags: items.filter((x) => !x.addr.startsWith('local:') && !x.addr.startsWith('builtin:') && x.type !== 'builtin').map((x) => ['a', x.addr]),
   };
 }
 export function markAddedSynced(pubkey: string, createdAt: number) {
@@ -354,8 +376,8 @@ export async function pullAddedFeeds(pubkey: string): Promise<boolean> {
   const missing = addrs.filter((a) => !known.has(a));
   const found = missing.length ? await resolveFeeds(missing) : new Map<string, FeedDef>();
   const items = addrs.map((a) => known.get(a) ?? found.get(a)).filter((x): x is FeedDef => !!x && !NO_PROMOTE.has(x.pubkey));
-  // keep local-only feeds (not in the published list) at the end
-  for (const x of cur.items) if (x.addr.startsWith('local:')) items.push(x);
+  // keep local-only and built-in feeds (not in the published list) at the end
+  for (const x of cur.items) if (x.addr.startsWith('local:') || x.addr.startsWith('builtin:')) items.push(x);
   storeAdded(pubkey, { items, updatedAt: ev.created_at, syncedAt: ev.created_at });
   return true;
 }
@@ -366,8 +388,10 @@ export interface StoreState {
   feeds: FeedDef[];
   /** addr -> how many people added it */
   counts: Map<string, number>;
-  /** DVM pubkeys that published a public result in the last day (their preview works for guests) */
+  /** DVM pubkeys that published a public result in the last few days (their preview works for guests) */
   active: Set<string>;
+  /** liveness check finished: DVMs not in `active` have not answered anyone lately */
+  checked: boolean;
   done: boolean;
 }
 
@@ -380,9 +404,10 @@ export function streamStore(onUpdate: (s: StoreState) => void): () => void {
   const adders = new Map<string, Set<string>>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const active = new Set<string>();
-  let pending = 3;
+  let pending = 3; // recipes + DVMs, added lists, liveness
+  let checked = false;
   const counts = () => new Map([...adders].map(([a, s]) => [a, s.size]));
-  const emit = (done: boolean) => onUpdate({ feeds: [...byAddr.values()], counts: counts(), active: new Set(active), done });
+  const emit = (done: boolean) => onUpdate({ feeds: [...byAddr.values()], counts: counts(), active: new Set(active), checked, done });
   const soon = () => { if (!timer) timer = setTimeout(() => { timer = null; emit(false); }, 250); };
   const finish = () => { if (--pending <= 0) { if (timer) clearTimeout(timer); emit(true); } };
   const c1 = streamQuery({
@@ -398,7 +423,7 @@ export function streamStore(onUpdate: (s: StoreState) => void): () => void {
       byAddr.set(def.addr, def);
       soon();
     },
-    onDone: finish,
+    onDone: () => { checkLiveness(); finish(); },
   });
   const latestList = new Map<string, number>();
   const c2 = streamQuery({
@@ -420,14 +445,22 @@ export function streamStore(onUpdate: (s: StoreState) => void): () => void {
     },
     onDone: finish,
   });
-  const c3 = streamQuery({
-    relays: FEED_STORE_RELAYS.slice(0, 4),
-    filters: [{ kinds: [KIND_DVM_RESULT], since: now() - 86400, limit: 300 }],
-    timeoutMs: 9000,
-    cloud: false,
-    onEvent: (e) => { if (!active.has(e.pubkey) && e.content.trim().startsWith('[')) { active.add(e.pubkey); soon(); } },
-    onDone: finish,
-  });
+  // Which providers actually answer. Most announcements on relays are dead or are not feeds
+  // at all, so ask per provider (in small author batches, so one busy provider cannot use up
+  // the limit for the rest) whether it published a readable public result lately.
+  let c3: () => void = () => {};
+  function checkLiveness() {
+    const pks = [...new Set([...byAddr.values()].filter((f) => f.type === 'dvm').map((f) => f.pubkey))];
+    if (!pks.length) { checked = true; finish(); return; }
+    c3 = streamQuery({
+      relays: FEED_STORE_RELAYS,
+      filters: chunk(pks, 12).map((authors) => ({ kinds: [KIND_DVM_RESULT], authors, since: now() - 3 * 86400, limit: 400 })),
+      timeoutMs: 9000,
+      cloud: false,
+      onEvent: (e) => { if (!active.has(e.pubkey) && e.content.trim().startsWith('[')) { active.add(e.pubkey); soon(); } },
+      onDone: () => { checked = true; finish(); },
+    });
+  }
   return () => { c1(); c2(); c3(); if (timer) clearTimeout(timer); };
 }
 
@@ -455,7 +488,6 @@ export interface RunContext {
   follows: Set<string>;
 }
 
-const chunk = <T,>(a: T[], n: number) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
 const toNote = (e: NEvent): FeedNote => ({ id: e.id, pubkey: e.pubkey, content: e.content, created_at: e.created_at, tags: e.tags, kind: e.kind });
 
 async function followSetMembers(refs: string[], relays: string[]): Promise<string[]> {
@@ -588,24 +620,47 @@ function resultRefs(e: NEvent): { ids: string[]; addrs: string[]; relays: string
   const list = Array.isArray(tags) ? (tags as unknown[]).filter((t): t is string[] => Array.isArray(t)) : [];
   const ids = list.filter((t) => t[0] === 'e' && isHex(t[1] || '')).map((t) => t[1]);
   const addrs = list.filter((t) => t[0] === 'a' && typeof t[1] === 'string').map((t) => t[1]);
-  const relays = (e.tags.find((t) => t[0] === 'relays') || []).slice(1).map((u) => normalizeRelay(u)).filter((u): u is string => !!u);
+  // relay hints: the result's "relays" tag, and the third field of each e / a reference
+  const hinted = [...(e.tags.find((t) => t[0] === 'relays') || []).slice(1), ...list.map((t) => t[2])];
+  const counts = new Map<string, number>();
+  for (const u of hinted) { const r = typeof u === 'string' ? normalizeRelay(u) : null; if (r) counts.set(r, (counts.get(r) ?? 0) + 1); }
+  const relays = [...counts].sort((a, b) => b[1] - a[1]).map(([r]) => r);
   return { ids: ids.slice(0, 200), addrs: addrs.slice(0, 50), relays };
 }
 
+const noPrimal = (r: string) => !/primal\.net/i.test(r);
+
 async function fetchRefs(refs: { ids: string[]; addrs: string[]; relays: string[] }): Promise<FeedNote[]> {
-  const relays = [...new Set([...refs.relays.filter((r) => !/primal\.net/i.test(r)).slice(0, 4), ...DEFAULT_RELAYS, 'wss://relay.ditto.pub'])];
-  const filters: Record<string, unknown>[] = chunk(refs.ids, 100).map((ids) => ({ ids }));
-  for (const a of refs.addrs) {
+  const relays = [...new Set([...refs.relays.filter(noPrimal).slice(0, 4), ...DEFAULT_RELAYS, 'wss://relay.ditto.pub'])];
+  const addrFilter = (a: string) => {
     const [k, pk, ...d] = a.split(':');
-    if (isHex(pk || '')) filters.push({ kinds: [Number(k)], authors: [pk], '#d': [d.join(':')], limit: 1 });
-  }
+    return isHex(pk || '') ? { kinds: [Number(k)], authors: [pk], '#d': [d.join(':')], limit: 1 } : null;
+  };
+  const filters: Record<string, unknown>[] = chunk(refs.ids, 100).map((ids) => ({ ids }));
+  for (const a of refs.addrs) { const f = addrFilter(a); if (f) filters.push(f); }
   if (!filters.length) return [];
-  const evs = await queryAll(relays, filters as Parameters<typeof streamQuery>[0]['filters'], 7000);
+  const found = new Map<string, NEvent>();
+  const addrKey = (e: NEvent) => `${e.kind}:${e.pubkey}:${e.tags.find((t) => t[0] === 'd')?.[1] ?? ''}`;
+  for (const e of await queryAll(relays, filters as Parameters<typeof streamQuery>[0]['filters'], 7000)) found.set(e.id, e);
+  // Articles (a refs) mostly live on their authors' own relays: look there for the ones still missing
+  const haveAddr = new Set([...found.values()].map(addrKey));
+  const missing = refs.addrs.filter((a) => !haveAddr.has(a));
+  if (missing.length) {
+    const authors = [...new Set(missing.map((a) => a.split(':')[1]).filter(isHex))];
+    const outbox = (await outboxRelaysFor(authors, 8).catch(() => [] as string[])).filter(noPrimal).filter((r) => !relays.includes(r));
+    if (outbox.length) {
+      const more = missing.map(addrFilter).filter(Boolean) as Record<string, unknown>[];
+      for (const e of await queryAll(outbox, more as Parameters<typeof streamQuery>[0]['filters'], 6000)) found.set(e.id, e);
+    }
+  }
+  const evs = [...found.values()];
   const byId = new Map(evs.map((e) => [e.id, toNote(e)]));
   const muted = mutedNow();
   // keep the DVM's order
   const ordered = refs.ids.map((id) => byId.get(id)).filter((n): n is FeedNote => !!n);
-  const extra = evs.filter((e) => !refs.ids.includes(e.id)).map(toNote);
+  const byAddr = new Map<string, NEvent>();
+  for (const e of evs) { const k = addrKey(e); const p = byAddr.get(k); if (!p || p.created_at < e.created_at) byAddr.set(k, e); }
+  const extra = refs.addrs.map((a) => byAddr.get(a)).filter((e): e is NEvent => !!e && !refs.ids.includes(e.id)).map(toNote);
   return [...ordered, ...extra].filter((n) => !muted.has(n.pubkey));
 }
 
@@ -619,6 +674,24 @@ export async function latestDvmResult(def: FeedDef): Promise<{ notes: FeedNote[]
     return { notes: await fetchRefs(refs), at: e.created_at };
   }
   return null;
+}
+
+/**
+ * Many providers only answer when asked (no public results). Ask with a throwaway key, so it
+ * works for guests too and nothing is signed with the user's identity. Never pays.
+ */
+export async function askDvmAnonymously(def: FeedDef, onStatus: (s: DvmStatus) => void, onNotes: (n: FeedNote[]) => void): Promise<() => void> {
+  const relays = FEED_STORE_RELAYS.slice(0, 6);
+  const sk = generateSecretKey();
+  const req = finalizeEvent({
+    kind: KIND_DVM_REQUEST,
+    created_at: now(),
+    content: '',
+    tags: [['p', def.pubkey], ['relays', ...relays], ['param', 'max_results', '100'], ['alt', 'NIP-90 content discovery request']],
+  }, sk);
+  const r = await publishEvent(req as Parameters<typeof publishEvent>[0], { relays, resolveAfter: 1 });
+  if (!r.success.length) throw new Error('No relay took the request');
+  return awaitDvmAnswer(req.id, def, relays, onStatus, onNotes, 25_000);
 }
 
 /** A personal request: signed by the user, answered by the provider. */
@@ -646,7 +719,7 @@ export function awaitDvmAnswer(requestId: string, def: FeedDef, relays: string[]
     if (finished) return;
     finished = true;
     stop();
-    onStatus({ state: 'error', message: 'No answer from the provider yet. Showing its public picks.' });
+    onStatus({ state: 'error', message: 'No answer from the provider.' });
   }, timeoutMs);
   const filter = { kinds: [KIND_DVM_RESULT, KIND_DVM_FEEDBACK], '#e': [requestId], authors: [def.pubkey] };
   closers.push(subscribeEvents(relays.filter((r) => !/primal\.net/i.test(r)), filter, (ev) => {
@@ -654,7 +727,7 @@ export function awaitDvmAnswer(requestId: string, def: FeedDef, relays: string[]
     if (finished) return;
     if (e.kind === KIND_DVM_FEEDBACK) {
       const st = e.tags.find((t) => t[0] === 'status');
-      if (st?.[1] === 'payment-required') { finished = true; stop(); onStatus({ state: 'payment', message: 'This provider asks for a payment for personal picks, so nothing was sent. Showing its public picks.' }); }
+      if (st?.[1] === 'payment-required') { finished = true; stop(); onStatus({ state: 'payment', message: 'This provider asks for a payment, so nothing was sent.' }); }
       else if (st?.[1] === 'error') { finished = true; stop(); onStatus({ state: 'error', message: st[2] || 'The provider could not do it' }); }
       else onStatus({ state: 'waiting', message: st?.[2] || 'Working on it…' });
       return;

@@ -1,6 +1,6 @@
 import type { EmbedApp } from './context/EmbedPlayerContext';
 
-/** Nostr apps that run embedded in the Audio & Games section (and Vidstr's own tab). */
+/** Nostr apps that run embedded in the Audio, Games & Food section (and Vidstr's own tab). */
 
 export const AUDIO_APPS: EmbedApp[] = [
   {
@@ -46,6 +46,18 @@ export const GAME_APPS: EmbedApp[] = [
   },
 ];
 
+export const FOOD_APPS: EmbedApp[] = [
+  {
+    id: 'zapcooking',
+    name: 'Zap Cooking',
+    url: 'https://zap.cooking/explore',
+    description: 'Recipes on Nostr — cook, share and zap the chefs',
+    kind: 'food',
+    logo: 'https://zap.cooking/favicon.svg',
+    nip05: '_@zap.cooking',
+  },
+];
+
 export const VIDSTR: EmbedApp = {
   id: 'vidstr',
   name: 'Vidstr',
@@ -60,4 +72,4 @@ export const VIDSTR: EmbedApp = {
 
 export const VIDEO_APPS: EmbedApp[] = [VIDSTR];
 
-export const ALL_APPS: EmbedApp[] = [...AUDIO_APPS, ...GAME_APPS, ...VIDEO_APPS];
+export const ALL_APPS: EmbedApp[] = [...AUDIO_APPS, ...GAME_APPS, ...FOOD_APPS, ...VIDEO_APPS];

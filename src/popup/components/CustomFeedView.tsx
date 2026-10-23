@@ -8,7 +8,7 @@ import { useFeedFilters, passesFilters } from '@/lib/nostr/feed-filters';
 import { publishEvent } from '@/lib/nostr/publish';
 import { getViewerReadRelays } from '@/lib/nostr/query';
 import {
-  runRecipe, latestDvmResult, dvmRequestTemplate, awaitDvmAnswer, FEED_STORE_RELAYS,
+  runRecipe, latestDvmResult, askDvmAnonymously, dvmRequestTemplate, awaitDvmAnswer, FEED_STORE_RELAYS,
   type FeedDef, type FeedItem, type DvmStatus,
 } from '@/lib/nostr/feed-store';
 import type { FeedNote } from '@/lib/nostr/feed';
@@ -63,14 +63,30 @@ export function CustomFeedView({ def, publicKey, followingPubkeys, onSelectNote,
     }
     if (def.type === 'dvm') {
       let cancelled = false;
+      let stopAsk: (() => void) | null = null;
       setDvm({ state: 'idle' });
-      latestDvmResult(def).then((r) => {
+      latestDvmResult(def).then(async (r) => {
         if (cancelled) return;
-        setItems((r?.notes ?? []).map((note) => ({ note })));
-        setDvm({ state: r ? 'done' : 'idle', at: r?.at });
-        setDone(true);
+        if (r && r.notes.length) {
+          setItems(r.notes.map((note) => ({ note })));
+          setDvm({ state: 'done', at: r.at });
+          setDone(true);
+          return;
+        }
+        // no public picks: this provider may only answer when asked, so ask (with a throwaway key)
+        setDvm({ state: 'waiting', message: 'Asking the provider for its picks…' });
+        try {
+          const stop = await askDvmAnonymously(def, (st) => {
+            if (cancelled) return;
+            setDvm(st);
+            if (st.state !== 'waiting') setDone(true);
+          }, (notes) => { if (!cancelled) setItems(notes.map((note) => ({ note }))); });
+          if (cancelled) stop(); else stopAsk = stop;
+        } catch {
+          if (!cancelled) { setDvm({ state: 'error', message: 'Could not reach the provider.' }); setDone(true); }
+        }
       }).catch(() => { if (!cancelled) setDone(true); });
-      return () => { cancelled = true; };
+      return () => { cancelled = true; stopAsk?.(); };
     }
     setDone(true);
     return undefined;
@@ -137,21 +153,23 @@ export function CustomFeedView({ def, publicKey, followingPubkeys, onSelectNote,
           </button>
         </div>
       )}
-      {def.type === 'dvm' && dvm.message && dvm.state !== 'done' && (
+      {def.type === 'dvm' && dvm.message && dvm.state !== 'done' && items.length > 0 && (
         <p className={`mx-4 mt-1 text-[12px] rounded-lg px-3 py-2 ${dvm.state === 'payment' || dvm.state === 'error' ? 'bg-amber-500/10 text-amber-200' : 'bg-white/5 text-gray-400'}`}>{dvm.message}</p>
       )}
 
       {!done && !items.length && (
         <div className="flex flex-col items-center py-12 text-gray-500">
           <Loader2 className="w-6 h-6 animate-spin mb-2" />
-          <p className="text-sm">{def.type === 'dvm' ? 'Getting the provider’s picks…' : 'Running the recipe…'}</p>
+          <p className="text-sm">{def.type === 'dvm' ? (dvm.state === 'waiting' ? 'Asking the provider… some take up to 25 seconds' : 'Getting the provider’s picks…') : 'Running the recipe…'}</p>
         </div>
       )}
       {done && !visible.length && (
         <div className="px-6 py-10 text-center text-sm text-gray-500">
           <Sparkles className="w-6 h-6 mx-auto mb-2 text-gray-700" />
           {def.type === 'dvm'
-            ? 'This provider has no recent public picks.' + (publicKey ? ' Try Personal picks.' : ' Sign in to ask it for personal picks.')
+            ? dvm.state === 'payment'
+              ? 'This provider wants sats before it answers, so nothing was sent. Pick a provider marked “working” in the store.'
+              : 'This provider is not answering right now. Most of the providers marked “working” in the store answer straight away.'
             : 'Nothing matches this feed right now. Loosen a filter or add more sources.'}
         </div>
       )}

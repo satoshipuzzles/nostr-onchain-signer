@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, Edit3, Download, Lock,
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
-  Gamepad2, Hammer, Zap, Clapperboard, Search } from 'lucide-react';
+  Gamepad2, Hammer, Zap, Clapperboard, Search, Bell } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
 import { ClickableAvatar } from './ClickableAvatar';
@@ -14,6 +14,7 @@ const mainNav = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
   { to: '/feed', icon: Rss, label: 'Feed' },
   { to: '/find', icon: Search, label: 'Search' },
+  { to: '/notifications', icon: Bell, label: 'Notifications' },
   { to: '/messages', icon: MessageCircle, label: 'Messages' },
   { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
   { to: '/wallets', icon: Wallet, label: 'Wallets' },
@@ -25,7 +26,7 @@ const mainNav = [
   { to: '/unlocks', icon: Unlock, label: 'Social Unlocks' },
   { to: '/discover', icon: Compass, label: 'Discover' },
   { to: '/explorer', icon: Blocks, label: 'Explorer' },
-  { to: '/other', icon: Gamepad2, label: 'Audio & Games' },
+  { to: '/other', icon: Gamepad2, label: 'Audio, Games & Food' },
   { to: '/vidstr', icon: Clapperboard, label: 'Vidstr' },
 ];
 
@@ -35,7 +36,7 @@ const settingsNav = [
   { to: '/settings/profile', icon: Edit3, label: 'Edit Profile' },
 ];
 
-export function Sidebar() {
+export function Sidebar({ unread = 0 }: { unread?: number }) {
   const { myProfile, publicKey, accounts, activeAccountIndex, handleSwitchAccount, handleAddAccount, handleBackupKeys } = useAuth();
   const activeAccount = accounts[activeAccountIndex];
   const displayName = myProfile?.displayName || myProfile?.name || activeAccount?.displayName || activeAccount?.label || 'Anonymous';
@@ -94,6 +95,9 @@ export function Sidebar() {
           >
             <Icon className="w-4.5 h-4.5" />
             {label}
+            {to === '/notifications' && unread > 0 && (
+              <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-purple-500 text-white text-[10px] font-bold flex items-center justify-center">{unread > 99 ? '99+' : unread}</span>
+            )}
           </NavLink>
         ))}
 

@@ -72,10 +72,12 @@ export interface PublishOptions {
   resolveAfter?: number;
   /** Called once every relay has answered or timed out, with the final tally. */
   onSettled?: (result: PublishResult) => void;
+  /** Publish to these relays instead of the user's write relays. */
+  relays?: string[];
 }
 
 export async function publishEvent(event: SignedEvent, opts: PublishOptions = {}): Promise<PublishResult> {
-  const targets = await getPublishRelays();
+  const targets = opts.relays?.length ? opts.relays : await getPublishRelays();
   const p = getPool();
 
   const success: string[] = [];

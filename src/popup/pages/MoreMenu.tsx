@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import {
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
   Inbox, Compass, Settings, Radio, Edit3, Download, Lock,
-  Shield, Gamepad2, Hammer, Zap, Clapperboard,
+  Shield, Gamepad2, Hammer, Zap, Clapperboard, Bell, UtensilsCrossed,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { createMessageId } from '@/shared/messages';
@@ -12,10 +12,12 @@ const sections = [
     title: 'Social',
     items: [
       { to: '/feed', icon: Rss, label: 'Feed' },
+      { to: '/notifications', icon: Bell, label: 'Notifications' },
       { to: '/messages', icon: MessageCircle, label: 'Messages' },
       { to: '/leaderboard', icon: Trophy, label: 'Leaderboard' },
       { to: '/discover', icon: Compass, label: 'Discover' },
-      { to: '/other', icon: Gamepad2, label: 'Audio & Games' },
+      { to: '/other', icon: Gamepad2, label: 'Audio, Games & Food' },
+      { to: '/other?tab=food', icon: UtensilsCrossed, label: 'Food' },
       { to: '/vidstr', icon: Clapperboard, label: 'Vidstr' },
     ],
   },
