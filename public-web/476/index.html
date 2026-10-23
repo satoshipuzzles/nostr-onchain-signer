@@ -15,8 +15,8 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
-<meta property="og:video" content="https://nostronchain.com/476/pr476-v3.mp4">
-<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v3.mp4">
+<meta property="og:video" content="https://nostronchain.com/476/pr476-v4.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v4.mp4">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="1920">
 <meta property="og:video:height" content="1080">
@@ -59,6 +59,13 @@
   a { color: var(--gold); }
   .links li { margin: 8px 0; }
   .links span { color: var(--muted); }
+  .tbl { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 14px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; background: var(--card); }
+  tr:last-child td { border-bottom: 0; }
+  tr.me td { background: #2a2210; font-weight: 700; }
+  .bad { color: var(--nack); } .good { color: var(--ack); }
   footer { margin-top: 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
 </style>
 </head>
@@ -69,10 +76,10 @@
   <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
 
   <video controls playsinline preload="metadata" poster="/476/poster-v2.jpg">
-    <source src="/476/pr476-v3.mp4" type="video/mp4">
-    Your browser can't play this video. <a href="/476/pr476-v3.mp4">Download it</a>.
+    <source src="/476/pr476-v4.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476-v4.mp4">Download it</a>.
   </video>
-  <p class="meta">5 min 23 s · captions burned in · review status as of October 23, 2026</p>
+  <p class="meta">5 min 36 s · captions burned in · review status as of October 23, 2026</p>
 
   <div class="grid">
     <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
@@ -90,6 +97,22 @@
     <div class="card"><div>One rule for every reward</div><p>Every reward from 973,440 waits the same year from its own block, with no shorter lock for early miners.</p></div>
     <div class="card"><div>A soft fork</div><p>It only rejects spends the old rules allowed, so non-upgraded nodes stay on the same chain. Weakening it later would take a hard fork, which is deliberate.</p></div>
   </div>
+
+  <h2>How it compares</h2>
+  <div class="tbl"><table>
+    <tr><th>PR</th><th>Depth</th><th>Rolling</th><th>Covers the 45-day window</th><th>Ends</th></tr>
+    <tr><td>#419 (merged)</td><td>6,480</td><td class="bad">no, all released at 979,920</td><td>—</td><td class="bad">979,920</td></tr>
+    <tr><td>#429</td><td>until RDTS expiry</td><td class="bad">no, all released at expiry</td><td>yes</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#434</td><td>four periods</td><td class="bad">four release dates</td><td>yes</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#467</td><td>6,480</td><td class="good">yes</td><td>yes</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#468</td><td>25,920</td><td class="good">yes</td><td class="bad">no, still released at 979,920</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#468 + #477</td><td>25,920; window 6,480</td><td class="good">yes</td><td>yes, at 6,480</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#468 + #478</td><td>25,920</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#468 + #479</td><td>25,920; 100 for 979,920–986,399</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#469</td><td>40,320</td><td class="good">yes</td><td>yes</td><td>never (makes RDTS permanent too)</td></tr>
+    <tr class="me"><td>#476</td><td>52,560</td><td class="good">yes</td><td class="good">yes</td><td class="good">never · RDTS untouched</td></tr>
+  </table></div>
+  <p class="meta">As of October 23. #477, #478 and #479 are add-ons to #468 and need it merged first. #429's relay policy also holds rewards a year with no end, but its consensus lock ends at RDTS expiry.</p>
 
   <h2>The latest</h2>
   <div class="card latest">
@@ -128,7 +151,7 @@
 
   <div class="cta">
     <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
-    <a class="btn" href="/476/pr476-v3.mp4" download>Download the video</a>
+    <a class="btn" href="/476/pr476-v4.mp4" download>Download the video</a>
   </div>
 
   <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
