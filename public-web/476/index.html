@@ -66,6 +66,13 @@
   tr:last-child td { border-bottom: 0; }
   tr.me td { background: #2a2210; font-weight: 700; }
   .bad { color: var(--nack); } .good { color: var(--ack); }
+  .vs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 12px; }
+  .vs .card div { font-size: 30px; }
+  .vs .card div small { font-size: 15px; color: var(--muted); font-weight: 600; }
+  .names { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .names a { font-size: 14px; text-decoration: none; color: var(--ink); background: #262624; border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; }
+  .names a.t { border-color: var(--ack); }
+  .both { border-color: var(--gold); }
   footer { margin-top: 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
 </style>
 </head>
@@ -131,8 +138,40 @@
     <li>MarcanoFilms mutation-tested the rule and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390443074">made the case</a> that a full year keeps 52,560 rewards locked at any moment, twice as many as #468's 25,920.</li>
     <li>stackitdeep prefers it to #468 because keeping the lock separate from RDTS gives more flexibility.</li>
     <li>FlyTheElephant1 pointed out that shortening a permanent lock later would be a hard fork (agreed, and deliberate), and has <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6411035263">asked for a written wind-down plan</a> in case one is ever needed.</li>
-    <li>On #468, luke-jr, the Knots maintainer, <a href="https://github.com/bitcoinknots/bitcoin/pull/468#issuecomment-6373396538">posted a Concept NACK</a>: he would rather let the 45 days expire and handle any longer lock as an ordinary soft fork. GregTonoski and SeventyEi8ht now take the same view.</li>
+    <li>On #468, luke-jr, the Knots maintainer, <a href="https://github.com/bitcoinknots/bitcoin/pull/468#issuecomment-6373396538">posted a Concept NACK</a>, preferring to let the 45 days expire and handle any longer lock as an ordinary soft fork. GregTonoski and SeventyEi8ht now take the same view.</li>
   </ul>
+
+  <h2>#476 vs #468: who supports which</h2>
+  <p>#468 (180 days, ends with RDTS) is the main alternative and the one in the rc5 test build. This counts every GitHub account that posted an ACK or NACK on either PR, using each person's latest stance.</p>
+  <div class="vs">
+    <div class="card"><b>#476 · this PR</b><div><span class="ack">13</span> <small>ACK</small> · <span class="nack">2</span> <small>NACK</small></div><p>2 tested. Open since Oct 22.</p></div>
+    <div class="card"><b>#468 · BitcoinMechanic</b><div><span class="ack">33</span> <small>ACK</small> · <span class="nack">4</span> <small>against</small></div><p>4 tested. Open since Oct 20, two days longer.</p></div>
+    <div class="card both"><b>Back both</b><div>5 <small>people</small></div><p>No one ACKs one and NACKs the other.</p></div>
+  </div>
+  <p class="meta">Green outline = tested ACK (built and ran it).</p>
+  <div class="vs" style="margin-top:12px">
+    <div class="card"><b>Only #476 · 8</b><div class="names"><a class="t" href="https://github.com/Kilombino">Kilombino</a><a class="t" href="https://github.com/webtrekker95-hue">webtrekker95-hue</a><a class="" href="https://github.com/papier-krieger">papier-krieger</a><a class="" href="https://github.com/Antonbtc2020">Antonbtc2020</a><a class="" href="https://github.com/keyandchain21">keyandchain21</a><a class="" href="https://github.com/BrassMonkey87">BrassMonkey87</a><a class="" href="https://github.com/FreezyMcFlurry">FreezyMcFlurry</a><a class="" href="https://github.com/b2bpleb">b2bpleb</a></div></div>
+    <div class="card both"><b>Both · 5</b><div class="names"><a class="t" href="https://github.com/MarcanoFilms">MarcanoFilms</a><a class="" href="https://github.com/stackitdeep">stackitdeep</a><a class="" href="https://github.com/Daamir-Al-Adel">Daamir-Al-Adel</a><a class="" href="https://github.com/Ari4ka">Ari4ka</a><a class="" href="https://github.com/chainboarder">chainboarder</a></div><p>stackitdeep ACKed #468 first, then said they <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6403179023">prefer #476</a>. MarcanoFilms tested #468, then wrote #476's end point and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390443074">made the case for it</a>.</p></div>
+    <div class="card"><b>Only #468 · 28</b><div class="names"><a class="t" href="https://github.com/jasonsopko">jasonsopko</a><a class="t" href="https://github.com/chrisguida">chrisguida</a><a class="t" href="https://github.com/geobees">geobees</a><a class="" href="https://github.com/kwsantiago">kwsantiago</a><a class="" href="https://github.com/davelund110">davelund110</a><a class="" href="https://github.com/SpectrGen1">SpectrGen1</a><a class="" href="https://github.com/thisispav">thisispav</a><a class="" href="https://github.com/connorslab">connorslab</a><a class="" href="https://github.com/BalkanHodl">BalkanHodl</a><a class="" href="https://github.com/DxV04-not-bot">DxV04-not-bot</a><a class="" href="https://github.com/Maveth">Maveth</a><a class="" href="https://github.com/rwdewey">rwdewey</a><a class="" href="https://github.com/Insulince">Insulince</a><a class="" href="https://github.com/kosdas">kosdas</a><a class="" href="https://github.com/JoshuaFortezza">JoshuaFortezza</a><a class="" href="https://github.com/BLAKE2bMiner">BLAKE2bMiner</a><a class="" href="https://github.com/DWEETNICE">DWEETNICE</a><a class="" href="https://github.com/SamMagHub">SamMagHub</a><a class="" href="https://github.com/PerpetualWar">PerpetualWar</a><a class="" href="https://github.com/versieboer">versieboer</a><a class="" href="https://github.com/walitysru-wq">walitysru-wq</a><a class="" href="https://github.com/NoFlames-bit">NoFlames-bit</a><a class="" href="https://github.com/MYTH-44">MYTH-44</a><a class="" href="https://github.com/booozytheclown">booozytheclown</a><a class="" href="https://github.com/sturms">sturms</a><a class="" href="https://github.com/BTCAnvil">BTCAnvil</a><a class="" href="https://github.com/ghastlyxbt">ghastlyxbt</a><a class="" href="https://github.com/StuffedTomato">StuffedTomato</a></div></div>
+  </div>
+
+  <h3 style="margin:24px 0 8px">The objections</h3>
+  <div class="tbl"><table>
+    <tr><th>Who</th><th>#476</th><th>#468</th><th>Why</th></tr>
+    <tr><td>SeventyEi8ht</td><td class="bad">NACK</td><td class="bad">ACK, then withdrew</td><td>No re-locking of rewards already mined in the 45-day window; now prefers letting the 45 days expire.</td></tr>
+    <tr><td>mynpub</td><td class="bad">NACK</td><td>no ACK or NACK; called it better than the 1-year versions</td><td>Prefers the shorter lock.</td></tr>
+    <tr><td>luke-jr (Knots maintainer)</td><td>no comment</td><td class="bad">Concept NACK</td><td>Let the 45 days expire; do any longer lock as an ordinary soft fork. That view argues against #476 too.</td></tr>
+    <tr><td>GregTonoski</td><td>no comment</td><td class="bad">against, won't run it</td><td>Same as luke-jr.</td></tr>
+    <tr><td>FlyTheElephant1</td><td>no ACK or NACK; wants a shorter permanent lock</td><td class="bad">NACK unless it includes #477/#478/#479</td><td>Wants the 45-day window's rewards to stay locked.</td></tr>
+  </table></div>
+
+  <h3 style="margin:24px 0 8px">What it means</h3>
+  <ul>
+    <li>#468 has more support, about 2.5 times as many ACKs, and it's the one in rc5.</li>
+    <li>The two groups barely overlap: 5 people back both. Most #476 supporters (8 of 13) have not ACKed #468.</li>
+    <li>No one with an ACK on #468 has NACKed #476. The strongest objection on both, luke-jr's and GregTonoski's "let it expire", is to any longer lock, not to #476 in particular.</li>
+  </ul>
+  <p class="meta">Counted from GitHub comments and reviews on October 26, 2026. Each account's latest stance counts; quoted text and emoji reactions don't. "Against" on #468 includes a conditional NACK and a withdrawn ACK. PR authors aren't counted.</p>
 
   <h2>Notes</h2>
   <ul>
