@@ -4,26 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Knots PR #476: 1-year rolling coinbase maturity, no cliff</title>
-<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, permanently, separate from RDTS. Explainer video, what it improves, the review so far, and the fallback plan.">
+<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, until new coins run out around 2140, separate from RDTS. Explainer video, what it improves, the review so far (13 ACK, 2 NACK), and the fallback plan.">
 <link rel="canonical" href="https://nostronchain.com/476">
 <meta property="og:type" content="video.other">
 <meta property="og:site_name" content="Nostr Onchain">
 <meta property="og:url" content="https://nostronchain.com/476">
 <meta property="og:title" content="Knots PR #476: 1 year, no cliff">
-<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS. What it improves, the review so far, and the plan if it misses block 979,920.">
-<meta property="og:image" content="https://nostronchain.com/476/og-v2.jpg">
+<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, until new coins run out around 2140, separate from RDTS. 13 ACK, 2 NACK so far. What it improves, the review, and the plan if it misses block 979,920.">
+<meta property="og:image" content="https://nostronchain.com/476/og-v3.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
-<meta property="og:video" content="https://nostronchain.com/476/pr476-v4.mp4">
-<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v4.mp4">
+<meta property="og:video" content="https://nostronchain.com/476/pr476-v5.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v5.mp4">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="1920">
 <meta property="og:video:height" content="1080">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Knots PR #476: 1 year, no cliff">
 <meta name="twitter:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS.">
-<meta name="twitter:image" content="https://nostronchain.com/476/og-v2.jpg">
+<meta name="twitter:image" content="https://nostronchain.com/476/og-v3.jpg">
 <meta name="theme-color" content="#0D0D0D">
 <link rel="icon" href="/logo.png">
 <style>
@@ -71,20 +71,20 @@
 </head>
 <body>
 <main>
-  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span><span class="upd">· updated October 23, 2026</span></div>
+  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span><span class="upd">· updated October 26, 2026</span></div>
   <h1>1-year rolling coinbase maturity. <span>No cliff.</span></h1>
   <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
 
-  <video controls playsinline preload="metadata" poster="/476/poster-v2.jpg">
-    <source src="/476/pr476-v4.mp4" type="video/mp4">
-    Your browser can't play this video. <a href="/476/pr476-v4.mp4">Download it</a>.
+  <video controls playsinline preload="metadata" poster="/476/poster-v3.jpg">
+    <source src="/476/pr476-v5.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476-v5.mp4">Download it</a>.
   </video>
-  <p class="meta">5 min 36 s · captions burned in · review status as of October 23, 2026</p>
+  <p class="meta">6 min 26 s · captions burned in · review status as of October 26, 2026</p>
 
   <div class="grid">
     <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
     <div class="card"><b>Unlocks</b><div>One per block</div></div>
-    <div class="card"><b>Ends</b><div>Never · RDTS untouched</div></div>
+    <div class="card"><b>Covers</b><div>Until ~2140 · RDTS untouched</div></div>
     <div class="card"><b>Deadline</b><div>Block 979,920</div></div>
   </div>
 
@@ -92,7 +92,7 @@
   <div class="better">
     <div class="card"><div>No supply cliff</div><p>No block where thousands of rewards unlock at once. Newly mined coins reach the market at a steady one reward per block, so there's no single moment to dump into.</p></div>
     <div class="card"><div>Hit-and-run hashing costs more</div><p>Hashrate rented to grab rewards and sell has to wait a year to get paid. The chain has a year to respond, and miners stay tied to its long-term health.</p></div>
-    <div class="card"><div>Predictable for every miner</div><p>Each reward unlocks at its own block + 52,560. No expiry dates, no dependence on future votes, nothing to guess.</p></div>
+    <div class="card"><div>Predictable for every miner</div><p>Each reward unlocks at its own block + 52,560. No expiry dates, no dependence on future votes, nothing to guess. Coverage ends only when new coins run out, by the height a reward was mined at.</p></div>
     <div class="card"><div>Separate from RDTS</div><p>Debates about extending or ending RDTS no longer move miner payouts. The lock reads block heights only.</p></div>
     <div class="card"><div>One rule for every reward</div><p>Every reward from 973,440 waits the same year from its own block, with no shorter lock for early miners.</p></div>
     <div class="card"><div>A soft fork</div><p>It only rejects spends the old rules allowed, so non-upgraded nodes stay on the same chain. Weakening it later would take a hard fork, which is deliberate.</p></div>
@@ -110,25 +110,28 @@
     <tr><td>#468 + #478</td><td>25,920</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
     <tr><td>#468 + #479</td><td>25,920; 100 for 979,920–986,399</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
     <tr><td>#469</td><td>40,320</td><td class="good">yes</td><td>yes</td><td>never (makes RDTS permanent too)</td></tr>
-    <tr class="me"><td>#476</td><td>52,560</td><td class="good">yes</td><td class="good">yes</td><td class="good">never · RDTS untouched</td></tr>
+    <tr><td>#480</td><td>6,480</td><td class="good">yes</td><td>yes</td><td>never</td></tr>
+    <tr class="me"><td>#476</td><td>52,560</td><td class="good">yes</td><td class="good">yes</td><td class="good">rewards mined until 6,930,000 (~2140), no cliff · RDTS untouched</td></tr>
   </table></div>
-  <p class="meta">As of October 23. #477, #478 and #479 are add-ons to #468 and need it merged first. #429's relay policy also holds rewards a year with no end, but its consensus lock ends at RDTS expiry.</p>
+  <p class="meta">As of October 26. #477, #478 and #479 are add-ons to #468 and need it merged first. #483 only keeps the 45-day window's rewards locked for 6,480 blocks in consensus, so they aren't all released at 979,920; it doesn't cover later rewards. #429's relay policy also holds rewards a year with no end, but its consensus lock ends at RDTS expiry.</p>
 
   <h2>The latest</h2>
   <div class="card latest">
     <ul>
-      <li>Two community test builds came out today: <b>rc3</b> swapped #468 for #429, then <b>rc4</b> swapped it back to #468. Neither is an official release, and neither carries #476.</li>
-      <li>If #476 misses block 979,920, a fallback takes over. MarcanoFilms has built it and offered to bring it into this PR: rewards from block <b>979,919</b>, the same rolling 52,560-block year, switched on before block <b>1,005,839</b>, so nothing that has become spendable is ever re-locked. It is designed to work on top of either #468 or #429.</li>
-      <li>Marcano also proposed an end point: the lock would cover every reward mined until block <b>6,930,000</b>, the first block with no new coins (around 2140). The last covered reward still waits its full year, so the final unlock comes about a year after that, one reward per block, with no cliff. Fee-only rewards after that go back to the normal 100 blocks.</li>
-      <li>The fallback will be reviewed and tested before anything changes in #476.</li>
+      <li><b>The end point is now in #476.</b> MarcanoFilms' change was merged: the lock covers every reward mined until block <b>6,930,000</b>, the first block with no new coins (around 2140). It ends by the height a reward was mined at, so every covered reward still waits its full year. The last one unlocks at block 6,982,559, one reward per block, with no cliff.</li>
+      <li>The newest community test build, <b>rc5</b>, carries #468 (180 days, ends with RDTS). Kilombino briefly put up a test build with #476 instead, then <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390737631">took it down</a>, saying testers are going with #468. These are test builds, not official releases.</li>
+      <li>If #476 misses block 979,920, a fallback takes over. It is built and tested: the same rolling 52,560-block year, switched on before block <b>1,005,839</b>, so nothing that has become spendable is ever re-locked.</li>
     </ul>
   </div>
 
   <h2>Review so far</h2>
   <ul>
-    <li><span class="ack">4 ACK</span>: Kilombino (tested on regtest and a pruned mainnet node), Daamir-Al-Adel, MarcanoFilms, papier-krieger.</li>
+    <li><span class="ack">13 ACK</span>. Tested: Kilombino (regtest and a pruned mainnet node, re-tested with the end point), webtrekker95-hue. Concept: Daamir-Al-Adel, MarcanoFilms, papier-krieger, Ari4ka, Antonbtc2020, keyandchain21, chainboarder, BrassMonkey87, stackitdeep, FreezyMcFlurry, b2bpleb.</li>
     <li><span class="nack">2 NACK</span>: SeventyEi8ht (objects to re-locking rewards already mined in the 45-day window), mynpub.</li>
-    <li>FlyTheElephant1 pointed out that shortening a permanent lock later would be a hard fork. Agreed: that's the trade-off, and it's deliberate.</li>
+    <li>MarcanoFilms mutation-tested the rule and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390443074">made the case</a> that a full year keeps 52,560 rewards locked at any moment, twice as many as #468's 25,920.</li>
+    <li>stackitdeep prefers it to #468 because keeping the lock separate from RDTS gives more flexibility.</li>
+    <li>FlyTheElephant1 pointed out that shortening a permanent lock later would be a hard fork (agreed, and deliberate), and has <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6411035263">asked for a written wind-down plan</a> in case one is ever needed.</li>
+    <li>On #468, luke-jr, the Knots maintainer, <a href="https://github.com/bitcoinknots/bitcoin/pull/468#issuecomment-6373396538">posted a Concept NACK</a>: he would rather let the 45 days expire and handle any longer lock as an ordinary soft fork. GregTonoski and SeventyEi8ht now take the same view.</li>
   </ul>
 
   <h2>Notes</h2>
@@ -144,14 +147,14 @@
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476">PR #476 on GitHub</a> <span>· code, description, full discussion</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371103283">Reply on the hard-fork question</a> <span>· why the year is permanent</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6370924020">MarcanoFilms' fallback proposal</a> <span>· and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371249203">the reply</a></span></li>
-    <li><a href="https://github.com/knots-dev/bitcoin/releases/tag/v29.4.3.knots20260508rc4">29.4.3rc4 test build</a> <span>· carries #468</span></li>
+    <li><a href="https://github.com/knots-dev/bitcoin/releases/tag/v29.4.3.knots20260508rc5">29.4.3rc5 test build</a> <span>· carries #468</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/468">#468</a> <span>· 180-day rolling, ends with RDTS</span> · <a href="https://github.com/bitcoinknots/bitcoin/pull/429">#429</a> <span>· locked until RDTS expiry</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/419">#419</a> <span>· the 45-day lock that ends at 979,920</span></li>
   </ul>
 
   <div class="cta">
     <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
-    <a class="btn" href="/476/pr476-v4.mp4" download>Download the video</a>
+    <a class="btn" href="/476/pr476-v5.mp4" download>Download the video</a>
   </div>
 
   <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
