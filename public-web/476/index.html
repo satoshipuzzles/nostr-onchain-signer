@@ -3,27 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Knots PR #476: 1-year rolling coinbase maturity, no cliff</title>
-<meta name="description" content="Under #419, about 6,400 XBT mining rewards unlock in one block. PR #476 gives each reward its own one-year clock: one unlocks per block, until new coins run out around 2140, separate from RDTS. Explainer video, what it improves, the review so far (13 ACK, 2 NACK), and the fallback plan.">
+<title>Knots PR #476: 1-year rolling coinbase maturity on top of #468</title>
+<meta name="description" content="Knots 29.4.3 holds each mining reward 180 days, until RDTS ends. PR #476 now builds on it: from block 995,000, every reward mined since 979,919 waits a full year from its own block, one unlocking per block, until new coins run out around 2140. Explainer video, what it improves, the review (14 ACK, 2 NACK), and how it compares with #468.">
 <link rel="canonical" href="https://nostronchain.com/476">
 <meta property="og:type" content="video.other">
 <meta property="og:site_name" content="Nostr Onchain">
 <meta property="og:url" content="https://nostronchain.com/476">
 <meta property="og:title" content="Knots PR #476: 1 year, no cliff">
-<meta property="og:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, until new coins run out around 2140, separate from RDTS. 13 ACK, 2 NACK so far. What it improves, the review, and the plan if it misses block 979,920.">
-<meta property="og:image" content="https://nostronchain.com/476/og-v3.jpg">
+<meta property="og:description" content="Built on Knots 29.4.3: from block 995,000, every XBT mining reward waits a full year from its own block. One unlocks per block, until new coins run out around 2140, separate from RDTS. 14 ACK, 2 NACK so far.">
+<meta property="og:image" content="https://nostronchain.com/476/og-v4.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity.">
-<meta property="og:video" content="https://nostronchain.com/476/pr476-v5.mp4">
-<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v5.mp4">
+<meta property="og:image:alt" content="Knots PR #476: 1 year. No cliff. Rolling coinbase maturity on top of #468.">
+<meta property="og:video" content="https://nostronchain.com/476/pr476-v6.mp4">
+<meta property="og:video:secure_url" content="https://nostronchain.com/476/pr476-v6.mp4">
 <meta property="og:video:type" content="video/mp4">
 <meta property="og:video:width" content="1920">
 <meta property="og:video:height" content="1080">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Knots PR #476: 1 year, no cliff">
-<meta name="twitter:description" content="Each XBT mining reward gets its own one-year clock. One unlocks per block, permanently, separate from RDTS.">
-<meta name="twitter:image" content="https://nostronchain.com/476/og-v3.jpg">
+<meta name="twitter:description" content="Built on Knots 29.4.3: every XBT mining reward gets its own one-year clock from block 995,000. One unlocks per block, separate from RDTS.">
+<meta name="twitter:image" content="https://nostronchain.com/476/og-v4.jpg">
 <meta name="theme-color" content="#0D0D0D">
 <link rel="icon" href="/logo.png">
 <style>
@@ -78,63 +78,64 @@
 </head>
 <body>
 <main>
-  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span><span class="upd">· updated October 26, 2026</span></div>
+  <div class="top"><span class="pill">Open</span><span class="num">Bitcoin Knots #476</span><span class="upd">· updated October 30, 2026</span></div>
   <h1>1-year rolling coinbase maturity. <span>No cliff.</span></h1>
-  <p class="lede">Under #419, about 6,400 mining rewards all become spendable in one block, 979,920. This pull request gives every reward its own one-year clock instead.</p>
+  <p class="lede">Knots 29.4.3, released October 28, holds each mining reward 180 days (#468), but only for rewards mined before RDTS ends in September 2027. #476 now builds on top of it: from block 995,000, every reward mined since 979,919 waits a full year from its own block, until new coins run out.</p>
 
-  <video controls playsinline preload="metadata" poster="/476/poster-v3.jpg">
-    <source src="/476/pr476-v5.mp4" type="video/mp4">
-    Your browser can't play this video. <a href="/476/pr476-v5.mp4">Download it</a>.
+  <video controls playsinline preload="metadata" poster="/476/poster-v4.jpg">
+    <source src="/476/pr476-v6.mp4" type="video/mp4">
+    Your browser can't play this video. <a href="/476/pr476-v6.mp4">Download it</a>.
   </video>
-  <p class="meta">6 min 26 s · captions burned in · review status as of October 26, 2026</p>
+  <p class="meta">6 min 48 s · captions burned in · review status as of October 30, 2026</p>
 
   <div class="grid">
     <div class="card"><b>Depth</b><div>52,560 blocks</div></div>
     <div class="card"><b>Unlocks</b><div>One per block</div></div>
-    <div class="card"><b>Covers</b><div>Until ~2140 · RDTS untouched</div></div>
-    <div class="card"><b>Deadline</b><div>Block 979,920</div></div>
+    <div class="card"><b>Covers</b><div>Rewards from 979,919 to ~2140</div></div>
+    <div class="card"><b>Switches on</b><div>Block 995,000 (~Feb 2027)</div></div>
   </div>
 
   <h2>What improves</h2>
   <div class="better">
-    <div class="card"><div>No supply cliff</div><p>No block where thousands of rewards unlock at once. Newly mined coins reach the market at a steady one reward per block, so there's no single moment to dump into.</p></div>
-    <div class="card"><div>Hit-and-run hashing costs more</div><p>Hashrate rented to grab rewards and sell has to wait a year to get paid. The chain has a year to respond, and miners stay tied to its long-term health.</p></div>
-    <div class="card"><div>Predictable for every miner</div><p>Each reward unlocks at its own block + 52,560. No expiry dates, no dependence on future votes, nothing to guess. Coverage ends only when new coins run out, by the height a reward was mined at.</p></div>
-    <div class="card"><div>Separate from RDTS</div><p>Debates about extending or ending RDTS no longer move miner payouts. The lock reads block heights only.</p></div>
-    <div class="card"><div>One rule for every reward</div><p>Every reward from 973,440 waits the same year from its own block, with no shorter lock for early miners.</p></div>
-    <div class="card"><div>A soft fork</div><p>It only rejects spends the old rules allowed, so non-upgraded nodes stay on the same chain. Weakening it later would take a hard fork, which is deliberate.</p></div>
+    <div class="card"><div>A full year, not 180 days</div><p>Hashrate rented to grab rewards and sell has to wait a year to get paid. That's 52,560 rewards locked at any moment instead of 25,920, and miners stay tied to the chain's long-term health.</p></div>
+    <div class="card"><div>Doesn't end with RDTS</div><p>Under #468, rewards mined after RDTS ends (September 2027) go back to 100 blocks. Here every reward keeps its year until new coins run out. Debates about RDTS no longer move miner payouts.</p></div>
+    <div class="card"><div>One reward per block</div><p>Each reward unlocks at its own block + 52,560, so newly mined coins reach the market at a steady pace with no release date to dump into. The last one unlocks at block 6,982,559.</p></div>
+    <div class="card"><div>Never re-locks a spendable reward</div><p>It switches on at block 995,000, while #468 still holds every reward it covers. Nothing that has become spendable is ever locked again, and the 45-day window's rewards are left as 29.4.3 has them.</p></div>
+    <div class="card"><div>Safe to run before it switches on</div><p>Until block 995,000 it accepts exactly the same blocks as 29.4.3, so nodes running it and nodes running 29.4.3 stay on the same chain. That leaves about three months for review.</p></div>
+    <div class="card"><div>A soft fork</div><p>It only rejects spends 29.4.3 allows, so non-upgraded nodes stay on the same chain. Weakening it later would take a hard fork, which is deliberate.</p></div>
   </div>
 
   <h2>How it compares</h2>
   <div class="tbl"><table>
-    <tr><th>PR</th><th>Depth</th><th>Rolling</th><th>Covers the 45-day window</th><th>Ends</th></tr>
+    <tr><th>PR</th><th>Depth</th><th>Rolling</th><th>45-day window rewards</th><th>Ends</th></tr>
     <tr><td>#419 (merged)</td><td>6,480</td><td class="bad">no, all released at 979,920</td><td>—</td><td class="bad">979,920</td></tr>
     <tr><td>#429</td><td>until RDTS expiry</td><td class="bad">no, all released at expiry</td><td>yes</td><td class="bad">with RDTS</td></tr>
     <tr><td>#434</td><td>four periods</td><td class="bad">four release dates</td><td>yes</td><td class="bad">with RDTS</td></tr>
     <tr><td>#467</td><td>6,480</td><td class="good">yes</td><td>yes</td><td class="bad">with RDTS</td></tr>
-    <tr><td>#468</td><td>25,920</td><td class="good">yes</td><td class="bad">no, still released at 979,920</td><td class="bad">with RDTS</td></tr>
+    <tr><td>#468 (in 29.4.3)</td><td>25,920</td><td class="good">yes</td><td class="bad">no, still released at 979,920</td><td class="bad">with RDTS</td></tr>
     <tr><td>#468 + #477</td><td>25,920; window 6,480</td><td class="good">yes</td><td>yes, at 6,480</td><td class="bad">with RDTS</td></tr>
     <tr><td>#468 + #478</td><td>25,920</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
     <tr><td>#468 + #479</td><td>25,920; 100 for 979,920–986,399</td><td class="good">yes</td><td>yes, at 25,920</td><td class="bad">with RDTS</td></tr>
     <tr><td>#469</td><td>40,320</td><td class="good">yes</td><td>yes</td><td>never (makes RDTS permanent too)</td></tr>
     <tr><td>#480</td><td>6,480</td><td class="good">yes</td><td>yes</td><td>never</td></tr>
-    <tr class="me"><td>#476</td><td>52,560</td><td class="good">yes</td><td class="good">yes</td><td class="good">rewards mined until 6,930,000 (~2140), no cliff · RDTS untouched</td></tr>
+    <tr class="me"><td>#476</td><td>52,560 on top of #468, from block 995,000</td><td class="good">yes</td><td>left as 29.4.3 has them</td><td class="good">rewards mined until 6,930,000 (~2140) · RDTS untouched</td></tr>
   </table></div>
-  <p class="meta">As of October 26. #477, #478 and #479 are add-ons to #468 and need it merged first. #483 only keeps the 45-day window's rewards locked for 6,480 blocks in consensus, so they aren't all released at 979,920; it doesn't cover later rewards. #429's relay policy also holds rewards a year with no end, but its consensus lock ends at RDTS expiry.</p>
+  <p class="meta">As of October 30. #477, #478 and #479 are add-ons to #468. #483 only keeps the 45-day window's rewards locked for 6,480 blocks in consensus, so they aren't all released at 979,920; it doesn't cover later rewards. #429's relay policy also holds rewards a year with no end, but its consensus lock ends at RDTS expiry.</p>
 
   <h2>The latest</h2>
   <div class="card latest">
     <ul>
-      <li><b>The end point is now in #476.</b> MarcanoFilms' change was merged: the lock covers every reward mined until block <b>6,930,000</b>, the first block with no new coins (around 2140). It ends by the height a reward was mined at, so every covered reward still waits its full year. The last one unlocks at block 6,982,559, one reward per block, with no cliff.</li>
-      <li>The newest community test build, <b>rc5</b>, carries #468 (180 days, ends with RDTS). Kilombino briefly put up a test build with #476 instead, then <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390737631">took it down</a>, saying testers are going with #468. These are test builds, not official releases.</li>
-      <li>If #476 misses block 979,920, a fallback takes over. It is built and tested: the same rolling 52,560-block year, switched on before block <b>1,005,839</b>, so nothing that has become spendable is ever re-locked.</li>
+      <li><strong>#468 shipped.</strong> <a href="https://github.com/bitcoinknots/bitcoin/releases/tag/v29.4.3.knots20260508">Knots 29.4.3</a>, released October 28, holds every reward mined from block 979,919 for 180 days, rolling, until RDTS ends.</li>
+      <li><strong>#476 now builds on it</strong> (<a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6532057767">October 30 update</a>). From block 995,000, every reward mined since 979,919 waits a full year from its own block. Until then it accepts exactly the same blocks as 29.4.3. MarcanoFilms' end point (~2140) is kept.</li>
+      <li><strong>What changed:</strong> the earlier version started at block 979,920 and also re-locked the 45-day window's rewards for a year, which drew the NACKs. The new version leaves those rewards alone and never re-locks anything spendable. The earlier version is kept at the branch <a href="https://github.com/satoshipuzzles/bitcoin/tree/rolling-1y-pre-fallback-83a1f68">rolling-1y-pre-fallback-83a1f68</a>.</li>
+      <li><strong>The 45-day window:</strong> even in 29.4.3, those rewards can all be spent from block 979,920 under consensus rules; relay still makes each one wait 6,480 blocks. #483 is the separate fix for that.</li>
     </ul>
   </div>
 
   <h2>Review so far</h2>
   <ul>
-    <li><span class="ack">13 ACK</span>. Tested: Kilombino (regtest and a pruned mainnet node, re-tested with the end point), webtrekker95-hue. Concept: Daamir-Al-Adel, MarcanoFilms, papier-krieger, Ari4ka, Antonbtc2020, keyandchain21, chainboarder, BrassMonkey87, stackitdeep, FreezyMcFlurry, b2bpleb.</li>
-    <li><span class="nack">2 NACK</span>: SeventyEi8ht (objects to re-locking rewards already mined in the 45-day window), mynpub.</li>
+    <li><span class="ack">14 ACK</span>. Tested: Kilombino (regtest and a pruned mainnet node, re-tested with the end point), webtrekker95-hue. Concept: Daamir-Al-Adel, MarcanoFilms, papier-krieger, Ari4ka, Antonbtc2020, keyandchain21, chainboarder, BrassMonkey87, stackitdeep, FreezyMcFlurry, b2bpleb, himecase-debug. These were given on the earlier version; the tested ACKs need a re-test on the new one.</li>
+    <li><span class="nack">2 NACK</span>: SeventyEi8ht (objected to re-locking rewards already mined in the 45-day window, which the new version no longer does), mynpub.</li>
     <li>MarcanoFilms mutation-tested the rule and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390443074">made the case</a> that a full year keeps 52,560 rewards locked at any moment, twice as many as #468's 25,920.</li>
     <li>stackitdeep prefers it to #468 because keeping the lock separate from RDTS gives more flexibility.</li>
     <li>FlyTheElephant1 pointed out that shortening a permanent lock later would be a hard fork (agreed, and deliberate), and has <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6411035263">asked for a written wind-down plan</a> in case one is ever needed.</li>
@@ -142,23 +143,23 @@
   </ul>
 
   <h2>#476 vs #468: who supports which</h2>
-  <p>#468 (180 days, ends with RDTS) is the main alternative and the one in the rc5 test build. This counts every GitHub account that posted an ACK or NACK on either PR, using each person's latest stance.</p>
+  <p>#468 (180 days, ends with RDTS) is now released in Knots 29.4.3, and #476 builds on top of it, so supporting both no longer conflicts. This counts every GitHub account that posted an ACK or NACK on either PR, using each person's latest stance.</p>
   <div class="vs">
-    <div class="card"><b>#476 · this PR</b><div><span class="ack">13</span> <small>ACK</small> · <span class="nack">2</span> <small>NACK</small></div><p>2 tested. Open since Oct 22.</p></div>
-    <div class="card"><b>#468 · BitcoinMechanic</b><div><span class="ack">33</span> <small>ACK</small> · <span class="nack">4</span> <small>against</small></div><p>4 tested. Open since Oct 20, two days longer.</p></div>
+    <div class="card"><b>#476 · this PR</b><div><span class="ack">14</span> <small>ACK</small> · <span class="nack">2</span> <small>NACK</small></div><p>2 tested. Open since Oct 22.</p></div>
+    <div class="card"><b>#468 · BitcoinMechanic</b><div><span class="ack">34</span> <small>ACK</small> · <span class="nack">4</span> <small>against</small></div><p>4 tested. Released in 29.4.3 on Oct 28.</p></div>
     <div class="card both"><b>Back both</b><div>5 <small>people</small></div><p>No one ACKs one and NACKs the other.</p></div>
   </div>
   <p class="meta">Green outline = tested ACK (built and ran it).</p>
   <div class="vs" style="margin-top:12px">
-    <div class="card"><b>Only #476 · 8</b><div class="names"><a class="t" href="https://github.com/Kilombino">Kilombino</a><a class="t" href="https://github.com/webtrekker95-hue">webtrekker95-hue</a><a class="" href="https://github.com/papier-krieger">papier-krieger</a><a class="" href="https://github.com/Antonbtc2020">Antonbtc2020</a><a class="" href="https://github.com/keyandchain21">keyandchain21</a><a class="" href="https://github.com/BrassMonkey87">BrassMonkey87</a><a class="" href="https://github.com/FreezyMcFlurry">FreezyMcFlurry</a><a class="" href="https://github.com/b2bpleb">b2bpleb</a></div></div>
+    <div class="card"><b>Only #476 · 9</b><div class="names"><a class="t" href="https://github.com/Kilombino">Kilombino</a><a class="t" href="https://github.com/webtrekker95-hue">webtrekker95-hue</a><a class="" href="https://github.com/papier-krieger">papier-krieger</a><a class="" href="https://github.com/Antonbtc2020">Antonbtc2020</a><a class="" href="https://github.com/keyandchain21">keyandchain21</a><a class="" href="https://github.com/BrassMonkey87">BrassMonkey87</a><a class="" href="https://github.com/FreezyMcFlurry">FreezyMcFlurry</a><a class="" href="https://github.com/b2bpleb">b2bpleb</a><a class="" href="https://github.com/himecase-debug">himecase-debug</a></div></div>
     <div class="card both"><b>Both · 5</b><div class="names"><a class="t" href="https://github.com/MarcanoFilms">MarcanoFilms</a><a class="" href="https://github.com/stackitdeep">stackitdeep</a><a class="" href="https://github.com/Daamir-Al-Adel">Daamir-Al-Adel</a><a class="" href="https://github.com/Ari4ka">Ari4ka</a><a class="" href="https://github.com/chainboarder">chainboarder</a></div><p>stackitdeep ACKed #468 first, then said they <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6403179023">prefer #476</a>. MarcanoFilms tested #468, then wrote #476's end point and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6390443074">made the case for it</a>.</p></div>
-    <div class="card"><b>Only #468 · 28</b><div class="names"><a class="t" href="https://github.com/jasonsopko">jasonsopko</a><a class="t" href="https://github.com/chrisguida">chrisguida</a><a class="t" href="https://github.com/geobees">geobees</a><a class="" href="https://github.com/kwsantiago">kwsantiago</a><a class="" href="https://github.com/davelund110">davelund110</a><a class="" href="https://github.com/SpectrGen1">SpectrGen1</a><a class="" href="https://github.com/thisispav">thisispav</a><a class="" href="https://github.com/connorslab">connorslab</a><a class="" href="https://github.com/BalkanHodl">BalkanHodl</a><a class="" href="https://github.com/DxV04-not-bot">DxV04-not-bot</a><a class="" href="https://github.com/Maveth">Maveth</a><a class="" href="https://github.com/rwdewey">rwdewey</a><a class="" href="https://github.com/Insulince">Insulince</a><a class="" href="https://github.com/kosdas">kosdas</a><a class="" href="https://github.com/JoshuaFortezza">JoshuaFortezza</a><a class="" href="https://github.com/BLAKE2bMiner">BLAKE2bMiner</a><a class="" href="https://github.com/DWEETNICE">DWEETNICE</a><a class="" href="https://github.com/SamMagHub">SamMagHub</a><a class="" href="https://github.com/PerpetualWar">PerpetualWar</a><a class="" href="https://github.com/versieboer">versieboer</a><a class="" href="https://github.com/walitysru-wq">walitysru-wq</a><a class="" href="https://github.com/NoFlames-bit">NoFlames-bit</a><a class="" href="https://github.com/MYTH-44">MYTH-44</a><a class="" href="https://github.com/booozytheclown">booozytheclown</a><a class="" href="https://github.com/sturms">sturms</a><a class="" href="https://github.com/BTCAnvil">BTCAnvil</a><a class="" href="https://github.com/ghastlyxbt">ghastlyxbt</a><a class="" href="https://github.com/StuffedTomato">StuffedTomato</a></div></div>
+    <div class="card"><b>Only #468 · 29</b><div class="names"><a class="t" href="https://github.com/jasonsopko">jasonsopko</a><a class="t" href="https://github.com/chrisguida">chrisguida</a><a class="t" href="https://github.com/geobees">geobees</a><a class="" href="https://github.com/kwsantiago">kwsantiago</a><a class="" href="https://github.com/davelund110">davelund110</a><a class="" href="https://github.com/SpectrGen1">SpectrGen1</a><a class="" href="https://github.com/thisispav">thisispav</a><a class="" href="https://github.com/connorslab">connorslab</a><a class="" href="https://github.com/BalkanHodl">BalkanHodl</a><a class="" href="https://github.com/DxV04-not-bot">DxV04-not-bot</a><a class="" href="https://github.com/Maveth">Maveth</a><a class="" href="https://github.com/rwdewey">rwdewey</a><a class="" href="https://github.com/Insulince">Insulince</a><a class="" href="https://github.com/kosdas">kosdas</a><a class="" href="https://github.com/JoshuaFortezza">JoshuaFortezza</a><a class="" href="https://github.com/BLAKE2bMiner">BLAKE2bMiner</a><a class="" href="https://github.com/DWEETNICE">DWEETNICE</a><a class="" href="https://github.com/SamMagHub">SamMagHub</a><a class="" href="https://github.com/PerpetualWar">PerpetualWar</a><a class="" href="https://github.com/versieboer">versieboer</a><a class="" href="https://github.com/walitysru-wq">walitysru-wq</a><a class="" href="https://github.com/NoFlames-bit">NoFlames-bit</a><a class="" href="https://github.com/MYTH-44">MYTH-44</a><a class="" href="https://github.com/booozytheclown">booozytheclown</a><a class="" href="https://github.com/sturms">sturms</a><a class="" href="https://github.com/BTCAnvil">BTCAnvil</a><a class="" href="https://github.com/ghastlyxbt">ghastlyxbt</a><a class="" href="https://github.com/StuffedTomato">StuffedTomato</a><a class="" href="https://github.com/JoeG123-GH">JoeG123-GH</a></div></div>
   </div>
 
   <h3 style="margin:24px 0 8px">The objections</h3>
   <div class="tbl"><table>
     <tr><th>Who</th><th>#476</th><th>#468</th><th>Why</th></tr>
-    <tr><td>SeventyEi8ht</td><td class="bad">NACK</td><td class="bad">ACK, then withdrew</td><td>No re-locking of rewards already mined in the 45-day window; now prefers letting the 45 days expire.</td></tr>
+    <tr><td>SeventyEi8ht</td><td class="bad">NACK</td><td class="bad">ACK, then withdrew</td><td>No re-locking of rewards already mined in the 45-day window (the new #476 doesn't); now prefers letting the 45 days expire.</td></tr>
     <tr><td>mynpub</td><td class="bad">NACK</td><td>no ACK or NACK; called it better than the 1-year versions</td><td>Prefers the shorter lock.</td></tr>
     <tr><td>luke-jr (Knots maintainer)</td><td>no comment</td><td class="bad">Concept NACK</td><td>Let the 45 days expire; do any longer lock as an ordinary soft fork. That view argues against #476 too.</td></tr>
     <tr><td>GregTonoski</td><td>no comment</td><td class="bad">against, won't run it</td><td>Same as luke-jr.</td></tr>
@@ -167,36 +168,36 @@
 
   <h3 style="margin:24px 0 8px">What it means</h3>
   <ul>
-    <li>#468 has more support, about 2.5 times as many ACKs, and it's the one in rc5.</li>
-    <li>The two groups barely overlap: 5 people back both. Most #476 supporters (8 of 13) have not ACKed #468.</li>
+    <li>#468 has more support, about 2.4 times as many ACKs, and it shipped in 29.4.3.</li>
+    <li>The two groups barely overlap: 5 people back both. Most #476 supporters (9 of 14) have not ACKed #468.</li>
     <li>No one with an ACK on #468 has NACKed #476. The strongest objection on both, luke-jr's and GregTonoski's "let it expire", is to any longer lock, not to #476 in particular.</li>
   </ul>
-  <p class="meta">Counted from GitHub comments and reviews on October 26, 2026. Each account's latest stance counts; quoted text and emoji reactions don't. "Against" on #468 includes a conditional NACK and a withdrawn ACK. PR authors aren't counted.</p>
+  <p class="meta">Counted from GitHub comments and reviews on October 30, 2026. Each account's latest stance counts; quoted text and emoji reactions don't. "Against" on #468 includes a conditional NACK and a withdrawn ACK. PR authors aren't counted.</p>
 
   <h2>Notes</h2>
   <ul>
     <li>The 29.4.2 release that shipped the 45-day lock said maturity could go “up to 350 days” and put miners on notice they may need to wait much longer.</li>
-    <li>Default relay policy already makes each reward wait 6,480 confirmations from its own block, so today's cliff is only reachable by a miner including the spends in its own block. #476 closes that in consensus.</li>
+    <li>RDTS expires September 1, 2027. Block 995,000 is about seven months earlier, so #468 is still in force when #476 switches on.</li>
     <li>52,560 blocks is a year at the 10-minute target; at the recent pace of about 9.3 minutes per block it's closer to 339 days.</li>
-    <li>Release candidates are community test builds. The final release contents are up to the Knots maintainers.</li>
+    <li>What goes into a Knots release is up to the Knots maintainers.</li>
   </ul>
 
   <h2>Links</h2>
   <ul class="links">
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476">PR #476 on GitHub</a> <span>· code, description, full discussion</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371103283">Reply on the hard-fork question</a> <span>· why the year is permanent</span></li>
-    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6370924020">MarcanoFilms' fallback proposal</a> <span>· and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371249203">the reply</a></span></li>
-    <li><a href="https://github.com/knots-dev/bitcoin/releases/tag/v29.4.3.knots20260508rc5">29.4.3rc5 test build</a> <span>· carries #468</span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6370924020">MarcanoFilms' proposal this version is based on</a> <span>· and <a href="https://github.com/bitcoinknots/bitcoin/pull/476#issuecomment-6371249203">the reply</a></span></li>
+    <li><a href="https://github.com/bitcoinknots/bitcoin/releases/tag/v29.4.3.knots20260508">Knots 29.4.3</a> <span>· the release with #468</span> · <a href="https://github.com/bitcoinknots/bitcoin/pull/483">#483</a> <span>· keeps the 45-day window's rewards locked in consensus</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/468">#468</a> <span>· 180-day rolling, ends with RDTS</span> · <a href="https://github.com/bitcoinknots/bitcoin/pull/429">#429</a> <span>· locked until RDTS expiry</span></li>
     <li><a href="https://github.com/bitcoinknots/bitcoin/pull/419">#419</a> <span>· the 45-day lock that ends at 979,920</span></li>
   </ul>
 
   <div class="cta">
     <a class="btn solid" href="https://github.com/bitcoinknots/bitcoin/pull/476">Read and review on GitHub</a>
-    <a class="btn" href="/476/pr476-v5.mp4" download>Download the video</a>
+    <a class="btn" href="/476/pr476-v6.mp4" download>Download the video</a>
   </div>
 
-  <footer>Read it, test it, and leave your ACK or NACK before block 979,920. · <a href="/">nostronchain.com</a></footer>
+  <footer>Read it, test it, and leave your ACK or NACK before block 995,000. · <a href="/">nostronchain.com</a></footer>
 </main>
 </body>
 </html>
