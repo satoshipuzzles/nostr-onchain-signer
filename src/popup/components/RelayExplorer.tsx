@@ -240,7 +240,8 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     setSample(null);
     setSampleNote('');
     const conn = explorerRelay(relay);
-    let r = await conn.query({ limit: SAMPLE_SIZE }, 9000);
+    let r = await conn.query({ limit: SAMPLE_SIZE }, 9000, (n, of) => setSampleNote(`The relay turned the connection away. Trying again (${n} of ${of})…`));
+    setSampleNote('');
     // some relays refuse a filter with no kind ("filters must specify at least one kind"): ask for common kinds
     if (!r.events.length && needsNarrowerFilter(r)) {
       needsKindRef.current = true;
@@ -333,7 +334,8 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
     setLoading(true);
     const conn = explorerRelay(relay);
     (async () => {
-      let r = await conn.query(filter);
+      const mine = gen;
+      let r = await conn.query(filter, 9000, (n, of) => { if (mine === genRef.current) setRefusal(`The relay turned the connection away. Trying again (${n} of ${of})…`); });
       if (!r.events.length && !filter.kinds && needsNarrowerFilter(r)) {
         needsKindRef.current = true;
         r = await conn.query({ ...filter, kinds: COMMON_KINDS });
@@ -613,7 +615,7 @@ export function RelayExplorer({ onSelectNote, onViewProfile }: Props) {
 
       {/* Events */}
       {error && <p className="px-4 py-3 text-[13px] text-red-400">{error}</p>}
-      {loading && <div className="flex items-center justify-center py-10 text-gray-500 text-[13px]"><Loader2 className="w-4 h-4 animate-spin mr-2" />Asking {relay.replace(/^wss:\/\//, '')}…</div>}
+      {loading && <div className="flex items-center justify-center py-10 text-gray-500 text-[13px]"><Loader2 className="w-4 h-4 animate-spin mr-2" />{refusal && /Trying again/.test(refusal) ? refusal : <>Asking {relay.replace(/^wss:\/\//, '')}…</>}</div>}
       {!loading && !error && events.length === 0 && (
         <div className="px-6 py-10 text-center" data-testid="relay-empty">
           {refusal

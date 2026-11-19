@@ -11,7 +11,8 @@
  *   level still see their data. Cloud events are signature-checked here.
  */
 
-import { SimplePool } from 'nostr-tools/pool';
+import type { SimplePool } from 'nostr-tools/pool';
+import { sharedPool, keepWarm } from './pool';
 import { verifyEvent } from 'nostr-tools/pure';
 import type { Filter } from 'nostr-tools/filter';
 import type { Event } from 'nostr-tools';
@@ -72,10 +73,8 @@ export function cleanRelays(list: (string | undefined | null)[], max = 12): stri
 
 // ─── Pool ────────────────────────────────────────────────────────
 
-let pool: SimplePool | null = null;
 function getPool(): SimplePool {
-  if (!pool) pool = new SimplePool();
-  return pool;
+  return sharedPool();
 }
 
 // ─── Viewer relays ───────────────────────────────────────────────
@@ -199,6 +198,7 @@ export function streamQuery(opts: StreamOptions): () => void {
   if (!browserDone) {
     try {
       const requests = relays.flatMap((url) => filters.map((filter) => ({ url, filter })));
+      keepWarm(relays); // a relay that refuses this handshake is retried in the background
       closer = getPool().subscribeMap(requests, {
         onevent: (e) => add(e as unknown as NEvent),
         oneose: () => { browserDone = true; maybeFinish(); },

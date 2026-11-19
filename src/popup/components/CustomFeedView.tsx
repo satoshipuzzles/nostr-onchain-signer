@@ -5,6 +5,7 @@ import { NoteCard } from '@/popup/components/NoteCard';
 import { AuthContext } from '@/popup/context/AuthContext';
 import { useProfile } from '@/popup/hooks/useNostr';
 import { useFeedFilters, passesFilters } from '@/lib/nostr/feed-filters';
+import { useSteadyList, NewNotesPill } from '@/popup/hooks/useSteadyList';
 import { publishEvent } from '@/lib/nostr/publish';
 import { getViewerReadRelays } from '@/lib/nostr/query';
 import {
@@ -24,6 +25,7 @@ interface Props {
 }
 
 const PAGE = 25;
+const itemId = (i: FeedItem) => i.note.id;
 
 function ago(ts: number): string {
   const d = Math.floor(Date.now() / 1000) - ts;
@@ -114,10 +116,15 @@ export function CustomFeedView({ def, publicKey, followingPubkeys, onSelectNote,
     }
   }
 
-  const visible = useMemo(() => items.filter((i) => passesFilters(i.note, prefs)).slice(0, shown), [items, prefs, shown]);
+  const passing = useMemo(() => items.filter((i) => passesFilters(i.note, prefs)), [items, prefs]);
+  // While you read, notes on screen stay put. A newest-first feed holds late arrivals that
+  // belong above you behind the pill; a ranked feed or a provider's picks re-order only below.
+  const ranked = def.type === 'dvm' || def.recipe?.ranking === 'foryou';
+  const steady = useSteadyList(passing, itemId, { resetKey: `${def.addr}|${recipeKey}|${run}`, mode: ranked ? 'ranked' : 'newest', rendered: shown });
+  const visible = useMemo(() => steady.list.slice(0, shown), [steady.list, shown]);
 
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
+  const itemsRef = useRef(steady.list);
+  itemsRef.current = steady.list;
   useEffect(() => {
     const el = endRef.current;
     if (!el || preview) return;
@@ -174,6 +181,8 @@ export function CustomFeedView({ def, publicKey, followingPubkeys, onSelectNote,
         </div>
       )}
 
+      {!preview && <NewNotesPill count={steady.held} onClick={steady.release} />}
+      <div ref={steady.anchorRef} />
       <div className="divide-y divide-white/5">
         {visible.map((i) => (
           <div key={i.note.id} className="px-4 py-3" data-feed-note={i.note.id}>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSteadyList, NewNotesPill } from '@/popup/hooks/useSteadyList';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   subscribeFeed, subscribeEvents, mergeNotes, parseRepost, longFormMeta, isLongForm,
@@ -50,6 +51,8 @@ const TABS: { mode: FeedMode; label: string; icon: typeof Globe }[] = [
 
 /** How often the page quietly asks the relays for anything newer. */
 const LIVE_POLL_MS = 45_000;
+const noteId = (n: FeedNote) => n.id;
+
 /** Engagement is fetched for notes as they scroll into view, in batches. */
 const ENGAGEMENT_BATCH = 40;
 
@@ -395,7 +398,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   function showPending() {
     setNotes((prev) => mergeNotes(prev, pendingNew, mutedRef.current));
     setPendingNew([]);
-    listTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    steady.release();
   }
 
   // ─── Load older ───────────────────────────────────────────────
@@ -532,6 +535,14 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
   const visibleNotes = useMemo(() => (filtering
     ? notes.filter((n) => passesFilters(n, effectivePrefs, { inner: parseRepost(n)?.inner, profile: profiles.get(n.pubkey) }))
     : notes), [notes, filtering, effectivePrefs, profiles]);
+
+  // What is rendered: while you read further down, late arrivals that belong above you wait
+  // behind the pill instead of pushing the note you are on (see useSteadyList)
+  const steady = useSteadyList(visibleNotes, noteId, {
+    resetKey: `${activeMode}|${hashtagSubmitted}|${refreshToken ?? 0}`,
+    mode: 'newest',
+  });
+  const waiting = pendingNew.length + steady.held;
 
   // keep loading older notes while the end of the list is in view, or while too few pass the filters
   useEffect(() => {
@@ -718,17 +729,7 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
       )}
 
       {/* New notes pill */}
-      {pendingNew.length > 0 && (
-        <div className="sticky top-[52px] z-10 flex justify-center pt-3 pointer-events-none">
-          <button
-            onClick={showPending}
-            className="pointer-events-auto flex items-center gap-1.5 px-4 py-2 rounded-full bg-purple-600 text-white text-[13px] font-semibold shadow-lg shadow-purple-500/30 hover:bg-purple-500 transition-colors"
-          >
-            <ArrowUp className="w-3.5 h-3.5" />
-            {pendingNew.length} new {pendingNew.length === 1 ? 'note' : 'notes'}
-          </button>
-        </div>
-      )}
+      {!exploring && <NewNotesPill count={waiting} onClick={showPending} />}
 
       {/* Feed content */}
       <div hidden={exploring}>
@@ -769,8 +770,9 @@ export function Feed({ publicKey, followingPubkeys, onViewProfile, refreshToken 
           <p className="px-6 py-8 text-center text-[14px] text-gray-500">None of the {notes.length} loaded notes match your filters{exhausted ? '.' : '. Looking further back…'}</p>
         )}
 
+        <div ref={steady.anchorRef} />
         <div className="divide-y divide-white/5">
-          {visibleNotes.map((note) => {
+          {steady.list.map((note) => {
             const repost = parseRepost(note);
             if (repost) {
               const byName = displayNameOf(profiles.get(repost.by), repost.by);

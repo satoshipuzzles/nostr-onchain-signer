@@ -2,7 +2,8 @@
  * Shared relay subscription helpers via nostr-tools SimplePool.
  */
 
-import { SimplePool } from 'nostr-tools/pool';
+import type { SimplePool } from 'nostr-tools/pool';
+import { sharedPool, keepWarm } from './pool';
 import type { Filter } from 'nostr-tools/filter';
 import { cloudQuery } from './query';
 
@@ -11,12 +12,13 @@ const CLOUD_OK = new Set([0, 1, 3, 6, 7, 1111, 9735, 10002]);
 
 // relay.nostr.band went dark in 2026-10; relay.ditto.pub and offchain.pub answer fast.
 // purplepag.es only keeps profiles and relay lists, so it is not a note source.
+// nostr-pub.wellorder.net refused every handshake (503) on 2026-11-18; nostr.mom took its place.
 export const DEFAULT_READ_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
   'wss://relay.ditto.pub',
   'wss://relay.snort.social',
-  'wss://nostr-pub.wellorder.net',
+  'wss://nostr.mom',
   'wss://offchain.pub',
 ];
 
@@ -28,11 +30,8 @@ interface RelaySubOptions {
   maxWait?: number;
 }
 
-let readPool: SimplePool | null = null;
-
 function getReadPool(): SimplePool {
-  if (!readPool) readPool = new SimplePool();
-  return readPool;
+  return sharedPool();
 }
 
 export function subscribeRelays(options: RelaySubOptions): () => void {
@@ -53,6 +52,7 @@ export function subscribeRelays(options: RelaySubOptions): () => void {
       .catch(() => {});
   }
 
+  keepWarm(relayUrls); // a relay that refuses this handshake is retried in the background
   const closer = getReadPool().subscribeManyEose(
     relayUrls,
     filter,

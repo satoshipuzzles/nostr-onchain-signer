@@ -69,9 +69,25 @@ function cleanRelays(rs) {
   )].slice(0, 10);
 }
 
-function queryRelay(url, filters, timeoutMs, events) {
+/**
+ * A busy relay (relay.damus.io, 2026-11) answers most upgrades with 503 at once and lets
+ * the next one in: try a refused handshake again while there is time left.
+ */
+async function queryRelay(url, filters, timeoutMs, events) {
+  const t0 = Date.now();
+  for (let i = 0; ; i++) {
+    const left = timeoutMs - (Date.now() - t0);
+    const state = await queryRelayOnce(url, filters, left, events);
+    if (state !== 'refused') return state;
+    if (i >= 4 || timeoutMs - (Date.now() - t0) < 1200) return 'error';
+    await new Promise((r) => setTimeout(r, 150 + i * 150));
+  }
+}
+
+function queryRelayOnce(url, filters, timeoutMs, events) {
   return new Promise((resolve) => {
     let done = false;
+    let opened = false;
     let ws;
     const sid = 'q' + Math.random().toString(36).slice(2, 8);
     const finish = (state) => {
@@ -90,6 +106,7 @@ function queryRelay(url, filters, timeoutMs, events) {
       return;
     }
     ws.on('open', () => {
+      opened = true;
       try { ws.send(JSON.stringify(['REQ', sid, ...filters])); } catch { finish('error'); }
     });
     ws.on('message', (data) => {
@@ -103,8 +120,8 @@ function queryRelay(url, filters, timeoutMs, events) {
       } else if (m[0] === 'EOSE' && m[1] === sid) finish('ok');
       else if (m[0] === 'CLOSED' && m[1] === sid) finish('error');
     });
-    ws.on('error', () => finish('error'));
-    ws.on('close', () => finish('error'));
+    ws.on('error', () => finish(opened ? 'error' : 'refused'));
+    ws.on('close', () => finish(opened ? 'error' : 'refused'));
   });
 }
 

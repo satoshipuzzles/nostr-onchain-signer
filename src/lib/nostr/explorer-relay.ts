@@ -102,15 +102,37 @@ export class ExplorerRelay {
     return this.opening;
   }
 
-  /** One REQ, settled at EOSE, CLOSED, connection loss or `waitMs`. */
-  async query(filter: Record<string, unknown>, waitMs = 9000): Promise<QueryResult> {
-    const notices: string[] = [];
-    try { await this.connect(); } catch {
-      // one retry: a first handshake often fails while the page is busy opening the feed's own sockets
-      await new Promise((r) => setTimeout(r, 1500));
-      try { await this.connect(); } catch (e) {
-        return { events: [], notices, timedOut: false, connectError: e instanceof Error ? e.message : String(e) };
+  /**
+   * Open the socket, trying again when the relay turns the handshake away.
+   *
+   * A busy relay (relay.damus.io in 2026-11) answers most upgrades with 503 straight away
+   * and lets the next one in, so a quick refusal is retried up to six times with a growing
+   * wait. A slow failure (nothing for seconds) is a dead or blocked host and gets one retry.
+   */
+  async connectPatiently(onRetry?: (attempt: number, of: number) => void): Promise<void> {
+    const waits = [700, 1200, 2000, 3000, 4500];
+    let quick = 0;
+    for (let i = 0; ; i++) {
+      const t0 = Date.now();
+      try { await this.connect(); return; } catch (e) {
+        const fast = Date.now() - t0 < 2500;
+        if (fast) quick++;
+        const last = i >= waits.length || (!fast && i >= 1);
+        if (last) {
+          if (quick >= 2) this.lastError = `The relay is turning new connections away right now (tried ${i + 1} times). It is busy or limiting connections, not blocking you. Try again in a minute.`;
+          throw new Error(this.lastError || (e instanceof Error ? e.message : String(e)));
+        }
+        onRetry?.(i + 2, waits.length + 1);
+        await new Promise((r) => setTimeout(r, waits[i] * (0.8 + Math.random() * 0.4)));
       }
+    }
+  }
+
+  /** One REQ, settled at EOSE, CLOSED, connection loss or `waitMs`. */
+  async query(filter: Record<string, unknown>, waitMs = 9000, onRetry?: (attempt: number, of: number) => void): Promise<QueryResult> {
+    const notices: string[] = [];
+    try { await this.connectPatiently(onRetry); } catch (e) {
+      return { events: [], notices, timedOut: false, connectError: e instanceof Error ? e.message : String(e) };
     }
     const ws = this.ws!;
     const id = `x${++subSeq}`;
@@ -144,7 +166,7 @@ export class ExplorerRelay {
 
   /** Answer the relay's NIP-42 challenge with a kind 22242 event from the user's signer. */
   async auth(sign: Signer): Promise<{ ok: boolean; message: string }> {
-    await this.connect();
+    await this.connectPatiently();
     if (!this.challenge) return { ok: false, message: 'The relay has not sent an AUTH challenge.' };
     const signed = await sign({
       kind: 22242,

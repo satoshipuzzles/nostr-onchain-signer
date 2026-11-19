@@ -8,6 +8,7 @@ import { useProfile } from '@/popup/hooks/useNostr';
 import { mutedNow, onMutesChanged } from '@/lib/nostr/mute';
 import { DEFAULT_RELAYS } from '@/lib/nostr/query';
 import { useFeedFilters, passesFilters, useReplyMode } from '@/lib/nostr/feed-filters';
+import { useSteadyList } from '@/popup/hooks/useSteadyList';
 import { runAlgo, loadTune, saveTune, loadLess, saveLess, clearAlgoCache, DEFAULT_TUNE, type Ranked, type AlgoTune, type ShowLess, type WhyKind } from '@/lib/nostr/algo';
 import type { FeedNote } from '@/lib/nostr/feed';
 
@@ -19,6 +20,7 @@ interface Props {
 }
 
 const PAGE = 25;
+const rankedId = (r: Ranked) => r.note.id;
 const WHY_ICON: Record<WhyKind, typeof Zap> = {
   zapped: Zap, liked: Heart, reposted: Repeat2, replied: MessageCircle, network: Users, trending: Sparkles,
   fof: Users, follow: Users, onchain: Bitcoin, new: Compass, topic: Hash,
@@ -49,7 +51,6 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
   const [muted, setMuted] = useState<Set<string>>(() => new Set(mutedNow()));
   const { prefs } = useFeedFilters();
   const [replyMode] = useReplyMode('foryou');
-  const lockedRef = useRef<Ranked[] | null>(null);   // once the user scrolls, the top stays put
   const endRef = useRef<HTMLDivElement | null>(null);
 
   // a block / mute anywhere drops that author here at once (ranking reads the live set)
@@ -61,34 +62,27 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
 
   useEffect(() => {
     setDone(false);
-    lockedRef.current = null;
     return runAlgo({
       me: publicKey || '', follows: followingPubkeys, muted, mutedWords: prefs.mutedWords,
       tune, less, includeReplies: replyMode === 'both',
     }, (list, finished) => {
-      setRanked((prev) => {
-        // keep what has been scrolled past in place; re-rank only below it
-        const lock = lockedRef.current;
-        if (!lock || !lock.length) return list;
-        const ids = new Set(lock.map((r) => r.note.id));
-        return [...lock, ...list.filter((r) => !ids.has(r.note.id))];
-      });
+      setRanked(list);
       if (finished) setDone(true);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicKey, followsKey, muted, tune, less, replyMode, run, prefs.mutedWords.join('|')]);
 
-  const visible = useMemo(
-    () => ranked.filter((r) => passesFilters(r.note, prefs)).slice(0, shown),
-    [ranked, prefs, shown],
-  );
+  const passing = useMemo(() => ranked.filter((r) => passesFilters(r.note, prefs)), [ranked, prefs]);
+  // once you scroll, what is on screen keeps its place; later re-ranks only reorder below it
+  const steady = useSteadyList(passing, rankedId, { resetKey: `${publicKey}|${run}`, mode: 'ranked', rendered: shown });
+  const visible = useMemo(() => steady.list.slice(0, shown), [steady.list, shown]);
   const ids = useMemo(() => visible.map((r) => r.note.id), [visible]);
   const engagement = useEngagement(done ? ids : [], DEFAULT_RELAYS);
 
   // more as the end comes near (checked against its real position, so an observer that is
   // re-created while notes stream in can't keep adding pages); the top is locked once you scroll
-  const rankedRef = useRef(ranked);
-  rankedRef.current = ranked;
+  const rankedRef = useRef(steady.list);
+  rankedRef.current = steady.list;
   const shownRef = useRef(shown);
   shownRef.current = shown;
   const hasList = visible.length > 0;
@@ -99,7 +93,6 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
       if (!e.isIntersecting) return;
       if (e.boundingClientRect.top > window.innerHeight * 2) return;
       if (shownRef.current >= rankedRef.current.length) return;
-      if (!lockedRef.current) lockedRef.current = rankedRef.current.slice(0, shownRef.current);
       setShown((n) => n + PAGE);
     }, { rootMargin: '600px 0px' });
     io.observe(el);
@@ -152,6 +145,7 @@ export function ForYouFeed({ publicKey, followingPubkeys, onSelectNote, onViewPr
         <p className="px-6 py-12 text-center text-sm text-gray-500">Nothing to recommend right now{prefs.only !== 'all' ? ' with your filters on' : ''}. Try Refresh, or turn discovery up in Tune.</p>
       )}
 
+      <div ref={steady.anchorRef} />
       <div className="divide-y divide-white/5">
         {visible.map((r) => (
           <div key={r.note.id} className="px-4 py-3 relative" data-algo-note={r.note.id} data-author={r.note.pubkey}>
