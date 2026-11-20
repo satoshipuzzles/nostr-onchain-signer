@@ -3,7 +3,7 @@ import {
   useLayoutEffect, type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, X, Maximize2, Loader2 } from 'lucide-react';
+import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, X, Maximize2, Loader2, ListChecks } from 'lucide-react';
 import { useIframeNostrBridge } from '@/lib/nostr/iframe-bridge';
 
 export interface EmbedApp {
@@ -11,7 +11,7 @@ export interface EmbedApp {
   name: string;
   url: string;
   description: string;
-  kind: 'audio' | 'game' | 'video' | 'food';
+  kind: 'audio' | 'game' | 'video' | 'food' | 'work';
   /** Square logo for the app card. */
   logo?: string;
   /** The app's Nostr account. */
@@ -148,7 +148,7 @@ export function EmbedPlayerProvider({ children }: { children: ReactNode }) {
               title={app.name}
               onLoad={() => setLoadedIds((prev) => new Set(prev).add(app.id))}
               className="w-full h-full border-0 bg-black"
-              allow="microphone; camera; autoplay; clipboard-write; web-share"
+              allow="microphone; camera; display-capture; autoplay; clipboard-write; web-share; screen-wake-lock"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals"
             />
           </div>
@@ -173,6 +173,8 @@ export function EmbedPlayerProvider({ children }: { children: ReactNode }) {
                   ? <Clapperboard className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
                   : app.kind === 'food'
                     ? <UtensilsCrossed className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
+                    : app.kind === 'work'
+                    ? <ListChecks className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />
                     : <Gamepad2 className="w-3.5 h-3.5 text-purple-300 flex-shrink-0" />}
               <span className="text-xs font-medium text-white max-w-[120px] truncate">{app.name}</span>
               <button

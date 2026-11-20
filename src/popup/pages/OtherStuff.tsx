@@ -1,22 +1,22 @@
 import { useState, useEffect, useCallback, useContext } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, ExternalLink, StopCircle, ListFilter } from 'lucide-react';
+import { Radio, Gamepad2, Clapperboard, UtensilsCrossed, ExternalLink, StopCircle, ListFilter, ListChecks, Store } from 'lucide-react';
 import { useEmbedPlayer, type EmbedApp } from '../context/EmbedPlayerContext';
 import { AuthContext } from '../context/AuthContext';
-import { AUDIO_APPS, GAME_APPS, FOOD_APPS, VIDEO_APPS, ALL_APPS } from '../apps';
+import { AUDIO_APPS, GAME_APPS, FOOD_APPS, VIDEO_APPS, WORK_APPS, ALL_APPS } from '../apps';
 import { AppCard } from '../components/AppCard';
 import { CustomFeedView } from '../components/CustomFeedView';
 import { NoteThread } from '../components/NoteThread';
 import { FOOD_DEF } from '@/lib/nostr/feed-store';
 import type { FeedNote } from '@/lib/nostr/feed';
 
-type Tab = 'audio' | 'games' | 'food' | 'video';
+type Tab = 'audio' | 'games' | 'food' | 'video' | 'work';
 
-const TAB_KIND: Record<Tab, EmbedApp['kind']> = { audio: 'audio', games: 'game', food: 'food', video: 'video' };
-const TAB_APPS: Record<Tab, EmbedApp[]> = { audio: AUDIO_APPS, games: GAME_APPS, food: FOOD_APPS, video: VIDEO_APPS };
+const TAB_KIND: Record<Tab, EmbedApp['kind']> = { audio: 'audio', games: 'game', food: 'food', video: 'video', work: 'work' };
+const TAB_APPS: Record<Tab, EmbedApp[]> = { audio: AUDIO_APPS, games: GAME_APPS, food: FOOD_APPS, video: VIDEO_APPS, work: WORK_APPS };
 
 function tabFor(kind?: EmbedApp['kind']): Tab {
-  return kind === 'game' ? 'games' : kind === 'video' ? 'video' : kind === 'food' ? 'food' : 'audio';
+  return kind === 'game' ? 'games' : kind === 'video' ? 'video' : kind === 'food' ? 'food' : kind === 'work' ? 'work' : 'audio';
 }
 
 export default function OtherStuff() {
@@ -77,7 +77,11 @@ export default function OtherStuff() {
     <div className="h-full flex flex-col">
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-4 pt-3 pb-2 border-b border-white/10 flex-shrink-0 overflow-x-auto">
-        {tabBtn('audio', Radio, 'Nostr Audio')}
+        <span className="flex items-center gap-1.5 pr-2 mr-1 border-r border-white/10 text-sm font-semibold text-white whitespace-nowrap flex-shrink-0">
+          <Store className="w-4 h-4 text-purple-300" /> Nostr App Store
+        </span>
+        {tabBtn('audio', Radio, 'Audio')}
+        {tabBtn('work', ListChecks, 'Work')}
         {tabBtn('games', Gamepad2, 'Games')}
         {tabBtn('food', UtensilsCrossed, 'Food')}
         {tabBtn('video', Clapperboard, 'Video')}

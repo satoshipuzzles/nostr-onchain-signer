@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Wallet, Inbox, Compass, Settings,
   Shield, Radio, Edit3, Download, Lock,
   Rss, Trophy, MessageCircle, Fingerprint, Unlock, Blocks,
-  Gamepad2, Hammer, Zap, Clapperboard, Search, Bell } from 'lucide-react';
+  Gamepad2, Hammer, Zap, Clapperboard, Search, Bell, Store } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AccountSwitcher } from './AccountSwitcher';
 import { ClickableAvatar } from './ClickableAvatar';
@@ -26,7 +26,7 @@ const mainNav = [
   { to: '/unlocks', icon: Unlock, label: 'Social Unlocks' },
   { to: '/discover', icon: Compass, label: 'Discover' },
   { to: '/explorer', icon: Blocks, label: 'Explorer' },
-  { to: '/other', icon: Gamepad2, label: 'Audio, Games & Food' },
+  { to: '/other', icon: Store, label: 'Nostr App Store' },
   { to: '/vidstr', icon: Clapperboard, label: 'Vidstr' },
 ];
 
